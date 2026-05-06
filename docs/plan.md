@@ -173,15 +173,21 @@ The blue line through everything. Splitting into 4 sub-PRs because §8 is too bi
 - [x] First-deploy revert is a no-op (no `GetLastSuccessfulDeployment` target → log only)
 - [x] Tests: 9 covering happy path, prepare error, build error stops no services, healthcheck failure stops services + leaves Caddy untouched, Caddy verify failure reverts + cleans up, first-deploy-no-prior-success, after-hook failure does NOT roll back, no-web-service skips Caddy entirely, generator path with file_server swap
 
-### 8d. Caddy convergence loop (improvement B)
+### 8d. Caddy convergence loop (improvement B) ✓
 
-- [ ] `caddy_desired_state` table: `{project_id, upstream_dial, domains[], handler_kind}`
-- [ ] Update desired state inside the deploy commit transaction
-- [ ] Reconciler scheduled every 30s by §7 worker
-- [ ] Diff: GET Caddy live config, compare to desired, PATCH where divergent
-- [ ] If GET fails or PATCH fails N times, log structured error so operators can alert
-- [ ] (Future) Optionally also reconcile against on-disk `autosave.json` to catch the on-disk drift class
-- [ ] Tests against fake caddy
+Cleaner design than the original plan: instead of a separate `caddy_desired_state` table, the reconciler derives desired state from the last successful deployment's stored cobaltfile. One column added (`deployments.resolved_cobaltfile`), one reconciler function.
+
+- [x] Migration `0005_deployment_resolved_cobaltfile.sql` — adds the column for storing the cobaltfile that was actually used
+- [x] `store.SetResolvedCobaltfile` writes the column; the orchestrator (8c) calls it after Preparer parses cobalt.json
+- [x] `worker.ReconcileCaddyState` walks every project that has a last-successful deployment, derives expected upstream from the stored cobaltfile, GETs Caddy current state, PATCHes if divergent
+- [x] Handles route-missing case (Caddy wiped → recreate via `AddProjectRoute` + `ServeService`/`ServeStaticSite`)
+- [x] Handles upstream drift (correct project route, wrong upstream → `ServeService` to fix)
+- [x] Handles domain drift (calls `SetDomainsForProject` every cycle — high-level reconcile is idempotent)
+- [x] Per-project failures logged and skipped (one bad cobaltfile doesn't halt the sweep)
+- [x] Pre-§8d deployments without `resolved_cobaltfile` skipped — next deploy populates them
+- [x] Cron / no-web projects produce no Caddy state changes
+- [x] Tests: 11 covering in-sync no-op, drift correction, missing-route recreate, static-site recreate via `ServeStaticSite`, static-site drift skipped (no cheap probe), no-last-success skip, missing-resolved-cobaltfile skip, no-domains skip, no-web-service skip, per-project error continues sweep, list-projects error bubbles
+- [ ] Wire reconciler into scheduler (`@every 30s`) on daemon startup — lands with §9 wiring
 
 ### 8e. Per-deployment log rotation (improvement H)
 

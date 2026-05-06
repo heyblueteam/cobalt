@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -59,6 +60,16 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
 		return fmt.Errorf("deploy: prepare: %w", err)
 	}
 	log.Info("repo prepared", "commit", ws.Commit)
+
+	// Persist the resolved cobaltfile so the §8d Caddy convergence
+	// reconciler can read authoritative desired state without re-cloning
+	// the repo. Failure here is non-fatal — the deploy still proceeds and
+	// the next deploy will populate the row.
+	if raw, err := json.Marshal(ws.Cobaltfile); err == nil {
+		if err := o.DB.SetResolvedCobaltfile(ctx, dep.ID, string(raw)); err != nil {
+			log.Warn("set resolved cobaltfile", "error", err)
+		}
+	}
 
 	if err := o.DB.SetDeploymentStatus(ctx, dep.ID, cobaltapi.StateBuilding); err != nil {
 		log.Warn("set status building", "error", err)

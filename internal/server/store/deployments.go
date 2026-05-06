@@ -18,6 +18,11 @@ type Deployment struct {
 	CommitSHA          sql.NullString
 	NoCache            bool
 	CobaltfileOverride sql.NullString
+	// ResolvedCobaltfile is the cobaltfile that was actually used for the
+	// deployment (after merging override or reading from the repo). The
+	// Caddy convergence reconciler reads this when computing the desired
+	// state for the live deployment.
+	ResolvedCobaltfile sql.NullString
 	CreatedAt          int64
 	StartedAt          sql.NullInt64
 	FinishedAt         sql.NullInt64
@@ -126,11 +131,12 @@ func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) 
 	var status string
 	err := db.QueryRowContext(ctx, `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               created_at, started_at, finished_at
+               resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments WHERE id = ?
     `, id).Scan(
 		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-		&d.CobaltfileOverride, &d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+		&d.CobaltfileOverride, &d.ResolvedCobaltfile,
+		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -148,7 +154,7 @@ func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) 
 func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	rows, err := db.QueryContext(ctx, `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               created_at, started_at, finished_at
+               resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments
         WHERE status = ?
         ORDER BY project_id, number
@@ -160,6 +166,18 @@ func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	return scanDeployments(rows)
 }
 
+// SetResolvedCobaltfile persists the cobaltfile that was used for a
+// deployment. The orchestrator calls this after Preparer parses
+// cobalt.json (or merges the inline override) so the convergence
+// reconciler has authoritative state to read.
+func (db *DB) SetResolvedCobaltfile(ctx context.Context, deploymentID int64, raw string) error {
+	_, err := db.ExecContext(ctx,
+		`UPDATE deployments SET resolved_cobaltfile = ? WHERE id = ?`,
+		raw, deploymentID,
+	)
+	return err
+}
+
 // GetLastSuccessfulDeployment returns the most recent successful
 // deployment for a project (highest number with status=success). Returns
 // ErrNotFound when no prior success exists — used by the deploy flow's
@@ -169,14 +187,15 @@ func (db *DB) GetLastSuccessfulDeployment(ctx context.Context, projectID int64) 
 	var status string
 	err := db.QueryRowContext(ctx, `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               created_at, started_at, finished_at
+               resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments
         WHERE project_id = ? AND status = ?
         ORDER BY number DESC
         LIMIT 1
     `, projectID, string(cobaltapi.StateSuccess)).Scan(
 		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-		&d.CobaltfileOverride, &d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+		&d.CobaltfileOverride, &d.ResolvedCobaltfile,
+		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -198,7 +217,7 @@ func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {
 	}
 	rows, err := db.QueryContext(ctx, `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               created_at, started_at, finished_at
+               resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments WHERE status IN (`+placeholders(len(active))+`)
         ORDER BY project_id, number
     `, args...)
@@ -216,7 +235,8 @@ func scanDeployments(rows *sql.Rows) ([]Deployment, error) {
 		var status string
 		if err := rows.Scan(
 			&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-			&d.CobaltfileOverride, &d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+			&d.CobaltfileOverride, &d.ResolvedCobaltfile,
+		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
 		); err != nil {
 			return nil, err
 		}
