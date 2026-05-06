@@ -1,0 +1,103 @@
+package docker
+
+import (
+	"context"
+	"fmt"
+	"io"
+)
+
+// RunOpts describes a one-shot `docker run` invocation. Used by the deploy
+// flow for hooks (before/after) and by `cobalt run` for ad-hoc commands.
+type RunOpts struct {
+	ProjectID        int64
+	ProjectName      string
+	ServiceName      string // logical service name, for the label
+	DeploymentNumber int
+	ContainerName    string
+	Image            string
+	Command          []string // argv; if Command[0] is a shell, caller is responsible for quoting
+	EnvVars          map[string]string
+	Networks         []string
+	Volumes          []ServiceVolume
+	WorkDir          string
+	ExtraParams      []string // from SplitParams(extraRunParams)
+
+	// IO. Any of these may be nil.
+	Stdin  io.Reader
+	Stdout io.Writer
+	Stderr io.Writer
+}
+
+// Run runs a one-shot container synchronously and removes it on exit
+// (--rm). Returns the runner error if the docker invocation itself failed
+// or the container exited non-zero.
+func (c *Client) Run(ctx context.Context, opts RunOpts) error {
+	if opts.ContainerName == "" {
+		return fmt.Errorf("docker.Run: ContainerName required")
+	}
+	args := []string{"run", "--rm", "--name", opts.ContainerName}
+
+	for _, l := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ServiceName, opts.DeploymentNumber) {
+		args = append(args, "--label", l)
+	}
+	for _, k := range sortedKeys(opts.EnvVars) {
+		args = append(args, "--env", k+"="+opts.EnvVars[k])
+	}
+	for _, n := range opts.Networks {
+		args = append(args, "--network", n)
+	}
+	for _, v := range opts.Volumes {
+		args = append(args, "--mount",
+			fmt.Sprintf("type=volume,source=%s,destination=%s", v.VolumeName, v.DestinationPath),
+		)
+	}
+	if opts.WorkDir != "" {
+		args = append(args, "--workdir", opts.WorkDir)
+	}
+	if opts.Stdin != nil {
+		args = append(args, "-i")
+	}
+	args = append(args, opts.ExtraParams...)
+	args = append(args, opts.Image)
+	args = append(args, opts.Command...)
+
+	return c.runner.Run(ctx, args, opts.Stdin, opts.Stdout, opts.Stderr)
+}
+
+// RemoveContainer removes a container by name with --force. Treats a
+// missing container as success so callers can use it as cleanup.
+func (c *Client) RemoveContainer(ctx context.Context, name string) error {
+	err := c.run(ctx, "rm", "--force", name)
+	if isNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+// Exec runs a command inside an existing container and streams the output.
+// Used for things like the caddy_nc port-poll and `docker exec`-style
+// debugging.
+func (c *Client) Exec(ctx context.Context, container string, cmd []string, stdout, stderr io.Writer) error {
+	args := append([]string{"exec", container}, cmd...)
+	return c.runner.Run(ctx, args, nil, stdout, stderr)
+}
+
+// PullImage pulls an image reference. Used during deploys when the cobalt
+// build step wants to ensure the base image is current.
+func (c *Client) PullImage(ctx context.Context, ref string) error {
+	if ref == "" {
+		return fmt.Errorf("docker.PullImage: empty ref")
+	}
+	return c.run(ctx, "pull", ref)
+}
+
+// ContainerExists reports whether a container with the given name is
+// present. Used to short-circuit cleanup paths.
+func (c *Client) ContainerExists(ctx context.Context, name string) (bool, error) {
+	out, err := c.output(ctx, "ps", "-a", "--filter", "name=^"+name+"$", "--format", "{{.ID}}")
+	if err != nil {
+		return false, err
+	}
+	return len(out) > 0, nil
+}
+

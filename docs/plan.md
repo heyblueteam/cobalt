@@ -74,14 +74,17 @@ Per the identity/display split, every docker service / container / network creat
 - `cobalt.project.id={id}` — stable, used for every internal lookup / filter
 - `cobalt.project.name={name}` — display, for humans running `docker ps --filter`
 
-- [ ] Build image (`--no-cache`, `--secret` for env-as-build-arg)
-- [ ] Swarm service create / update / remove / rolling update with both labels
-- [ ] Container create / run / exec for hooks and `cobalt run` with both labels
-- [ ] Lookups (`list_services_for_project`, `list_networks_for_project`, etc.) filter by `cobalt.project.id`
-- [ ] Volume create / inspect / export / import
-- [ ] Image cleanup of orphaned tags (background worker, id-keyed query)
-- [ ] Pass-through for `extraSwarmParams` and `extraRunParams`
-- [ ] Tests with a mock docker CLI fixture
+- [x] Build image (`--no-cache`, `--secret` for env-as-build-arg, deterministic argv ordering)
+- [x] Swarm service create / scale / list / remove (no in-place updates — new deployment per release)
+- [x] Container `Run` / `Exec` / `RemoveContainer` / `ContainerExists` / `PullImage`
+- [x] Lookups (`ListServicesForProject`, `ListServicesForDeployment`, `ListVolumesForProject`) filter by `cobalt.project.id`
+- [x] Volume create (idempotent) / list / export / import
+- [x] Image list (parses tag → deployment number) / remove (treats missing as success)
+- [x] Network create / exists / connect / disconnect (no remove — moby#37338 leaks IPs, matches upstream)
+- [x] Pass-through for `extraSwarmParams` and `extraRunParams` via `SplitParams`
+- [x] `WaitForServiceReady` with 3×replicas-shutdown fail-fast and overall timeout
+- [x] `Runner` interface for testability + `ExecRunner` production impl
+- [x] Tests with a fake runner: 30+ tests covering argv shape, label injection, idempotent missing-resource handling, deterministic env/secret ordering
 
 ## 6. GitHub App (`internal/server/github`)
 
