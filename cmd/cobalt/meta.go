@@ -20,6 +20,12 @@ func newMetaInfoCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "info",
 		Short: "Show daemon version and uptime",
+		Long: `Prints daemon metadata: version, hostname, uptime, and start time.
+Useful for incident response and verifying which daemon you're talking to.
+
+Examples:
+  cobalt meta info
+  cobalt meta info --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient(cmd)
 			if err != nil {

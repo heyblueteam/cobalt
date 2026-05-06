@@ -10,6 +10,15 @@ func newUseCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "use <project>",
 		Short: "Set the current project for the active server",
+		Long: `Sets the default project for the active cobalt server.
+
+After setting, project-scoped commands (env, domains, deploy, etc.) will use this
+project without requiring --project on every invocation. Use --server to target a
+specific server.
+
+Examples:
+  cobalt use api
+  cobalt use api --server staging`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			project := args[0]

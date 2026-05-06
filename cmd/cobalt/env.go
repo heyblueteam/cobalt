@@ -27,6 +27,11 @@ func newEnvListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List environment variables",
+		Long: `Lists all environment variables for a project.
+
+Examples:
+  cobalt env list --project api
+  cobalt env list --project api --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {
@@ -59,6 +64,15 @@ func newEnvSetCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "set KEY=VAL [KEY2=VAL2 ...]",
 		Short: "Set environment variables",
+		Long: `Upserts one or more environment variables. Existing keys are overwritten.
+
+Use --redeploy to automatically enqueue a deployment after updating env vars —
+this is the typical workflow when changing configuration that a running service
+needs to pick up.
+
+Examples:
+  cobalt env set NODE_ENV=production --project api
+  cobalt env set FOO=bar BAZ=qux --project api --redeploy`,
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("at least one KEY=VAL pair is required")
@@ -102,6 +116,11 @@ func newEnvRemoveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove <KEY>",
 		Short: "Remove an environment variable",
+		Long: `Removes an environment variable from a project. Use --yes to skip the
+confirmation prompt.
+
+Examples:
+  cobalt env remove FOO --project api --yes`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			key := args[0]

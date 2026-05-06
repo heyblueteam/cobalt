@@ -31,6 +31,13 @@ func newProjectsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List projects",
+		Long: `Lists all projects on the active server.
+
+Shows project name, GitHub repository, and branch.
+
+Examples:
+  cobalt projects list
+  cobalt projects list --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient(cmd)
 			if err != nil {
@@ -63,6 +70,14 @@ func newProjectsAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add <name>",
 		Short: "Add a new project",
+		Long: `Creates a new project on the cobalt server.
+
+Requires --github with an owner/repo pair. Optionally attach a domain at creation
+time with --domain.
+
+Examples:
+  cobalt projects add api --github heyblueteam/api
+  cobalt projects add web --github heyblueteam/web --branch develop --domain web.blue.cc`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			srv, err := resolveServer(cmd)
@@ -98,6 +113,13 @@ func newProjectsRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <name>",
 		Short: "Remove a project",
+		Long: `Permanently deletes a project and all associated resources.
+
+This removes domains, env vars, and deployment history. Use --yes to skip the
+confirmation prompt.
+
+Examples:
+  cobalt projects remove staging-app --yes`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
@@ -118,6 +140,11 @@ func newProjectsRenameCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "rename <old-name> <new-name>",
 		Short: "Rename a project",
+		Long: `Renames a project. The project's internal ID stays the same — only the
+display name changes. Use --yes to skip the confirmation prompt.
+
+Examples:
+  cobalt projects rename api api-v2 --yes`,
 		Args:  cobra.ExactArgs(2),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			oldName, newName := args[0], args[1]

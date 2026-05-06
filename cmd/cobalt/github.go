@@ -39,6 +39,11 @@ func newGithubAppsListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List registered GitHub Apps",
+		Long: `Lists all GitHub Apps registered with the cobalt server.
+
+Examples:
+  cobalt github apps list
+  cobalt github apps list --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient(cmd)
 			if err != nil {
@@ -76,6 +81,14 @@ func newGithubAppsAddCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add",
 		Short: "Register a new GitHub App",
+		Long: `Starts the GitHub App registration flow.
+
+Opens a browser to GitHub's App installation page unless --non-interactive is set.
+The printed URL can be shared with an org admin to complete installation.
+
+Examples:
+  cobalt github apps add --organization heyblueteam
+  cobalt github apps add --organization heyblueteam --non-interactive`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			org, _ := cmd.Flags().GetString("organization")
 			nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
@@ -112,6 +125,10 @@ func newGithubAppsManageCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "manage <organization>",
 		Short: "Open GitHub App settings in browser",
+		Long: `Opens the GitHub App settings page for the given organization in a browser.
+
+Examples:
+  cobalt github apps manage heyblueteam`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(cmd)
@@ -139,6 +156,13 @@ func newGithubAppsPruneCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "prune",
 		Short: "Remove stale GitHub Apps and refresh repo list",
+		Long: `Cross-references cobalt's local DB with GitHub's current state.
+
+Removes apps and installations that no longer exist on GitHub, and adds repos
+from installations that were previously missing.
+
+Examples:
+  cobalt github apps prune`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient(cmd)
 			if err != nil {
@@ -167,6 +191,13 @@ func newGithubReposCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "repos",
 		Short: "Manage GitHub repos",
+		Long: `Lists all repos accessible to cobalt's GitHub App installations.
+
+Shows installation ID, full repo name, and default branch.
+
+Examples:
+  cobalt github repos
+  cobalt github repos --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			c, err := newClient(cmd)
 			if err != nil {

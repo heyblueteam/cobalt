@@ -28,6 +28,11 @@ func newVolumesListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List project volumes",
+		Long: `Lists named volumes for a project. Volumes outlive deployments and hold
+persistent data like databases and uploads.
+
+Examples:
+  cobalt volumes list --project api`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {
@@ -60,6 +65,14 @@ func newVolumesExportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "export",
 		Short: "Export a volume to stdout or file",
+		Long: `Exports a volume's contents as a gzipped tar to stdout or a file.
+
+By default writes binary data to stdout — use --output to save to a file,
+or --force to allow stdout when connected to a TTY.
+
+Examples:
+  cobalt volumes export --project api --volume data --output data.tar.gz
+  cobalt volumes export --project api --volume data --force | tar tzf -`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			vol, _ := cmd.Flags().GetString("volume")
 			outPath, _ := cmd.Flags().GetString("output")
@@ -119,6 +132,14 @@ func newVolumesImportCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "import",
 		Short: "Import a volume from stdin or file",
+		Long: `Imports a gzipped tar into a volume.
+
+Reads from --input <path> or stdin. Refuses to read from a TTY stdin unless
+you pipe data.
+
+Examples:
+  cobalt volumes import --project api --volume data < data.tar.gz
+  cobalt volumes import --project api --volume data --input data.tar.gz`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			vol, _ := cmd.Flags().GetString("volume")
 			inPath, _ := cmd.Flags().GetString("input")

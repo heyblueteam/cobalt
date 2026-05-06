@@ -30,6 +30,13 @@ func newDeploymentsListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List deployments",
+		Long: `Lists recent deployments for a project.
+
+Use --limit to control how many deployments are shown (default 20).
+
+Examples:
+  cobalt deployments list --project api
+  cobalt deployments list --project api --limit 5 --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			limit, _ := cmd.Flags().GetInt("limit")
 			pc, err := newProjectClient(cmd)
@@ -74,6 +81,12 @@ func newDeploymentsCancelCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cancel",
 		Short: "Cancel an in-flight deployment",
+		Long: `Cancels the most recent in-flight deployment (queued, fetching, building, or
+swapping). Use --deployment to target a specific deployment by ID.
+
+Examples:
+  cobalt deployments cancel --project api
+  cobalt deployments cancel --project api --deployment 42`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			deployment, _ := cmd.Flags().GetString("deployment")
 			pc, err := newProjectClient(cmd)
@@ -113,6 +126,13 @@ func newDeploymentsOutputCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "output",
 		Short: "Stream deployment output",
+		Long: `Streams the stdout/stderr output of a deployment in real time.
+
+Without --deployment, tails the most recent deployment. Use Ctrl+C to stop.
+
+Examples:
+  cobalt deployments output --project api
+  cobalt deployments output --project api --deployment 42`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			deployment, _ := cmd.Flags().GetString("deployment")
 			pc, err := newProjectClient(cmd)

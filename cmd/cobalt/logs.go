@@ -12,6 +12,14 @@ func newLogsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "logs",
 		Short: "Stream project service logs",
+		Long: `Streams logs from a project's running service over SSE.
+
+Follows logs in real time (like 'tail -f'). Use --service to select which
+service to tail (defaults to "web"). Press Ctrl+C to stop.
+
+Examples:
+  cobalt logs --project api
+  cobalt logs --project api --service worker`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			service, _ := cmd.Flags().GetString("service")
 			pc, err := newProjectClient(cmd)

@@ -25,6 +25,14 @@ func newServersListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "List configured servers",
+		Long: `Lists all cobalt servers stored in ~/.cobalt/config.json.
+
+The active (default) server is marked with an asterisk. Each entry shows the
+server name, host URL, and current project.
+
+Examples:
+  cobalt servers list
+  cobalt servers list --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			cpath, err := cliconfig.DefaultPath()
 			if err != nil {
@@ -74,6 +82,14 @@ func newServersRemoveCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove <name>",
 		Short: "Remove a configured server",
+		Long: `Removes a server entry from ~/.cobalt/config.json.
+
+If the removed server was the default, the default is cleared. Use --yes to skip
+the confirmation prompt.
+
+Examples:
+  cobalt servers remove staging --yes
+  cobalt servers remove dev`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			name := args[0]

@@ -27,6 +27,11 @@ func newScaleListCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
 		Short: "Show current replicas per service",
+		Long: `Displays the current replica count for each service in the project's
+most recent deployment.
+
+Examples:
+  cobalt scale list --project api`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {
@@ -60,6 +65,13 @@ func newScaleSetCmd() *cobra.Command {
 		Use:     "set <SERVICE=N> [SERVICE=N ...]",
 		Aliases: []string{"apply"},
 		Short:   "Set replica counts for services",
+		Long: `Updates replica counts for one or more services.
+
+Each positional argument is SERVICE=N where N is the desired number of replicas.
+
+Examples:
+  cobalt scale set web=3 --project api
+  cobalt scale set web=5 worker=2 --project api`,
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
 				return fmt.Errorf("at least one SERVICE=N argument is required")
