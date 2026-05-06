@@ -122,15 +122,67 @@ Async jobs the daemon runs on a schedule. Cron tasks are keyed by `project_id` s
 
 ## 8. Deployment flow (`internal/server/deploy`)
 
-- [ ] State machine: `queued` → `fetching` → `building` → `swapping` → `success` / `failed`
-- [ ] Run before-deploy hook in a one-shot container
-- [ ] Start new service in Swarm, poll for healthy port
-- [ ] Caddy upstream swap (atomic point of cutover)
+The blue line through everything. Splitting into 4 sub-PRs because §8 is too big for one. Each sub-PR is independently reviewable and ships its own tests. The plan also bakes in the upstream-improvements identified in the audit:
+
+- **(A) Verify Caddy PATCH** — GET back the upstream value after PATCH; retry with backoff on drift; fail loudly if final read still wrong.
+- **(B) Caddy convergence loop** — DB-stored desired state + periodic reconciler. Root fix for upstream issue #97.
+- **(C) Docker HEALTHCHECK status** — read `Status.Health` before cutover, not just port-poll. Eliminates "port open but app crashing" 502s.
+- **(D) Two-phase commit** — prepare (start + healthcheck + verify) then commit (Caddy swap + verify). Abort cleanly on commit failure.
+- **(E) Build cache isolation** — per-project `--cache-from` / `--cache-to` paths. Removes the upstream LABEL workaround.
+- **(F) Webhook dedup by `X-GitHub-Delivery`** — lands with §9 webhook receiver.
+- **(G) Pre-deploy validation** — fail fast at API time on bad cobaltfile / unreachable commit / domain conflicts.
+- **(H) Deploy log rotation to disk** — upstream stores unbounded in DB.
+
+### 8a. State machine + queue
+
+- [ ] Status set: `queued`, `fetching`, `building`, `swapping`, `success`, `failed`, `canceled`, `skipped` (migration `0003` to add `skipped` to the CHECK)
+- [ ] Per-project FIFO: at most one deployment in `[fetching, building, swapping]` at any time
+- [ ] Newer queued supersedes older queued for same project (older → `skipped`)
+- [ ] Cancel: cancels context for the in-flight deploy; deferred rollback runs to clean up
+- [ ] Daemon-restart recovery: any deploy in `[fetching, building, swapping]` at startup → `failed`; queued deploys re-enqueued
+- [ ] Pre-deploy validation (improvement G): commit reachability via GitHub API, cobaltfile parse if `--file` provided
+- [ ] Tests with real sqlite + fake clock
+
+### 8b. Build orchestration
+
+- [ ] Repo fetch: `git clone --depth=N` with installation token URL (uses §6 `CloneURL`)
+- [ ] Cobaltfile read + parse (uses §3)
+- [ ] Per-service image build (uses §5 `docker.Build`); parallel where safe
+- [ ] Build cache isolation (improvement E): `--cache-from`/`--cache-to` rooted at `/cobalt/data/buildkit-cache/{projectID}`
+- [ ] Build output streamed to per-deployment log file
+- [ ] Tests with fake docker runner + filesystem
+
+### 8c. Cutover + rollback
+
+- [ ] Network create (per-deployment, id-keyed labels)
+- [ ] Service create per cobaltfile service (uses §5)
+- [ ] Healthcheck wait (improvement C): poll `docker service inspect --format '{{.UpdateStatus.State}}'` and per-task `Status.Health`; fall back to port-poll if no health command
+- [ ] Run before-deploy hook in one-shot container (with `extraRunParams` from cobaltfile per PR #92)
+- [ ] Two-phase commit (improvement D):
+  - Prepare: start new services, healthcheck, verify
+  - Commit: Caddy upstream swap (uses §4) **with PATCH verification (improvement A)**
 - [ ] Run after-deploy hook
-- [ ] Rollback on failure: revert Caddy upstream, stop new service
-- [ ] Cancel running deployment
-- [ ] Per-deployment log stream into store + live SSE fan-out
-- [ ] Tests against mock docker + caddy
+- [ ] On any failure during prepare: stop new services + new network, mark `failed`, no Caddy touch
+- [ ] On any failure during commit: revert Caddy to old upstream, stop new services, mark `failed`
+- [ ] Stop old services only AFTER `success` status set
+- [ ] Tests with fake docker + fake caddy
+
+### 8d. Caddy convergence loop (improvement B)
+
+- [ ] `caddy_desired_state` table: `{project_id, upstream_dial, domains[], handler_kind}`
+- [ ] Update desired state inside the deploy commit transaction
+- [ ] Reconciler scheduled every 30s by §7 worker
+- [ ] Diff: GET Caddy live config, compare to desired, PATCH where divergent
+- [ ] If GET fails or PATCH fails N times, log structured error so operators can alert
+- [ ] (Future) Optionally also reconcile against on-disk `autosave.json` to catch the on-disk drift class
+- [ ] Tests against fake caddy
+
+### 8e. Per-deployment log rotation (improvement H)
+
+- [ ] Logs written to `/cobalt/data/logs/deployments/{project_name}/{n}.log` (using project display name; on rename, leave old logs in place)
+- [ ] Rotate to gzip when file exceeds 50MB or deployment is older than 30 days
+- [ ] API serves logs by streaming the file (with offset support for SSE follow)
+- [ ] Lands as a follow-up; not blocking 8a–8d
 
 ## 9. HTTP API (`internal/server/api`)
 
