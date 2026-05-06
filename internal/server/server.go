@@ -98,10 +98,12 @@ func Run(ctx context.Context, cfg Config) error {
 	apiHandler := api.NewHandler(api.HandlerOpts{
 		DB:         db,
 		Caddy:      caddyCli,
+		Docker:     dockerCli,
 		GitHub:     githubCli,
 		Queue:      queue,
 		Dispatcher: dispatcher,
 		Log:        log,
+		DataDir:    cfg.DataDir,
 		PublicHost: cfg.PublicHost,
 	})
 	apiHandler.Register(apiMux)

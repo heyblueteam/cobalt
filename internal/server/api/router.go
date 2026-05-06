@@ -35,6 +35,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/github-app-repos", h.ListGithubAppRepos)
 	mux.HandleFunc("POST /api/github-apps/prune", h.PruneGithubApps)
 	mux.HandleFunc("POST /api/github-apps/create", h.CreatePendingApp)
+
+	// Streaming
+	mux.HandleFunc("GET /api/deployments/{id}/output", h.DeploymentOutput)
+	mux.HandleFunc("GET /api/projects/{name}/logs", h.ProjectLogs)
 }
 
 // RegisterPublic attaches public (unauthenticated) routes onto mux.

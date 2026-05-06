@@ -16,6 +16,7 @@ import (
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
+	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/github"
 	"github.com/heyblueteam/cobalt/internal/server/middleware"
 	"github.com/heyblueteam/cobalt/internal/server/store"
@@ -26,11 +27,16 @@ import (
 type Handler struct {
 	DB         *store.DB
 	Caddy      *caddy.Client
+	Docker     *docker.Client
 	GitHub     *github.Client
 	Queue      *deploy.Queue
 	Dispatcher *deploy.Dispatcher
 	Dedup      *webhookDedup
 	Log        *slog.Logger
+	// DataDir is the daemon's writable root. Used by streaming
+	// endpoints to locate per-deployment log files. Empty disables
+	// log streaming endpoints (they return 500).
+	DataDir string
 	// PublicHost is the daemon's public hostname (e.g. "cobalt.blue.cc").
 	// Used to build manifest URLs. Empty falls back to the request's
 	// Host header — fine for dev, but real deploys should set it.
@@ -41,10 +47,12 @@ type Handler struct {
 type HandlerOpts struct {
 	DB         *store.DB
 	Caddy      *caddy.Client
+	Docker     *docker.Client
 	GitHub     *github.Client
 	Queue      *deploy.Queue
 	Dispatcher *deploy.Dispatcher
 	Log        *slog.Logger
+	DataDir    string
 	PublicHost string
 
 	// WebhookDedupTTL controls the in-memory dedup window for
@@ -67,11 +75,13 @@ func NewHandler(opts HandlerOpts) *Handler {
 	return &Handler{
 		DB:         opts.DB,
 		Caddy:      opts.Caddy,
+		Docker:     opts.Docker,
 		GitHub:     opts.GitHub,
 		Queue:      opts.Queue,
 		Dispatcher: opts.Dispatcher,
 		Dedup:      newWebhookDedup(ttl),
 		Log:        opts.Log,
+		DataDir:    opts.DataDir,
 		PublicHost: opts.PublicHost,
 	}
 }
