@@ -27,6 +27,8 @@ func newRootCmd() *cobra.Command {
 		newEnvCmd(),
 		newDomainsCmd(),
 		newScaleCmd(),
+		newDeployCmd(),
+		newDeploymentsCmd(),
 	)
 
 	return cmd

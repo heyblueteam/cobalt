@@ -21,6 +21,7 @@ type mockAPI struct {
 	handler     func(w http.ResponseWriter, r *http.Request)
 	lastMethod  string
 	lastPath    string
+	lastQuery   string
 	lastBody    []byte
 	callCount   int
 }
@@ -30,6 +31,7 @@ func newMockAPI() *mockAPI {
 	m.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.lastMethod = r.Method
 		m.lastPath = r.URL.Path
+		m.lastQuery = r.URL.RawQuery
 		if r.Body != nil {
 			m.lastBody, _ = jsonReadAll(r.Body)
 		}
