@@ -1,0 +1,8 @@
+.git
+.github
+tmp
+dist
+*.md
+!README.md
+.env
+.env.*

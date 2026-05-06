@@ -2,16 +2,44 @@
 
 Deployment glue for Docker Swarm + Caddy, built for Blue.
 
-Replaces our use of [Disco](https://letsdisco.dev) with a smaller, focused Go implementation tailored to Blue's stack.
+A focused Go reimplementation of [Disco](https://letsdisco.dev) tailored to Blue's stack.
 
 ## Status
 
-Early days. Planning in progress.
+Pre-alpha. Scaffold only. See [`commands.md`](commands.md) for the v1 CLI surface and [`docs/architecture.md`](docs/architecture.md) for the layout.
 
-## Components
+## Build
 
-- **`cobaltd`** — the daemon. Runs on each server, watches GitHub webhooks, builds images, orchestrates Docker Swarm rollouts, manages Caddy.
-- **`cobalt`** — the CLI. Talks to `cobaltd` over HTTP.
+```bash
+go build -o cobalt ./cmd/cobalt
+./cobalt --help
+```
+
+## Run the daemon locally
+
+```bash
+./cobalt server --addr 127.0.0.1:8080 --data-dir /tmp/cobalt-data
+curl http://127.0.0.1:8080/healthz
+```
+
+## Test
+
+```bash
+go test ./...
+```
+
+## Layout
+
+Single binary. CLI and daemon ship together — `cobalt` is the CLI, `cobalt server` runs the daemon.
+
+```
+cmd/cobalt/         # cobra CLI — all subcommands including 'server'
+internal/server/    # daemon — HTTP API, deploy flow, Caddy + Docker
+pkg/cobaltapi/      # request/response types shared CLI ↔ daemon
+tmp/                # gitignored — read-only checkouts of upstream disco
+```
+
+See [`docs/architecture.md`](docs/architecture.md) for the planned package layout.
 
 ## License
 
