@@ -4,7 +4,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is set at build time via -ldflags "-X main.version=...".
 var version = "dev"
 
 func newRootCmd() *cobra.Command {
@@ -16,8 +15,14 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 
+	cmd.PersistentFlags().String("server", "", "cobalt server to use (defaults to ~/.cobalt/config.json defaultServer)")
+	cmd.PersistentFlags().Bool("json", false, "output as JSON")
+	cmd.PersistentFlags().Bool("yes", false, "skip confirmation prompts")
+
 	cmd.AddCommand(
 		newServerCmd(),
+		newServersCmd(),
+		newUseCmd(),
 	)
 
 	return cmd
