@@ -6,7 +6,7 @@ A focused Go reimplementation of [Disco](https://letsdisco.dev) tailored to Blue
 
 ## Status
 
-Pre-alpha. Scaffold only. See [`commands.md`](commands.md) for the v1 CLI surface and [`docs/architecture.md`](docs/architecture.md) for the layout.
+Pre-alpha. Scaffold only. See [`docs/commands.md`](docs/commands.md) for the v1 CLI surface and [`docs/architecture.md`](docs/architecture.md) for the layout.
 
 ## Build
 
@@ -31,6 +31,7 @@ go test ./...
 ## Layout
 
 Single binary. CLI and daemon ship together — `cobalt` is the CLI, `cobalt server` runs the daemon.
+
 
 ```
 cmd/cobalt/         # cobra CLI — all subcommands including 'server'
