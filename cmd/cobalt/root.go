@@ -29,6 +29,10 @@ func newRootCmd() *cobra.Command {
 		newScaleCmd(),
 		newDeployCmd(),
 		newDeploymentsCmd(),
+		newGithubCmd(),
+		newApikeysCmd(),
+		newMetaCmd(),
+		newVolumesCmd(),
 	)
 
 	return cmd
