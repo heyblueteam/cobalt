@@ -47,6 +47,27 @@ func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 	return out, rows.Err()
 }
 
+// GetProjectByID returns the project with the given id. Returns
+// ErrNotFound if no row matches.
+func (db *DB) GetProjectByID(ctx context.Context, id int64) (*Project, error) {
+	var p Project
+	err := db.QueryRowContext(ctx, `
+        SELECT id, name, github_repo, branch, github_app_installation_id,
+               created_at, updated_at
+        FROM projects WHERE id = ?
+    `, id).Scan(
+		&p.ID, &p.Name, &p.GithubRepo, &p.Branch, &p.GithubAppInstallationID,
+		&p.CreatedAt, &p.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 // GetProjectByName returns the project with the given display name.
 // Returns ErrNotFound if no row matches.
 func (db *DB) GetProjectByName(ctx context.Context, name string) (*Project, error) {

@@ -148,6 +148,28 @@ func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) 
 	return &d, nil
 }
 
+// ListDeploymentsForProject returns deployments for a project ordered
+// most-recent first (highest number first). limit caps the result; pass 0
+// for "no cap" (returns everything).
+func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, limit int) ([]Deployment, error) {
+	q := `SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
+               resolved_cobaltfile, created_at, started_at, finished_at
+        FROM deployments
+        WHERE project_id = ?
+        ORDER BY number DESC`
+	args := []any{projectID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeployments(rows)
+}
+
 // QueuedDeployments returns every queued deployment, ordered by
 // (project_id, number). Used by the dispatcher to pick the next deploy
 // per project.

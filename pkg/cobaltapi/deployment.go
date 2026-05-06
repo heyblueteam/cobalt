@@ -70,3 +70,24 @@ func AllStates() []State {
 func ActiveStatesList() []State {
 	return []State{StateFetching, StateBuilding, StateSwapping}
 }
+
+// Deployment is the public shape of a deployment row.
+type Deployment struct {
+	ID         int64  `json:"id"`
+	ProjectID  int64  `json:"projectId"`
+	Number     int    `json:"number"`
+	Status     State  `json:"status"`
+	CommitSHA  string `json:"commitSha,omitempty"`
+	NoCache    bool   `json:"noCache,omitempty"`
+	CreatedAt  int64  `json:"createdAt"`
+	StartedAt  int64  `json:"startedAt,omitempty"`
+	FinishedAt int64  `json:"finishedAt,omitempty"`
+}
+
+// DeploymentCreateRequest is the body of POST
+// /api/projects/{name}/deployments.
+type DeploymentCreateRequest struct {
+	Commit             string `json:"commit,omitempty"`
+	NoCache            bool   `json:"noCache,omitempty"`
+	CobaltfileOverride string `json:"cobaltfileOverride,omitempty"`
+}

@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/heyblueteam/cobalt/internal/server/api"
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
@@ -77,6 +78,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Log:      log,
 	}
 
+	queue := deploy.NewQueue(db)
 	dispatcher := deploy.NewDispatcher(db, orchestrator, log, deploy.DispatcherOpts{})
 	dispatcher.Start(ctx)
 	defer dispatcher.Stop()
@@ -86,13 +88,21 @@ func Run(ctx context.Context, cfg Config) error {
 	sched.Start(ctx)
 	defer sched.Stop()
 
+	apiMux := http.NewServeMux()
+	apiHandler := &api.Handler{
+		DB:         db,
+		Caddy:      caddyCli,
+		Queue:      queue,
+		Dispatcher: dispatcher,
+		Log:        log,
+	}
+	apiHandler.Register(apiMux)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, cobaltapi.Health{Status: "ok"})
 	})
-	// Authed endpoints will be registered under /api/ once individual
-	// resource handlers land in §9b.
-	mux.Handle("/api/", middleware.BearerAuth(db.DB, log)(http.HandlerFunc(notFound)))
+	mux.Handle("/api/", middleware.BearerAuth(db.DB, log)(apiMux))
 
 	handler := middleware.RequestID(
 		middleware.Recover(log)(
@@ -174,6 +184,3 @@ func registerScheduledJobs(
 	})
 }
 
-func notFound(w http.ResponseWriter, _ *http.Request) {
-	http.Error(w, "not found", http.StatusNotFound)
-}
