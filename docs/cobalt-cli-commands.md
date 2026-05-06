@@ -193,13 +193,11 @@ Lists every repo accessible to any connected GitHub App.
 
 ```
 cobalt meta info [--json]
-cobalt meta host <domain>
-cobalt meta upgrade [--image <ref>] [--dont-pull]
 ```
 
-- `host` sets the daemon's own hostname for Caddy.
-- `upgrade --image` pins a specific image.
-- `upgrade --dont-pull` skips the docker pull (use with `--local-image` from `init`).
+`info` returns daemon version, uptime, and hostname.
+
+`host` (set daemon hostname for Caddy) and `upgrade` (self-update via docker service update) are deferred — see "Deferred to post-v1" below.
 
 ## Volumes
 
@@ -216,18 +214,13 @@ cobalt volumes import [--project <p>] --volume <v> [--input <path>]
 
 ```
 cobalt apikeys list [--json]
-cobalt apikeys remove <key> [--yes]
+cobalt apikeys create <name> [--json]
+cobalt apikeys remove <id> [--yes]
 ```
 
-## Invites
+`create` returns the raw key once; the daemon stores only its SHA-256 hash. Pass it through `1Password` (or your team's secret manager); there's no way to recover the key after creation.
 
-```
-cobalt invite create <name> [--json]
-cobalt invite accept <url> [--show-only]
-```
-
-- `create` returns a one-time URL the recipient runs `cobalt invite accept` against.
-- `accept` adds the server to local CLI config. `--show-only` prints the API key without writing config.
+`invite create / accept` (single-use URLs to bootstrap an API key for a new operator) is deferred — see "Deferred to post-v1" below.
 
 ## Servers (local CLI config)
 
@@ -255,7 +248,12 @@ These will not exist in cobalt v1:
 
 ## Deferred to post-v1
 
+These features have a real upstream story but aren't worth the v1 cost for Blue. Schema rows / scaffolding remain so adding them later is additive.
+
 - `nodes *` — Docker Swarm cluster-membership commands. Blue runs everything on a single host (`server.blue.cc`); multi-host swarms aren't used today. Will revisit if/when Blue splits services across hosts.
+- `invite create / accept` — single-use URL flow to onboard a new operator without copy-pasting a raw API key. For Blue's 3-engineer team, `cobalt apikeys create alice` + share via 1Password is fine. The `apikey_invites` table is in the schema; revive when there's an actual onboarding cadence to optimize.
+- `meta host <domain>` — live daemon-hostname change. Today `--public-host` is set at startup; renaming requires a daemon restart with the new flag. We have a Caddy `UpdateDaemonHost` primitive ready, but persisting the new hostname (and keeping it consistent with the flag on next restart) needs a settings table or env-var convention we don't have yet. Once-a-decade event; defer.
+- `meta upgrade` — daemon self-upgrade. Blue runs `docker service update --image ghcr.io/heyblueteam/cobalt:vX cobalt` manually; that's already documented in the runbook. Self-upgrade is delicate (the daemon kills itself mid-response, no rollback story) so it's not worth shipping until we feel real ergonomic pain from the manual flow.
 
 ## Renamed from upstream
 

@@ -22,6 +22,7 @@ subcommands of the same binary, not by running 'cobalt server' directly.`,
 		RunE: func(c *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(c.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
+			cfg.Version = version
 			return server.Run(ctx, cfg)
 		},
 	}

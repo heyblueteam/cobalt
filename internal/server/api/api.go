@@ -41,6 +41,12 @@ type Handler struct {
 	// Used to build manifest URLs. Empty falls back to the request's
 	// Host header — fine for dev, but real deploys should set it.
 	PublicHost string
+	// Version is the daemon binary version string (set at build time).
+	// Surfaced via GET /api/meta/info.
+	Version string
+	// StartedAt is when the daemon process began. Used to compute
+	// uptime in GET /api/meta/info. Set by NewHandler.
+	StartedAt time.Time
 }
 
 // HandlerOpts is the constructor input for NewHandler.
@@ -54,6 +60,7 @@ type HandlerOpts struct {
 	Log        *slog.Logger
 	DataDir    string
 	PublicHost string
+	Version    string
 
 	// WebhookDedupTTL controls the in-memory dedup window for
 	// X-GitHub-Delivery. Zero means "use the package default" (10m).
@@ -83,6 +90,8 @@ func NewHandler(opts HandlerOpts) *Handler {
 		Log:        opts.Log,
 		DataDir:    opts.DataDir,
 		PublicHost: opts.PublicHost,
+		Version:    opts.Version,
+		StartedAt:  time.Now(),
 	}
 }
 

@@ -42,6 +42,10 @@ type Config struct {
 	// falls back to the request's Host header — fine for dev, but
 	// production should set this.
 	PublicHost string
+
+	// Version is the daemon's build-time version (e.g. "v1.2.3").
+	// Surfaced via GET /api/meta/info. Empty defaults to "dev".
+	Version string
 }
 
 // Run starts every daemon subsystem (storage, scheduler, dispatcher, HTTP

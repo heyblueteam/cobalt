@@ -40,6 +40,19 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/deployments/{id}/output", h.DeploymentOutput)
 	mux.HandleFunc("GET /api/projects/{name}/logs", h.ProjectLogs)
 	mux.HandleFunc("GET /api/projects/{name}/run", h.Run)
+
+	// Volumes
+	mux.HandleFunc("GET /api/projects/{name}/volumes", h.ListVolumes)
+	mux.HandleFunc("POST /api/projects/{name}/volumes/{volume}/export", h.ExportVolume)
+	mux.HandleFunc("POST /api/projects/{name}/volumes/{volume}/import", h.ImportVolume)
+
+	// API keys
+	mux.HandleFunc("GET /api/apikeys", h.ListAPIKeys)
+	mux.HandleFunc("POST /api/apikeys", h.CreateAPIKey)
+	mux.HandleFunc("DELETE /api/apikeys/{id}", h.DeleteAPIKey)
+
+	// Meta
+	mux.HandleFunc("GET /api/meta/info", h.GetMetaInfo)
 }
 
 // RegisterPublic attaches public (unauthenticated) routes onto mux.
