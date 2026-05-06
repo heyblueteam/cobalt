@@ -19,5 +19,5 @@ vendor/
 .env
 .env.local
 
-# Reference checkouts of upstream disco — read-only, never imported
+# Reference checkouts of upstream — read-only, never imported
 /tmp/

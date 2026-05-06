@@ -27,7 +27,7 @@ subcommands of the same binary, not by running 'cobalt server' directly.`,
 	}
 
 	cmd.Flags().StringVar(&cfg.Addr, "addr", ":80", "HTTP listen address")
-	cmd.Flags().StringVar(&cfg.DataDir, "data-dir", "/disco/data", "directory for sqlite db and project state")
+	cmd.Flags().StringVar(&cfg.DataDir, "data-dir", "/cobalt/data", "directory for sqlite db and project state")
 
 	return cmd
 }

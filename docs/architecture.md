@@ -27,11 +27,11 @@ internal/
 │   ├── deploy/     (planned)   deployment state machine, build, hooks, rollback
 │   ├── docker/     (planned)   wrapper around `docker` / Docker API
 │   ├── caddy/      (planned)   admin API client over unix socket
-│   ├── github/     (planned)   GitHub App auth, webhook handling, repo fetch
-│   ├── store/      (planned)   sqlite + embedded SQL migrations
-│   ├── discofile/  (planned)   parser for the per-repo deploy config
-│   ├── logs/       (planned)   log streaming
-│   └── encryption/ (planned)   for env var values at rest
+│   ├── github/      (planned)   GitHub App auth, webhook handling, repo fetch
+│   ├── store/       (planned)   sqlite + embedded SQL migrations
+│   ├── cobaltfile/  (planned)   parser for the per-repo cobalt.json deploy config
+│   ├── logs/        (planned)   log streaming
+│   └── encryption/  (planned)   for env var values at rest
 ├── client/         (planned)   HTTP client used by CLI subcommands
 └── cliconfig/      (planned)   ~/.cobalt/config.json read/write
 
@@ -53,11 +53,11 @@ test/               (planned)   integration + e2e tests against real Docker/Cadd
 
 ## Caddy reconciler
 
-Disco's Caddy integration is purely imperative — every operation is a single REST call to Caddy's admin API over a unix socket, addressed by `@id` references in the live config. There is no desired-state reconciler; on-disk and in-memory config can drift on rollback failures (upstream issue #97).
+The upstream tool's Caddy integration is purely imperative — every operation is a single REST call to Caddy's admin API over a unix socket, addressed by `@id` references in the live config. There is no desired-state reconciler; on-disk and in-memory config can drift on rollback failures.
 
-**v1 plan:** match disco's imperative model 1:1. Same socket path, same `@id` keys (`disco-project-{name}`, `disco-project-handler-{name}`, ...), same payload shapes. Cleanest path to feature parity, and keeps the door open to adopting an existing disco-managed Caddy instance.
+**v1 plan:** match the upstream imperative model 1:1 (single REST calls, same payload shapes), but use `cobalt-`-prefixed `@id` keys (`cobalt-project-{name}`, `cobalt-project-handler-{name}`, ...). Caddy treats `@id` as an opaque address, so the prefix change is invisible to Caddy itself — it only affects how *we* address routes when patching.
 
-**Later:** layer a separate reconciler (`internal/server/caddy/reconcile.go`) that periodically diffs desired-state against the admin API + on-disk config and converges. Will fix #97 properly. The `caddy.Client` interface is shaped to support this without rewriting callers.
+**Later:** layer a separate reconciler (`internal/server/caddy/reconcile.go`) that periodically diffs desired-state against the admin API + on-disk config and converges. Will fix the rollback-drift class of bugs properly. The `caddy.Client` interface is shaped to support this without rewriting callers.
 
 ## License
 
@@ -65,4 +65,4 @@ TBD. Will be decided before any external release. Until then the repo is private
 
 ## Reference
 
-- `tmp/disco-daemon/` and `tmp/disco-cli/` are shallow clones of upstream, gitignored, used as **behavior reference only**. We read upstream to understand *what* it does (request shapes, state machines, edge cases), then implement from notes — not by translating files. This keeps cobalt out of derivative-work territory under upstream's GPL-3.0.
+- `tmp/` holds shallow clones of the upstream tool we're replacing. Gitignored, used as **behavior reference only**. We read upstream to understand *what* it does (request shapes, state machines, edge cases), then implement from notes — not by translating files. This keeps cobalt out of derivative-work territory under upstream's GPL-3.0.

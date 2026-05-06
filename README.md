@@ -2,7 +2,7 @@
 
 Deployment glue for Docker Swarm + Caddy, built for Blue.
 
-A focused Go reimplementation of [Disco](https://letsdisco.dev) tailored to Blue's stack.
+A focused Go deployment daemon + CLI tailored to Blue's stack.
 
 ## Status
 
@@ -37,7 +37,7 @@ Single binary. CLI and daemon ship together — `cobalt` is the CLI, `cobalt ser
 cmd/cobalt/         # cobra CLI — all subcommands including 'server'
 internal/server/    # daemon — HTTP API, deploy flow, Caddy + Docker
 pkg/cobaltapi/      # request/response types shared CLI ↔ daemon
-tmp/                # gitignored — read-only checkouts of upstream disco
+tmp/                # gitignored — read-only upstream checkouts (reference)
 ```
 
 See [`docs/architecture.md`](docs/architecture.md) for the planned package layout.
