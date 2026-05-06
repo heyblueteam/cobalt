@@ -37,16 +37,23 @@ type Orchestrator struct {
 // failed / canceled) based on this method's return value.
 func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
 	log := o.Log.With("deployment_id", dep.ID, "project_id", dep.ProjectID, "number", dep.Number)
-	out := o.LogWriter
-	if out == nil {
-		out = io.Discard
-	}
 
 	project, err := o.getProject(ctx, dep.ProjectID)
 	if err != nil {
 		return fmt.Errorf("deploy: get project: %w", err)
 	}
 	log = log.With("project", project.Name)
+
+	// Open the deploy log file. If the caller (tests) supplied a writer
+	// directly, honor that; otherwise stream to disk under DataDir so
+	// /api/deployments/{id}/logs (lands in §9) can read it back later.
+	out, closeOut, err := o.openLog(*project, dep)
+	if err != nil {
+		log.Warn("could not open deploy log; falling back to discard", "error", err)
+		out = io.Discard
+		closeOut = func() {}
+	}
+	defer closeOut()
 
 	envVars, err := o.DB.EnvVarMap(ctx, project.ID)
 	if err != nil {
@@ -155,6 +162,24 @@ func (o *Orchestrator) getProject(ctx context.Context, id int64) (*store.Project
 		return nil, err
 	}
 	return &p, nil
+}
+
+// openLog returns a writer for the deploy's stdout/stderr capture, plus a
+// close function the caller defers. If LogWriter is set (tests), it's used
+// directly with a no-op close. Otherwise OpenDeployLog opens the file
+// under DataDir; if that fails, the caller falls back to io.Discard.
+func (o *Orchestrator) openLog(project store.Project, dep store.Deployment) (io.Writer, func(), error) {
+	if o.LogWriter != nil {
+		return o.LogWriter, func() {}, nil
+	}
+	if o.DataDir == "" {
+		return io.Discard, func() {}, nil
+	}
+	wc, err := OpenDeployLog(o.DataDir, project.Name, dep.Number)
+	if err != nil {
+		return nil, nil, err
+	}
+	return wc, func() { _ = wc.Close() }, nil
 }
 
 // ensureDeploymentNetwork creates the per-deployment network if missing
