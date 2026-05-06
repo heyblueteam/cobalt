@@ -39,6 +39,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	// Streaming
 	mux.HandleFunc("GET /api/deployments/{id}/output", h.DeploymentOutput)
 	mux.HandleFunc("GET /api/projects/{name}/logs", h.ProjectLogs)
+	mux.HandleFunc("GET /api/projects/{name}/run", h.Run)
 }
 
 // RegisterPublic attaches public (unauthenticated) routes onto mux.

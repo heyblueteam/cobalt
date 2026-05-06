@@ -214,12 +214,54 @@ Splitting into sub-PRs since §9 spans both "infrastructure that finally collabo
 
 ### 9b. HTTP API (handlers)
 
-- [ ] Resource handlers: deployments, projects, env, domains, scale, run, logs, volumes, github, meta, apikeys, invites
-- [ ] GitHub webhook receiver with `X-GitHub-Delivery` dedup (improvement F)
-- [ ] Server-Sent Events for log + deploy-output streams
-- [ ] WebSocket endpoint for `cobalt run` (TTY + resize)
-- [ ] GitHub manifest-flow endpoints (`/github-apps/{id}/create` and `/created`)
-- [ ] Handwritten API reference doc
+Split into 4 sub-PRs per `plans/cobalt-9b-http-api.md`. Bare JSON responses, `{"error": "..."}` for non-2xx. URL conventions: `/api/projects/{name}/...` for project-scoped resources, `/api/deployments/{id}` for deployments by global id, `/webhooks/github` and `/github-apps/{id}/...` public.
+
+#### 9b-i. Core resource CRUD ✓
+
+- [x] `pkg/cobaltapi/{project,env,domain,deployment}.go` — public types
+- [x] Handlers in `internal/server/api/{api,projects,env,domains,deployments,router}.go`
+- [x] 14 endpoints: projects (list/create/get/rename/delete), env (list/set/delete), domains (list/add/remove), deployments (list/create/get/cancel), scale wired through deploy queue
+- [x] Store gaps filled: `GetProjectByID`, env CRUD (`SetEnvVar`, `SetEnvVars` transactional, `GetEnvVar`, `DeleteEnvVar`), `ListDeploymentsForProject`
+- [x] Tests: 12 covering full CRUD, validation, redeploy enqueue, limit pagination, error body shape, 401 unauthenticated
+- [x] Live verified end-to-end with curl
+
+#### 9b-ii. GitHub webhook + manifest flow ✓
+
+- [x] `POST /webhooks/github` — HMAC-SHA256 signature verify per app's webhook_secret, `X-GitHub-Delivery` dedup with 10-min TTL (improvement F)
+- [x] Push events enqueue deploys for every project tracking `(repo, branch)`; branch deletes ignored
+- [x] Installation lifecycle (`created`/`deleted`) syncs `github_app_installations`; `installation_repositories` syncs the repo bridge
+- [x] Manifest flow: `POST /api/github-apps/create` returns `{id, url, expiresAt}`; `GET /github-apps/{id}/create` serves auto-submitting HTML form to GitHub; `GET /github-apps/{id}/created` validates state (constant-time) + exchanges code + persists app + redirects to install page
+- [x] `GET /api/github-apps`, `GET /api/github-app-repos`, `POST /api/github-apps/prune`
+- [x] Store gaps: pending_apps CRUD, github-app lookups by app_id and installation_id, repo bridge CRUD, `FindProjectsForRepoBranch`
+- [x] CLI flag `--public-host` for daemon's external hostname
+- [x] Tests: dedup unit (5 cases incl. TTL expiry); webhook integration (10 cases)
+
+#### 9b-iii-a. SSE streaming ✓
+
+- [x] `internal/server/api/sse.go` — `sseWriter` with data/heartbeat helpers, `X-Accel-Buffering: no` so reverse proxies don't buffer
+- [x] `GET /api/deployments/{id}/output` — streams the per-deployment log file from §8e, follows in-flight, tolerates missing file, `?offset=N` for resume, byte-offset `id:` events
+- [x] `GET /api/projects/{name}/logs` — shells out to `docker service logs --follow` against the live deployment's web service (`?service=` overrides)
+- [x] `internal/server/docker/logs.go` — `Client.ServiceLogs(ctx, name, follow, w)` wrapper
+- [x] Tests: 11 covering terminal/follow/missing/offset/service-not-deployed-yet + SSE primitive shape
+
+#### 9b-iii-b. WebSocket `cobalt run` ✓
+
+- [x] `pkg/cobaltapi/run.go` — `RunFrame` envelope (stdin/stdout/stderr/exit), `RunSubprotocol = "cobalt-run.v1"`
+- [x] `GET /api/projects/{name}/run` — WebSocket endpoint via `coder/websocket` (active fork of archived nhooyr)
+- [x] Container started with `docker.Run` against last successful deployment's image; attached to deployment network + cobalt-main
+- [x] Bidirectional streaming: WS read pump → stdin pipe; stdout/stderr pipes → WS frames
+- [x] `extraRunParams` from the resolved cobaltfile threaded through (PR #92 spirit — `--add-host host.docker.internal:host-gateway` works)
+- [x] Exit frame on container terminate; non-zero error → exit code 1 (real exit code plumbing deferred)
+- [x] Goroutine lifecycle: output pumps via WaitGroup, stdin pump leaks until WS close (avoids deadlock from `conn.Read` blocking)
+- [x] Query params: `command` (required), `service` (optional, defaults to "web")
+- [x] Tests: 7 covering stdin echo, stdout frames, stderr frames, non-zero exit code, missing command (400), no successful deploy (404), `resolveRunImage` defaults / overrides / extraRunParams threading
+- [ ] TTY/resize support — deferred (most uses of `cobalt run` are non-interactive)
+
+#### 9b-iv. Volumes / meta / apikeys / invites
+
+- [ ] Volume export / import (binary tar streaming)
+- [ ] Meta info / host / upgrade-stub
+- [ ] APIKey CRUD + invite create/accept
 
 ## 10. CLI subcommands (`cmd/cobalt`)
 
