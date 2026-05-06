@@ -34,7 +34,7 @@ If none resolve and the command requires a project, exit with a clear error poin
 
 ### Authentication
 
-The CLI sends `Authorization: Basic <base64(apiKey:)>` on every request. API keys are stored per-server in `~/.cobalt/config.json`.
+The CLI sends `Authorization: Bearer <apiKey>` on every request. API keys are stored per-server in `~/.cobalt/config.json`.
 
 ---
 
@@ -248,16 +248,6 @@ cobalt servers remove <name> [--yes]
 
 Manages the entries in `~/.cobalt/config.json`. (Was `discos` upstream.)
 
-## Tunnels *(pending decision — see plan §10 / Q1)*
-
-```
-cobalt tunnel open [--project <p>] [--service <s>] [--ttl <duration>]
-cobalt tunnel close <id>
-cobalt tunnel list [--project <p>] [--json]
-```
-
-Opens a temporary SSH-style tunnel into a running container. Returns connection string + password. Auto-expires unless kept alive.
-
 ---
 
 ## Removed from upstream
@@ -267,6 +257,10 @@ These will not exist in cobalt v1:
 - `postgres *` — Blue uses MySQL on dedicated DB hosts (db1/db2) via ProxySQL on each app server
 - `registries *` — Blue doesn't use private container registries
 - `syslog *` — Blue uses dozzle for logs
+- `tunnel *` — Blue debugs via `cobalt run` + dozzle, no SSH-into-container flow needed
+- `corsorigins *` — CORS handled in app code (verification pending — see plan §1)
+- `cgi` service type — Blue only runs long-lived services + crons
+- `keyvalues *` — env vars cover Blue's per-project storage needs
 
 ## Renamed from upstream
 
