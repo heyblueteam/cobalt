@@ -143,14 +143,18 @@ The blue line through everything. Splitting into 4 sub-PRs because §8 is too bi
 - [x] Pre-deploy validation (improvement G): project existence, cobaltfile parse if override provided. (Commit reachability deferred to 8b — needs the github clone path to be plumbed first.)
 - [x] Tests: state classifications, queue Enqueue (monotonic per-project numbers, independent across projects, optional fields), Cancel for queued/active/terminal, dispatcher (success/failure/skip-older/one-in-flight-per-project/cancel/parallel-across-projects), recovery
 
-### 8b. Build orchestration
+### 8b. Build orchestration ✓
 
-- [ ] Repo fetch: `git clone --depth=N` with installation token URL (uses §6 `CloneURL`)
-- [ ] Cobaltfile read + parse (uses §3)
-- [ ] Per-service image build (uses §5 `docker.Build`); parallel where safe
-- [ ] Build cache isolation (improvement E): `--cache-from`/`--cache-to` rooted at `/cobalt/data/buildkit-cache/{projectID}`
-- [ ] Build output streamed to per-deployment log file
-- [ ] Tests with fake docker runner + filesystem
+- [x] Migration `0004_deployment_cobaltfile_override.sql` — persists `--file` overrides so daemon restart between enqueue and pickup doesn't drop them
+- [x] `TokenProvider` (cache-or-mint via DB token columns); 5-min refresh margin from `InstallationToken.Valid`
+- [x] `Preparer` with `GitRunner` interface (production: `ExecGit` shells to `git`); fresh clone or fetch+set-url+checkout for existing workspaces; per-deploy commit override; per-deploy cobaltfile override
+- [x] `Builder` builds each unique image once (multiple services sharing an image cause one build); skips static-only services and `build:`-overriding services; propagates env vars as `--secret`
+- [x] Build cache isolation (improvement E): `BuildOpts.CacheDir` adds `--cache-from`/`--cache-to type=local` rooted at `{dataDir}/buildkit-cache/{projectID}`
+- [x] Store: `GetGithubApp`, `GetGithubAppInstallation`, `SetInstallationToken`, `CreateGithubApp`, `CreateGithubAppInstallation`, `ListEnvVars`, `EnvVarMap`
+- [x] Dockerfile: switched runtime from distroless → debian-slim with `git` and `docker-cli`
+- [x] Tests: 19 covering cache hit/miss, mint failure, project without installation, fresh clone, fetch path, commit override, cobaltfile override, token error propagation, image dedup, cache dir wiring, static-only skip, env-secret/no-cache propagation, unknown image, docker error
+- [ ] Build output streamed to per-deployment log file (lands in 8e)
+- [ ] Compose Preparer + Builder into a Runner the dispatcher uses (lands in 8c with the swap)
 
 ### 8c. Cutover + rollback
 

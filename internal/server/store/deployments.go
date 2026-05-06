@@ -11,15 +11,16 @@ import (
 
 // Deployment is a row from the deployments table.
 type Deployment struct {
-	ID         int64
-	ProjectID  int64
-	Number     int
-	Status     cobaltapi.State
-	CommitSHA  sql.NullString
-	NoCache    bool
-	CreatedAt  int64
-	StartedAt  sql.NullInt64
-	FinishedAt sql.NullInt64
+	ID                 int64
+	ProjectID          int64
+	Number             int
+	Status             cobaltapi.State
+	CommitSHA          sql.NullString
+	NoCache            bool
+	CobaltfileOverride sql.NullString
+	CreatedAt          int64
+	StartedAt          sql.NullInt64
+	FinishedAt         sql.NullInt64
 }
 
 // activeKeepImageStatuses is the set of statuses that keep a deployment's
@@ -124,12 +125,12 @@ func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) 
 	var d Deployment
 	var status string
 	err := db.QueryRowContext(ctx, `
-        SELECT id, project_id, number, status, commit_sha, no_cache,
+        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                created_at, started_at, finished_at
         FROM deployments WHERE id = ?
     `, id).Scan(
 		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+		&d.CobaltfileOverride, &d.CreatedAt, &d.StartedAt, &d.FinishedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -146,7 +147,7 @@ func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) 
 // per project.
 func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	rows, err := db.QueryContext(ctx, `
-        SELECT id, project_id, number, status, commit_sha, no_cache,
+        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                created_at, started_at, finished_at
         FROM deployments
         WHERE status = ?
@@ -168,7 +169,7 @@ func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {
 		args = append(args, string(s))
 	}
 	rows, err := db.QueryContext(ctx, `
-        SELECT id, project_id, number, status, commit_sha, no_cache,
+        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                created_at, started_at, finished_at
         FROM deployments WHERE status IN (`+placeholders(len(active))+`)
         ORDER BY project_id, number
@@ -187,7 +188,7 @@ func scanDeployments(rows *sql.Rows) ([]Deployment, error) {
 		var status string
 		if err := rows.Scan(
 			&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-			&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+			&d.CobaltfileOverride, &d.CreatedAt, &d.StartedAt, &d.FinishedAt,
 		); err != nil {
 			return nil, err
 		}

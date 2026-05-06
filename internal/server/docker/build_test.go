@@ -95,6 +95,42 @@ func TestBuild_DefaultContextDot(t *testing.T) {
 	}
 }
 
+func TestBuild_CacheDirAddsBothFlags(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if _, err := c.Build(context.Background(), BuildOpts{
+		ProjectName:      "api",
+		ImageName:        "default",
+		DeploymentNumber: 1,
+		CacheDir:         "/cobalt/data/buildkit-cache/7",
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	args := r.lastCall().Args
+	if !argSequence(args, "--cache-from", "type=local,src=/cobalt/data/buildkit-cache/7") {
+		t.Errorf("--cache-from missing or wrong: %v", args)
+	}
+	if !argSequence(args, "--cache-to", "type=local,dest=/cobalt/data/buildkit-cache/7,mode=max") {
+		t.Errorf("--cache-to missing or wrong: %v", args)
+	}
+}
+
+func TestBuild_NoCacheDirOmitsFlags(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	_, _ = c.Build(context.Background(), BuildOpts{
+		ProjectName: "api", ImageName: "default", DeploymentNumber: 1,
+	})
+	args := r.lastCall().Args
+	for _, w := range []string{"--cache-from", "--cache-to"} {
+		if argHas(args, w) {
+			t.Errorf("unexpected %q in %v", w, args)
+		}
+	}
+}
+
 func TestBuild_ErrorPropagates(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()

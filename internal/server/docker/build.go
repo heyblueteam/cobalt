@@ -17,6 +17,12 @@ type BuildOpts struct {
 	Context          string // build context dir
 	EnvSecrets       map[string]string
 	NoCache          bool
+	// CacheDir, when non-empty, is a per-project BuildKit local cache
+	// directory. We pass it as both `--cache-from type=local,src=...` and
+	// `--cache-to type=local,dest=...`. This isolates BuildKit's layer
+	// cache between projects, so two projects sharing a repo can't poison
+	// each other's builds (improvement E from the deploy-flow audit).
+	CacheDir string
 }
 
 // Build builds an image and tags it as InternalImageName(...).
@@ -51,6 +57,13 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		args = append(args, "--secret", "id="+k)
+	}
+
+	if opts.CacheDir != "" {
+		args = append(args,
+			"--cache-from", "type=local,src="+opts.CacheDir,
+			"--cache-to", "type=local,dest="+opts.CacheDir+",mode=max",
+		)
 	}
 
 	contextDir := opts.Context

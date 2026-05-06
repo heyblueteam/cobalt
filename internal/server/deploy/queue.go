@@ -54,12 +54,13 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (id int64, numb
 	}
 
 	res, err := tx.ExecContext(ctx, `
-        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, created_at)
-        VALUES (?, ?, ?, ?, ?, unixepoch())
+        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, cobaltfile_override, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, unixepoch())
     `,
 		req.ProjectID, number, string(cobaltapi.StateQueued),
 		nullableString(req.CommitSHA),
 		boolToInt(req.NoCache),
+		nullableString(req.CobaltfileOverride),
 	)
 	if err != nil {
 		return 0, 0, fmt.Errorf("deploy: insert deployment: %w", err)
