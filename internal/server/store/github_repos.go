@@ -104,6 +104,10 @@ func (db *DB) ListGithubReposForInstallation(ctx context.Context, installationID
 // (full_name, branch) combination. The webhook receiver uses this to
 // know which projects to enqueue deploys for after a push.
 //
+// A project with an empty branch ("" — not yet set) defaults to main or
+// master only, matching Disco's behavior. Explicitly-set branches must
+// match exactly.
+//
 // A push to a repo not tracked by any project returns an empty slice
 // without error — that's not unusual; users may grant the App access to
 // many repos but only deploy a subset.
@@ -111,8 +115,10 @@ func (db *DB) FindProjectsForRepoBranch(ctx context.Context, fullName, branch st
 	rows, err := db.QueryContext(ctx, `
         SELECT id, name, github_repo, branch, github_app_installation_id,
                created_at, updated_at
-        FROM projects WHERE github_repo = ? AND branch = ?
-    `, fullName, branch)
+        FROM projects
+        WHERE github_repo = ?
+          AND (branch = ? OR (branch = '' AND ? IN ('main', 'master')))
+    `, fullName, branch, branch)
 	if err != nil {
 		return nil, err
 	}
