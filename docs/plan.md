@@ -130,7 +130,7 @@ CLI surface follows `docs/cobalt-cli-commands.md`. All commands honor the projec
 - [ ] `cobalt init <user>@<host>` — bootstrap a server
 - [ ] `cobalt deploy [--commit] [--no-cache] [--file]`
 - [ ] `cobalt deployments list|cancel|output`
-- [ ] `cobalt projects list|add|remove|rename|transfer` (rename is cheap thanks to identity/display split — see architecture)
+- [ ] `cobalt projects list|add|remove|rename` (rename is cheap thanks to identity/display split — see architecture)
 - [ ] `cobalt env list|get|set|remove`
 - [ ] `cobalt domains list|add|remove`
 - [ ] `cobalt logs` (SSE stream, always-follow)
