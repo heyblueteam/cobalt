@@ -33,6 +33,8 @@ func newRootCmd() *cobra.Command {
 		newApikeysCmd(),
 		newMetaCmd(),
 		newVolumesCmd(),
+		newLogsCmd(),
+		newRunCmd(),
 	)
 
 	return cmd

@@ -34,10 +34,10 @@ func FollowDeployOutput(ctx context.Context, cl *client.Client, deploymentID int
 		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
-	return consumeSSE(ctx, resp.Body, out)
+	return ConsumeSSE(ctx, resp.Body, out)
 }
 
-func consumeSSE(ctx context.Context, r io.Reader, out io.Writer) error {
+func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1024<<10)
 
