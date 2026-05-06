@@ -19,6 +19,10 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/env", h.SetEnv)
 	mux.HandleFunc("DELETE /api/projects/{name}/env/{key}", h.DeleteEnv)
 
+	// Scale
+	mux.HandleFunc("GET /api/projects/{name}/scale", h.GetScale)
+	mux.HandleFunc("POST /api/projects/{name}/scale", h.SetScale)
+
 	// Domains
 	mux.HandleFunc("GET /api/projects/{name}/domains", h.ListDomains)
 	mux.HandleFunc("POST /api/projects/{name}/domains", h.AddDomain)
