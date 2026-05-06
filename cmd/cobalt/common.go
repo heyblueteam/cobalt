@@ -70,6 +70,8 @@ type projectClient struct {
 	project string
 }
 
+func (pc *projectClient) WrapProject() string { return pc.project }
+
 func newProjectClient(cmd *cobra.Command) (*projectClient, error) {
 	srv, project, err := resolveContext(cmd)
 	if err != nil {

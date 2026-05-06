@@ -23,6 +23,10 @@ func newRootCmd() *cobra.Command {
 		newServerCmd(),
 		newServersCmd(),
 		newUseCmd(),
+		newProjectsCmd(),
+		newEnvCmd(),
+		newDomainsCmd(),
+		newScaleCmd(),
 	)
 
 	return cmd
