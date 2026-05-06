@@ -189,16 +189,6 @@ cobalt github repos list [--json]
 
 Lists every repo accessible to any connected GitHub App.
 
-## Nodes
-
-```
-cobalt nodes list [--json]
-cobalt nodes add <user>@<host> [--identity-file <path>]
-cobalt nodes remove <node> [--yes]
-```
-
-`add` joins the host to the Docker Swarm cluster.
-
 ## Meta
 
 ```
@@ -261,6 +251,10 @@ These will not exist in cobalt v1:
 - `corsorigins *` — CORS handled in app code (verification pending — see plan §1)
 - `cgi` service type — Blue only runs long-lived services + crons
 - `keyvalues *` — env vars cover Blue's per-project storage needs
+
+## Deferred to post-v1
+
+- `nodes *` — Docker Swarm cluster-membership commands. Blue runs everything on a single host (`server.blue.cc`); multi-host swarms aren't used today. Will revisit if/when Blue splits services across hosts.
 
 ## Renamed from upstream
 

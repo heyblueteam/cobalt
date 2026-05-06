@@ -35,7 +35,7 @@ Cross-cutting conventions to lock in before we have many callers depending on th
 - [ ] SQLite driver (`modernc.org/sqlite` — pure Go, no CGO)
 - [ ] Migrations runner (`go:embed` plain SQL files in `migrations/`)
 - [ ] Connection lifecycle, WAL mode, busy timeout
-- [ ] Schema: `projects`, `deployments`, `env_vars`, `domains`, `apikeys`, `apikey_invites`, `apikey_usage`, `github_apps`, `github_app_installations`, `github_app_repos`, `pending_github_apps`, `nodes`, `command_runs`
+- [ ] Schema: `projects`, `deployments`, `env_vars`, `domains`, `apikeys`, `apikey_invites`, `apikey_usage`, `github_apps`, `github_app_installations`, `github_app_repos`, `pending_github_apps`, `command_runs`
 - [ ] CRUD methods per resource
 - [ ] AES-GCM env-value encryption at rest, key on disk in `--data-dir`
 - [ ] Tests against a temp-file SQLite
@@ -108,7 +108,7 @@ Async jobs the daemon runs on a schedule.
 
 ## 9. HTTP API (`internal/server/api`)
 
-- [ ] Resource handlers: deployments, projects, env, domains, scale, run, logs, volumes, github, nodes, meta, apikeys, invites
+- [ ] Resource handlers: deployments, projects, env, domains, scale, run, logs, volumes, github, meta, apikeys, invites
 - [ ] GitHub webhook receiver
 - [ ] Server-Sent Events for log + deploy-output streams
 - [ ] WebSocket endpoint for `cobalt run` (TTY + resize)
@@ -131,7 +131,6 @@ CLI surface follows `docs/cobalt-cli-commands.md`. All commands honor the projec
 - [ ] `cobalt run [--service] [--timeout]` (WebSocket-based, TTY support)
 - [ ] `cobalt scale list|get|set`
 - [ ] `cobalt github apps list|add|manage|prune` and `github repos list`
-- [ ] `cobalt nodes list|add|remove` (with `--identity-file`)
 - [ ] `cobalt meta info|upgrade|host` (with `--image`, `--dont-pull`)
 - [ ] `cobalt volumes list|export|import` (with `--output`, `--input`, `--force`)
 - [ ] `cobalt apikeys list|remove`
@@ -164,3 +163,4 @@ CLI surface follows `docs/cobalt-cli-commands.md`. All commands honor the projec
 - **CORS origins allowlist** — dropped, **with verification task in §1** to confirm against the api repo and `server.blue.cc` before cutover.
 - **CGI handler service type** — dropped. Blue runs only long-lived services + crons.
 - **Auth model** — Bearer tokens (`Authorization: Bearer <apiKey>`). No basic auth, no JWT.
+- **`nodes` (Swarm cluster membership)** — **deferred to post-v1**, not dropped. Blue runs everything on a single host (`server.blue.cc`); multi-host swarms are unused today. Add when Blue actually splits across hosts. Estimated effort when needed: ~200 LOC (SSH + `docker swarm join` shell-out) plus a `nodes` table in store and three CLI commands.
