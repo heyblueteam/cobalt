@@ -11,6 +11,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/heyblueteam/cobalt/internal/server/middleware"
+	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
@@ -27,14 +29,29 @@ func Run(ctx context.Context, cfg Config) error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("cobalt starting", "addr", cfg.Addr, "data_dir", cfg.DataDir)
 
+	db, err := store.Open(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
 	mux := http.NewServeMux()
+	// Public endpoints.
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, cobaltapi.Health{Status: "ok"})
 	})
+	// Authed endpoints will be registered under /api/ once individual handlers exist.
+	mux.Handle("/api/", middleware.BearerAuth(db.DB, log)(http.HandlerFunc(notFound)))
+
+	handler := middleware.RequestID(
+		middleware.Recover(log)(
+			middleware.Logger(log)(mux),
+		),
+	)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -55,4 +72,8 @@ func Run(ctx context.Context, cfg Config) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+func notFound(w http.ResponseWriter, _ *http.Request) {
+	http.Error(w, "not found", http.StatusNotFound)
 }

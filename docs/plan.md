@@ -19,12 +19,12 @@ Each section is roughly one porting unit (a self-contained PR or two). Order is 
 
 Cross-cutting conventions to lock in before we have many callers depending on them.
 
-- [ ] CLI flag conventions: `--yes` for destructive ops, `--json` on every list command
-- [ ] **Project context resolver** (issue cli#117 track 2): `--project` flag → `COBALT_PROJECT` env → `cobalt.json` in cwd → `cobalt use <name>` (default written to local CLI config)
-- [ ] Positional subjects, scope as flag: `cobalt projects add myapp`, not `--name myapp`
+- [ ] CLI flag conventions: `--yes` for destructive ops, `--json` on every list command (locked in spec; enforced as commands land)
+- [x] **Project context resolver** (issue cli#117 track 2): `--project` flag → `COBALT_PROJECT` env → `cobalt.json` in cwd → `currentProject` for the active server in cliconfig
+- [ ] Positional subjects, scope as flag: `cobalt projects add myapp`, not `--name myapp` (convention; enforced as commands land)
 - [ ] Standard error wrapping helper (`fmt.Errorf("step: %w", err)`) and a top-level `cobalt`-flavored error renderer
-- [ ] Daemon middleware: API-key auth (`Authorization: Bearer <apiKey>`), structured request logging, panic recovery, request ID
-- [ ] Local CLI config (`~/.cobalt/config.json`) with multi-server support and a `current_project` per server
+- [x] Daemon middleware: Bearer-token auth (`Authorization: Bearer <apiKey>`), structured request logging, panic recovery, request ID
+- [x] Local CLI config (`~/.cobalt/config.json`) with multi-server support and `CurrentProject` per server
 
 ### Pre-flight verifications
 
@@ -32,13 +32,13 @@ Cross-cutting conventions to lock in before we have many callers depending on th
 
 ## 2. Storage (`internal/server/store`)
 
-- [ ] SQLite driver (`modernc.org/sqlite` — pure Go, no CGO)
-- [ ] Migrations runner (`go:embed` plain SQL files in `migrations/`)
-- [ ] Connection lifecycle, WAL mode, busy timeout
-- [ ] Schema: `projects`, `deployments`, `env_vars`, `domains`, `apikeys`, `apikey_invites`, `apikey_usage`, `github_apps`, `github_app_installations`, `github_app_repos`, `pending_github_apps`, `command_runs`
-- [ ] CRUD methods per resource
-- [ ] AES-GCM env-value encryption at rest, key on disk in `--data-dir`
-- [ ] Tests against a temp-file SQLite
+- [x] SQLite driver (`modernc.org/sqlite` — pure Go, no CGO)
+- [x] Migrations runner (`go:embed` plain SQL files in `internal/server/store/migrations/`)
+- [x] Connection lifecycle, WAL mode, busy timeout, foreign keys ON, NORMAL sync
+- [x] Schema: `projects`, `deployments`, `env_vars`, `domains`, `apikeys`, `apikey_invites`, `github_apps`, `github_app_installations`, `github_app_repos`, `pending_github_apps`, `command_runs` (apikey_usage folded into `apikeys.last_used_at`)
+- [ ] CRUD methods per resource (added per-resource as endpoints land)
+- [ ] AES-GCM env-value encryption at rest, key on disk in `--data-dir` (added when env endpoint lands)
+- [x] Tests against a temp-file SQLite
 
 ## 3. Cobaltfile (`internal/server/cobaltfile`)
 

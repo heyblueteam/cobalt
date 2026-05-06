@@ -48,6 +48,7 @@ test/               (planned)   integration + e2e tests against real Docker/Cadd
 - **Logging**: `log/slog` with the JSON handler in production. Per-request fields (`project`, `deployment_id`, etc.) carried via context, not globals.
 - **Config**: stdlib `encoding/json` for `~/.cobalt/config.json`. Daemon config is CLI flags + environment variables only — no config file.
 - **HTTP**: stdlib `net/http` with Go 1.22+ pattern routing (`mux.HandleFunc("GET /path", ...)`). No third-party router.
+- **Go version**: 1.25 (required by `modernc.org/sqlite`).
 - **Errors**: `errors.Is`/`errors.As`, no panics in request paths, structured logging at the boundary.
 - **Database**: SQLite. Plain SQL migrations under `migrations/`, embedded via `go:embed`, applied at daemon startup.
 
