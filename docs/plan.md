@@ -44,12 +44,13 @@ Cross-cutting conventions to lock in before we have many callers depending on th
 
 Per-repo `cobalt.json` parser.
 
-- [ ] Service definition: `port`, `image`, `command`, `extraSwarmParams`, `extraRunParams`
-- [ ] Hook definitions: `hook:deploy:start:before`, `hook:deploy:start:after`
-- [ ] Cron service type (scheduled jobs run by daemon)
-- [ ] Static-site service type
-- [ ] Schema validation with actionable error messages
-- [ ] Golden-file tests covering every service type
+- [x] Service definition: `type`, `image`, `port`, `command`, `build`, `publicPath`, `publishedPorts`, `volumes`, `schedule`, `exposedInternally`, `timeout`, `health`, `extraSwarmParams`, `extraRunParams`
+- [x] Hook services validated: `hook:deploy:start:before`, `hook:deploy:start:after` must be type=command with non-empty command
+- [x] Cron service type with per-field cron schedule validation
+- [x] Static-site service type (publicPath + image-not-required logic)
+- [x] Default-image auto-injection mirrors upstream rule
+- [x] Schema validation with actionable error messages, strict unknown-field rejection
+- [x] Comprehensive tests: defaults, Blue's actual API/app shapes, all error paths
 
 ## 4. Caddy admin client (`internal/server/caddy`)
 
