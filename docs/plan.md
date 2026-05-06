@@ -13,61 +13,87 @@ Each section is roughly one porting unit (a self-contained PR or two). Order is 
 - [x] Dockerfile (distroless), `.dockerignore`
 - [x] GitHub Actions CI: vet, build, test (race), golangci-lint
 - [x] goreleaser config
-- [x] Architecture doc and command audit
-- [x] Plan doc
+- [x] Architecture doc, command audit, plan
 
-## 1. Storage (`internal/server/store`)
+## 1. Cross-cutting foundations
 
-- [ ] SQLite driver wired up (`modernc.org/sqlite` — pure Go, no CGO)
-- [ ] Migrations runner (`go:embed` + plain SQL files in `migrations/`)
+Cross-cutting conventions to lock in before we have many callers depending on them.
+
+- [ ] CLI flag conventions: `--yes` for destructive ops, `--json` on every list command
+- [ ] **Project context resolver** (issue cli#117 track 2): `--project` flag → `COBALT_PROJECT` env → `cobalt.json` in cwd → `cobalt use <name>` (default written to local CLI config)
+- [ ] Positional subjects, scope as flag: `cobalt projects add myapp`, not `--name myapp`
+- [ ] Standard error wrapping helper (`fmt.Errorf("step: %w", err)`) and a top-level `cobalt`-flavored error renderer
+- [ ] Daemon middleware: API-key auth (basic auth, `Authorization: Basic base64(apiKey:)`), structured request logging, panic recovery, request ID
+- [ ] Local CLI config (`~/.cobalt/config.json`) with multi-server support and a `current_project` per server
+
+## 2. Storage (`internal/server/store`)
+
+- [ ] SQLite driver (`modernc.org/sqlite` — pure Go, no CGO)
+- [ ] Migrations runner (`go:embed` plain SQL files in `migrations/`)
 - [ ] Connection lifecycle, WAL mode, busy timeout
-- [ ] Schema: `projects`, `deployments`, `env_vars`, `domains`, `apikeys`, `apikey_invites`, `github_apps`, `github_app_installations`, `github_app_repos`, `nodes`, `command_runs`
-- [ ] CRUD methods per resource (typed, no string SQL in callers)
-- [ ] Env-value encryption at rest (AES-GCM with a key stored on disk)
+- [ ] Schema: `projects`, `deployments`, `env_vars`, `domains`, `apikeys`, `apikey_invites`, `apikey_usage`, `github_apps`, `github_app_installations`, `github_app_repos`, `pending_github_apps`, `nodes`, `command_runs`, `tunnels`, `project_keyvalues` *(decision pending — see Q3)*
+- [ ] CRUD methods per resource
+- [ ] AES-GCM env-value encryption at rest, key on disk in `--data-dir`
 - [ ] Tests against a temp-file SQLite
 
-## 2. Cobaltfile (`internal/server/cobaltfile`)
+## 3. Cobaltfile (`internal/server/cobaltfile`)
 
-- [ ] Parser for `cobalt.json` at repo root
+Per-repo `cobalt.json` parser.
+
 - [ ] Service definition: `port`, `image`, `command`, `extraSwarmParams`, `extraRunParams`
 - [ ] Hook definitions: `hook:deploy:start:before`, `hook:deploy:start:after`
-- [ ] Cron and CGI handler types
+- [ ] Cron service type (scheduled jobs run by daemon)
+- [ ] CGI service type *(decision pending — see Q4)*
+- [ ] Static-site service type
 - [ ] Schema validation with actionable error messages
-- [ ] Golden-file tests
+- [ ] Golden-file tests covering every service type
 
-## 3. Caddy admin client (`internal/server/caddy`)
+## 4. Caddy admin client (`internal/server/caddy`)
 
-- [ ] HTTP client over Unix socket (`net.Dialer` + `http.Transport`)
+Imperative model matching upstream behavior, with `cobalt-` prefixed `@id` keys.
+
+- [ ] HTTP client over Unix socket
 - [ ] Initial-config writer (`/initconfig/config.json`)
-- [ ] Add / remove / patch project route by `@id` (`cobalt-project-{name}`)
-- [ ] Update domains for project (`cobalt-project-hosts-{name}`)
-- [ ] Swap upstream during deploy (`cobalt-project-handler-{name}`)
+- [ ] Add / remove / patch project route by `@id`
+- [ ] Update domains for project
+- [ ] Swap upstream during deploy (the deploy cutover)
 - [ ] Apex / www redirect helpers
 - [ ] Static-site `file_server` handler swap
 - [ ] Integration test against a real Caddy container
 
-## 4. Docker wrapper (`internal/server/docker`)
+## 5. Docker wrapper (`internal/server/docker`)
 
-- [ ] Build image via `docker build` shell-out (with `--no-cache` and `--secret` flags)
-- [ ] Swarm service create / update / remove
+- [ ] Build image (`--no-cache`, `--secret` for env-as-build-arg)
+- [ ] Swarm service create / update / remove / rolling update
 - [ ] Container create / run / exec for hooks and `cobalt run`
 - [ ] Volume create / inspect / export / import
-- [ ] Image cleanup of orphaned tags
+- [ ] Image cleanup of orphaned tags (background worker)
 - [ ] Pass-through for `extraSwarmParams` and `extraRunParams`
 - [ ] Tests with a mock docker CLI fixture
 
-## 5. GitHub App (`internal/server/github`)
+## 6. GitHub App (`internal/server/github`)
 
 - [ ] App JWT generation (RS256 with private key)
 - [ ] Installation access-token exchange + cache with TTL
 - [ ] Webhook signature verification (HMAC-SHA256, constant-time compare)
-- [ ] Push-event dispatch → enqueue deployment
-- [ ] Installation / repo listing API
+- [ ] Push event dispatch → enqueue deployment
+- [ ] Installation / repo listing
 - [ ] Repo fetch via `git clone` with installation token
 - [ ] Prune flow (sync local DB with GitHub state)
-- [ ] Tests with `httptest` mocking GitHub API
+- [ ] Tests with `httptest` mocking GitHub
 
-## 6. Deployment flow (`internal/server/deploy`)
+## 7. Background workers (`internal/server/worker`)
+
+Async jobs the daemon runs on a schedule.
+
+- [ ] Worker registry with cron-style scheduling
+- [ ] Tunnel cleanup (every minute — expire idle tunnels)
+- [ ] Tunnel orphan sweep (hourly)
+- [ ] Image cleanup (hourly — prune unused tagged images)
+- [ ] Project-level service crons (per-project schedules from cobalt.json)
+- [ ] Tests with a mock clock
+
+## 8. Deployment flow (`internal/server/deploy`)
 
 - [ ] State machine: `queued` → `fetching` → `building` → `swapping` → `success` / `failed`
 - [ ] Run before-deploy hook in a one-shot container
@@ -76,51 +102,83 @@ Each section is roughly one porting unit (a self-contained PR or two). Order is 
 - [ ] Run after-deploy hook
 - [ ] Rollback on failure: revert Caddy upstream, stop new service
 - [ ] Cancel running deployment
-- [ ] Per-deployment log stream into store
+- [ ] Per-deployment log stream into store + live SSE fan-out
 - [ ] Tests against mock docker + caddy
 
-## 7. HTTP API (`internal/server/api`)
+## 9. Tunnels (`internal/server/tunnels`)
 
-- [ ] API-key auth middleware
-- [ ] Structured request logging middleware (per-request `slog` fields)
-- [ ] Resource handlers: deployments, projects, env, domains, scale, run, logs, volumes, github, nodes, meta, apikeys, invites
+Temporary SSH-style access into a running container, used for debugging.
+
+- [ ] Endpoint to create a tunnel: spawn helper container, expose random port, generate password
+- [ ] Auto-expiry with keep-alive endpoint
+- [ ] Per-tunnel record in store (project, container, port, expiry)
+- [ ] CLI: `cobalt tunnel open <project>` returns connection string
+- [ ] Background sweeper (covered in §7)
+
+## 10. CGI handler service type (`internal/server/cgi`) *(pending Q4)*
+
+Only build if Blue has a CGI use case.
+
+- [ ] Reverse-proxy intercept that converts HTTP → CGI env + stdin
+- [ ] Parse CGI response from stdout (status line + headers + body)
+- [ ] One-shot container per request
+
+## 11. HTTP API (`internal/server/api`)
+
+- [ ] Resource handlers: deployments, projects, env, domains, scale, run, logs, volumes, github, nodes, meta, apikeys, invites, tunnels
 - [ ] GitHub webhook receiver
-- [ ] Server-Sent Events for log streaming
-- [ ] OpenAPI / handwritten reference doc
+- [ ] Server-Sent Events for log + deploy-output streams
+- [ ] WebSocket endpoint for `cobalt run` (TTY + resize)
+- [ ] Handwritten API reference doc
 
-## 8. CLI subcommands (`cmd/cobalt`)
+## 12. CLI subcommands (`cmd/cobalt`)
 
-- [ ] HTTP client (`internal/client`) wrapping `pkg/cobaltapi` types
+CLI surface follows `docs/cobalt-cli-commands.md`. All commands honor the project context resolver from §1. Destructive commands require `--yes` or interactive confirmation. List commands accept `--json`.
+
+- [ ] HTTP client (`internal/client`) wrapping `pkg/cobaltapi`
 - [ ] Local config (`internal/cliconfig`) for `~/.cobalt/config.json`
+- [ ] `cobalt use <project>` — set default project for current server
 - [ ] `cobalt init <user>@<host>` — bootstrap a server
-- [ ] `cobalt deploy` and `deploy output|list|cancel`
-- [ ] `cobalt projects list|add|remove`
+- [ ] `cobalt deploy [--commit] [--no-cache] [--file]`
+- [ ] `cobalt deployments list|cancel|output` (was `deploy:list/cancel/output`)
+- [ ] `cobalt projects list|add|remove|transfer` (`move` → `transfer`)
 - [ ] `cobalt env list|get|set|remove`
 - [ ] `cobalt domains list|add|remove`
-- [ ] `cobalt logs`
-- [ ] `cobalt run`
-- [ ] `cobalt scale get|set`
+- [ ] `cobalt logs` (SSE stream, always-follow)
+- [ ] `cobalt run [--service] [--timeout]` (WebSocket-based, TTY support)
+- [ ] `cobalt scale list|get|set` (added `list` for verb consistency)
 - [ ] `cobalt github apps list|add|manage|prune` and `github repos list`
-- [ ] `cobalt nodes list|add|remove`
-- [ ] `cobalt meta info|upgrade|host`
-- [ ] `cobalt volumes list|export|import`
+- [ ] `cobalt nodes list|add|remove` (with `--identity-file`)
+- [ ] `cobalt meta info|upgrade|host` (with `--image`, `--dont-pull`)
+- [ ] `cobalt volumes list|export|import` (with `--output`, `--input`, `--force`)
 - [ ] `cobalt apikeys list|remove`
-- [ ] `cobalt invite create|accept`
-- [ ] `cobalt servers list|remove`
+- [ ] `cobalt invite create|accept` (with `--show-only`)
+- [ ] `cobalt servers list|remove` (was `discos`)
+- [ ] `cobalt tunnel open <project>` *(if Q1 = yes)*
 
-## 9. Distribution
+## 13. Distribution
 
 - [ ] Docker image pushed to GHCR on tag (`ghcr.io/heyblueteam/cobalt`)
 - [ ] Homebrew tap formula in `heyblueteam/homebrew-tap`
 - [ ] `cobalt meta upgrade` pulls latest GHCR image and restarts
 - [ ] Release notes generated from conventional-commit messages
 
-## 10. Production cutover
+## 14. Production cutover
 
 - [ ] Side-by-side run on a low-risk service (dozzle) for 1–2 weeks
-- [ ] Cutover plan for `api` and `app-next` (the high-risk services)
-- [ ] Migration tool: import existing upstream sqlite state → cobalt schema
+- [ ] Cutover plan for `api` and `app-next`
+- [ ] Migration tool: import upstream sqlite state → cobalt schema
 - [ ] Plan for handing over Caddy state without downtime
 - [ ] Decommission upstream daemon
 - [ ] Update `/Users/manny/blue/docs/disco.md` references to point at cobalt
 - [ ] Decision on open-sourcing
+
+---
+
+## Open questions (interview pending)
+
+- **Q1** — Tunnels: keep? (debugging access into containers)
+- **Q2** — Project key-values: keep, fold into env vars, or drop entirely?
+- **Q3** — CORS origins allowlist: drop (assumed) — confirm
+- **Q4** — CGI handler service type: keep or drop?
+- **Q5** — Auth model: basic-auth only, or also JWT bearer tokens like upstream?
