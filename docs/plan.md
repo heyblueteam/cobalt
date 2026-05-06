@@ -112,10 +112,13 @@ Per the identity/display split, every docker service / container / network creat
 
 Async jobs the daemon runs on a schedule. Cron tasks are keyed by `project_id` so renames don't disturb the scheduler.
 
-- [ ] Worker registry with cron-style scheduling, id-keyed task table
-- [ ] Image cleanup (hourly — prune unused tagged images, filter by `cobalt.project.id`)
-- [ ] Project-level service crons (per-project schedules from cobalt.json)
-- [ ] Tests with a mock clock
+- [x] `Scheduler` wrapping `robfig/cron/v3` with slog logger, panic recovery, Start/Stop/Schedule/Remove
+- [x] Image cleanup task (logic) — sweep all projects, drop image tags whose deployment number is no longer active, log-and-continue on per-project failure
+- [x] Pending-GitHub-app cleanup task (logic) — drop rows past `expires_at` so abandoned manifest flows don't accumulate
+- [x] Store CRUD for the worker's needs: `ListProjects`, `CreateProject`, `GetProjectByName`, `RenameProject`, `DeleteProject`, `ActiveDeploymentNumbers`, `CreateDeployment`, `SetDeploymentStatus`, `DeleteExpiredPendingApps`
+- [x] Tests: scheduler (fires, removes, panics survived, Stop waits for in-flight, double-start no-op), image cleanup (active retained, non-active removed, per-project errors don't halt sweep, remove errors don't halt), pending-app cleanup, store CRUD against real sqlite
+- [ ] Project-level service crons (registered after each successful deploy from cobaltfile services with `type: cron`) — lands with §8 deploy flow
+- [ ] Wire the scheduler into `server.Run` (daemon startup) — lands with §9 API/wiring
 
 ## 8. Deployment flow (`internal/server/deploy`)
 
