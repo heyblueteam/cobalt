@@ -133,15 +133,15 @@ The blue line through everything. Splitting into 4 sub-PRs because §8 is too bi
 - **(G) Pre-deploy validation** — fail fast at API time on bad cobaltfile / unreachable commit / domain conflicts.
 - **(H) Deploy log rotation to disk** — upstream stores unbounded in DB.
 
-### 8a. State machine + queue
+### 8a. State machine + queue ✓
 
-- [ ] Status set: `queued`, `fetching`, `building`, `swapping`, `success`, `failed`, `canceled`, `skipped` (migration `0003` to add `skipped` to the CHECK)
-- [ ] Per-project FIFO: at most one deployment in `[fetching, building, swapping]` at any time
-- [ ] Newer queued supersedes older queued for same project (older → `skipped`)
-- [ ] Cancel: cancels context for the in-flight deploy; deferred rollback runs to clean up
-- [ ] Daemon-restart recovery: any deploy in `[fetching, building, swapping]` at startup → `failed`; queued deploys re-enqueued
-- [ ] Pre-deploy validation (improvement G): commit reachability via GitHub API, cobaltfile parse if `--file` provided
-- [ ] Tests with real sqlite + fake clock
+- [x] Status set: `queued`, `fetching`, `building`, `swapping`, `success`, `failed`, `canceled`, `skipped` (migration `0003` relaxes the CHECK constraint; app code is source of truth via `pkg/cobaltapi.State`)
+- [x] Per-project FIFO: dispatcher tracks `inflight map[projectID]CancelFunc`; only one deploy per project in flight
+- [x] Newer queued supersedes older queued for same project (older → `skipped`)
+- [x] Cancel: dispatcher cancels the runner's context; runner returns ctx.Err(); dispatcher writes `canceled` from the parent context
+- [x] Daemon-restart recovery: `RecoverOnBoot` marks any active deploy as `failed`; queued deploys re-picked-up on dispatcher's first sweep
+- [x] Pre-deploy validation (improvement G): project existence, cobaltfile parse if override provided. (Commit reachability deferred to 8b — needs the github clone path to be plumbed first.)
+- [x] Tests: state classifications, queue Enqueue (monotonic per-project numbers, independent across projects, optional fields), Cancel for queued/active/terminal, dispatcher (success/failure/skip-older/one-in-flight-per-project/cancel/parallel-across-projects), recovery
 
 ### 8b. Build orchestration
 

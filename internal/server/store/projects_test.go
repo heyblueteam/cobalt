@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -118,12 +120,12 @@ func TestActiveDeploymentNumbers(t *testing.T) {
 	pid, _ := db.CreateProject(ctx, Project{Name: "api", GithubRepo: "h/api", Branch: "main"})
 
 	// Insert deployments in various statuses.
-	for i, status := range []string{
-		DeploySuccess, // active
-		DeployBuilding, // active
-		DeployFailed,   // not active
-		DeployCanceled, // not active
-		DeployQueued,   // active
+	for i, status := range []cobaltapi.State{
+		cobaltapi.StateSuccess,  // keep image
+		cobaltapi.StateBuilding, // keep image
+		cobaltapi.StateFailed,   // not kept
+		cobaltapi.StateCanceled, // not kept
+		cobaltapi.StateQueued,   // keep image
 	} {
 		_, err := db.CreateDeployment(ctx, Deployment{
 			ProjectID: pid, Number: i + 1, Status: status,
@@ -138,7 +140,7 @@ func TestActiveDeploymentNumbers(t *testing.T) {
 		t.Fatalf("ActiveDeploymentNumbers: %v", err)
 	}
 	if len(got) != 3 {
-		t.Errorf("got %v, want 3 active", got)
+		t.Errorf("got %v, want 3 image-keeping deployments", got)
 	}
 }
 
@@ -149,13 +151,13 @@ func TestSetDeploymentStatus(t *testing.T) {
 
 	pid, _ := db.CreateProject(ctx, Project{Name: "api", GithubRepo: "h/api", Branch: "main"})
 	id, _ := db.CreateDeployment(ctx, Deployment{
-		ProjectID: pid, Number: 1, Status: DeployQueued,
+		ProjectID: pid, Number: 1, Status: cobaltapi.StateQueued,
 	})
 
-	if err := db.SetDeploymentStatus(ctx, id, DeployFetching); err != nil {
+	if err := db.SetDeploymentStatus(ctx, id, cobaltapi.StateFetching); err != nil {
 		t.Fatalf("set fetching: %v", err)
 	}
-	if err := db.SetDeploymentStatus(ctx, id, DeploySuccess); err != nil {
+	if err := db.SetDeploymentStatus(ctx, id, cobaltapi.StateSuccess); err != nil {
 		t.Fatalf("set success: %v", err)
 	}
 
@@ -167,7 +169,7 @@ func TestSetDeploymentStatus(t *testing.T) {
 	).Scan(&status, &startedAt, &finishedAt); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
-	if status != DeploySuccess {
+	if cobaltapi.State(status) != cobaltapi.StateSuccess {
 		t.Errorf("status: %q", status)
 	}
 	if startedAt == 0 {

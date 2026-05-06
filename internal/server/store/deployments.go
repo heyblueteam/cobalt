@@ -3,34 +3,18 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
-)
 
-// Deployment statuses. The set must stay in sync with the CHECK constraint
-// in 0001_init.sql.
-const (
-	DeployQueued    = "queued"
-	DeployFetching  = "fetching"
-	DeployBuilding  = "building"
-	DeploySwapping  = "swapping"
-	DeploySuccess   = "success"
-	DeployFailed    = "failed"
-	DeployCanceled  = "canceled"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
-
-// ActiveDeployStatuses is the set of statuses that should keep an image /
-// resource alive (i.e., the deployment is in progress or is currently
-// serving traffic).
-var ActiveDeployStatuses = []string{
-	DeployQueued, DeployFetching, DeployBuilding, DeploySwapping, DeploySuccess,
-}
 
 // Deployment is a row from the deployments table.
 type Deployment struct {
 	ID         int64
 	ProjectID  int64
 	Number     int
-	Status     string
+	Status     cobaltapi.State
 	CommitSHA  sql.NullString
 	NoCache    bool
 	CreatedAt  int64
@@ -38,19 +22,29 @@ type Deployment struct {
 	FinishedAt sql.NullInt64
 }
 
+// activeKeepImageStatuses is the set of statuses that keep a deployment's
+// image alive for image cleanup. It includes Queued (the deployment hasn't
+// started yet but might) plus all active states plus Success (the live
+// deployment).
+var activeKeepImageStatuses = []cobaltapi.State{
+	cobaltapi.StateQueued,
+	cobaltapi.StateFetching,
+	cobaltapi.StateBuilding,
+	cobaltapi.StateSwapping,
+	cobaltapi.StateSuccess,
+}
+
 // ActiveDeploymentNumbers returns the deployment numbers for a project
-// that are still in progress or serving traffic. Used by image cleanup
-// to know which image tags must be retained.
+// whose images must be retained — anything queued, in flight, or live.
 func (db *DB) ActiveDeploymentNumbers(ctx context.Context, projectID int64) ([]int, error) {
-	placeholders := strings.Repeat("?,", len(ActiveDeployStatuses))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, 0, len(ActiveDeployStatuses)+1)
+	args := make([]any, 0, len(activeKeepImageStatuses)+1)
 	args = append(args, projectID)
-	for _, s := range ActiveDeployStatuses {
-		args = append(args, s)
+	for _, s := range activeKeepImageStatuses {
+		args = append(args, string(s))
 	}
 	rows, err := db.QueryContext(ctx,
-		`SELECT number FROM deployments WHERE project_id = ? AND status IN (`+placeholders+`)`,
+		`SELECT number FROM deployments WHERE project_id = ? AND status IN (`+
+			placeholders(len(activeKeepImageStatuses))+`)`,
 		args...,
 	)
 	if err != nil {
@@ -68,39 +62,146 @@ func (db *DB) ActiveDeploymentNumbers(ctx context.Context, projectID int64) ([]i
 	return out, rows.Err()
 }
 
-// CreateDeployment inserts a new deployment row in the queued state. The
-// deployment number is supplied by the caller (it's a per-project monotonic
-// integer; the simplest source is `MAX(number) + 1` inside a transaction).
+// CreateDeployment inserts a new deployment row. The number must be the
+// next monotonic integer for this project; callers typically use
+// NextDeploymentNumber inside a transaction to allocate it.
 func (db *DB) CreateDeployment(ctx context.Context, d Deployment) (int64, error) {
 	res, err := db.ExecContext(ctx, `
         INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, created_at)
         VALUES (?, ?, ?, ?, ?, unixepoch())
-    `, d.ProjectID, d.Number, d.Status, d.CommitSHA, boolToInt(d.NoCache))
+    `, d.ProjectID, d.Number, string(d.Status), d.CommitSHA, boolToInt(d.NoCache))
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-// SetDeploymentStatus moves a deployment to a new status, optionally
-// stamping started_at or finished_at.
-func (db *DB) SetDeploymentStatus(ctx context.Context, id int64, status string) error {
-	var col string
-	switch status {
-	case DeployFetching:
-		col = "started_at"
-	case DeploySuccess, DeployFailed, DeployCanceled:
-		col = "finished_at"
+// NextDeploymentNumber returns max(number)+1 for a project, or 1 if none.
+// Run inside a transaction to avoid races with concurrent inserts.
+func (db *DB) NextDeploymentNumber(ctx context.Context, projectID int64) (int, error) {
+	var n sql.NullInt64
+	err := db.QueryRowContext(ctx,
+		`SELECT MAX(number) FROM deployments WHERE project_id = ?`,
+		projectID,
+	).Scan(&n)
+	if err != nil {
+		return 0, err
 	}
-	if col == "" {
-		_, err := db.ExecContext(ctx, `UPDATE deployments SET status = ? WHERE id = ?`, status, id)
+	if !n.Valid {
+		return 1, nil
+	}
+	return int(n.Int64) + 1, nil
+}
+
+// SetDeploymentStatus moves a deployment to a new status. started_at is
+// stamped on the first transition out of Queued; finished_at is stamped on
+// any transition into a terminal state.
+func (db *DB) SetDeploymentStatus(ctx context.Context, id int64, status cobaltapi.State) error {
+	switch {
+	case status == cobaltapi.StateFetching:
+		_, err := db.ExecContext(ctx,
+			`UPDATE deployments SET status = ?, started_at = COALESCE(started_at, unixepoch()) WHERE id = ?`,
+			string(status), id,
+		)
+		return err
+	case status.IsTerminal():
+		_, err := db.ExecContext(ctx,
+			`UPDATE deployments SET status = ?, finished_at = unixepoch() WHERE id = ?`,
+			string(status), id,
+		)
+		return err
+	default:
+		_, err := db.ExecContext(ctx,
+			`UPDATE deployments SET status = ? WHERE id = ?`,
+			string(status), id,
+		)
 		return err
 	}
-	_, err := db.ExecContext(ctx,
-		`UPDATE deployments SET status = ?, `+col+` = unixepoch() WHERE id = ?`,
-		status, id,
+}
+
+// GetDeployment returns a single deployment by id.
+func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) {
+	var d Deployment
+	var status string
+	err := db.QueryRowContext(ctx, `
+        SELECT id, project_id, number, status, commit_sha, no_cache,
+               created_at, started_at, finished_at
+        FROM deployments WHERE id = ?
+    `, id).Scan(
+		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
+		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
 	)
-	return err
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	d.Status = cobaltapi.State(status)
+	return &d, nil
+}
+
+// QueuedDeployments returns every queued deployment, ordered by
+// (project_id, number). Used by the dispatcher to pick the next deploy
+// per project.
+func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
+	rows, err := db.QueryContext(ctx, `
+        SELECT id, project_id, number, status, commit_sha, no_cache,
+               created_at, started_at, finished_at
+        FROM deployments
+        WHERE status = ?
+        ORDER BY project_id, number
+    `, string(cobaltapi.StateQueued))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeployments(rows)
+}
+
+// ActiveDeployments returns deployments currently in flight (any active
+// state). Used by daemon-restart recovery to mark them failed.
+func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {
+	active := cobaltapi.ActiveStatesList()
+	args := make([]any, 0, len(active))
+	for _, s := range active {
+		args = append(args, string(s))
+	}
+	rows, err := db.QueryContext(ctx, `
+        SELECT id, project_id, number, status, commit_sha, no_cache,
+               created_at, started_at, finished_at
+        FROM deployments WHERE status IN (`+placeholders(len(active))+`)
+        ORDER BY project_id, number
+    `, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanDeployments(rows)
+}
+
+func scanDeployments(rows *sql.Rows) ([]Deployment, error) {
+	var out []Deployment
+	for rows.Next() {
+		var d Deployment
+		var status string
+		if err := rows.Scan(
+			&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
+			&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		d.Status = cobaltapi.State(status)
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", n-1) + "?"
 }
 
 func boolToInt(b bool) int {
