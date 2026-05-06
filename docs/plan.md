@@ -88,14 +88,25 @@ Per the identity/display split, every docker service / container / network creat
 
 ## 6. GitHub App (`internal/server/github`)
 
-- [ ] App JWT generation (RS256 with private key)
-- [ ] Installation access-token exchange + cache with TTL
-- [ ] Webhook signature verification (HMAC-SHA256, constant-time compare)
-- [ ] Push event dispatch → enqueue deployment
-- [ ] Installation / repo listing
-- [ ] Repo fetch via `git clone` with installation token
-- [ ] Prune flow (sync local DB with GitHub state)
-- [ ] Tests with `httptest` mocking GitHub
+- [x] App JWT generation (RS256, stdlib crypto, supports PKCS#1 + PKCS#8 PEMs, 30s expiry)
+- [x] Installation access-token exchange (`MintInstallationToken`)
+- [x] `InstallationToken.Valid()` honors 5-min refresh margin
+- [x] Webhook signature verification (HMAC-SHA256, constant-time compare via `hmac.Equal`)
+- [x] Webhook event types (push, installation, installation_repositories) with parsers
+- [x] PushEvent helpers (`Branch()`, `IsBranchDelete()`)
+- [x] Manifest conversion (`ConvertManifestCode`)
+- [x] Manifest builder (`BuildManifest`) for App registration flow
+- [x] Installation URL builder (org vs user)
+- [x] Repo listing with pagination (`ListInstallationRepos`)
+- [x] App-still-exists probe (`AppExists`)
+- [x] Repo clone URL builder (`x-access-token` placeholder; never logged)
+- [x] Migration `0002_github_app_extras.sql`: token cache columns, app html_url + name, pending app expires_at
+- [x] Tests with `httptest`-backed fakeAPI: 25+ covering JWT round-trip, signature verify, parsers, pagination, error mapping
+- [ ] HTTP handlers for the manifest flow (lands in §9 API)
+- [ ] Webhook receiver wiring (lands in §9 + §8 deploy enqueue)
+- [ ] Token cache integrated with store (`MintInstallationToken` → `github_app_installations.access_token`)
+- [ ] Prune flow (lands with §10 CLI when we have the command)
+- [ ] Git clone helper using `CloneURL` (lands in §8 deploy fetch step)
 
 ## 7. Background workers (`internal/server/worker`)
 

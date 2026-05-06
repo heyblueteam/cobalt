@@ -15,13 +15,16 @@ func TestOpen_CreatesDBAndAppliesMigrations(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	// schema_migrations should record 0001_init.sql.
+	wantMigrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
 	var n int
 	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil {
 		t.Fatalf("count migrations: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("schema_migrations rows: got %d, want 1", n)
+	if n != len(wantMigrations) {
+		t.Errorf("schema_migrations rows: got %d, want %d", n, len(wantMigrations))
 	}
 
 	// A few representative tables should exist.
@@ -45,6 +48,10 @@ func TestOpen_IsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
 	}
+	var first int
+	if err := db1.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&first); err != nil {
+		t.Fatalf("first count: %v", err)
+	}
 	_ = db1.Close()
 
 	db2, err := Open(dir)
@@ -53,12 +60,12 @@ func TestOpen_IsIdempotent(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db2.Close() })
 
-	var n int
-	if err := db2.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&n); err != nil {
-		t.Fatalf("count: %v", err)
+	var second int
+	if err := db2.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&second); err != nil {
+		t.Fatalf("second count: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("migrations re-applied: got %d rows, want 1", n)
+	if first != second {
+		t.Errorf("migrations re-applied: first %d, second %d", first, second)
 	}
 }
 
