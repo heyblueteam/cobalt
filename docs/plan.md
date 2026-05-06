@@ -56,14 +56,17 @@ Per-repo `cobalt.json` parser.
 
 Imperative model matching upstream behavior, with `@id` keys keyed by the project's stable `id` (not its display name) per the identity/display split — see `docs/architecture.md`.
 
-- [ ] HTTP client over Unix socket
-- [ ] Initial-config writer (`/initconfig/config.json`)
-- [ ] Add / remove / patch project route by `@id` (`cobalt-project-{id}`)
-- [ ] Update domains for project (`cobalt-project-hosts-{id}`)
-- [ ] Swap upstream during deploy (`cobalt-project-handler-{id}`) — the deploy cutover
-- [ ] Apex / www redirect helpers
-- [ ] Static-site `file_server` handler swap
-- [ ] Integration test against a real Caddy container
+- [x] HTTP client over Unix socket (with `NewHTTPClient` for tests against `httptest.Server`)
+- [x] Initial-config writer (`/initconfig/config.json`) — standalone (`:443`) and behind-tunnel (`:80`) modes
+- [x] Add / remove / patch project route by `@id` (`cobalt-project-{id}`)
+- [x] Update domains for project (`cobalt-project-hosts-{id}`)
+- [x] Swap upstream during deploy (`cobalt-project-handler-{id}`) — the deploy cutover
+- [x] Static-site `file_server` handler swap (`/cobalt/srv/{name}/deployments/{n}`)
+- [x] Apex / www redirect helpers
+- [x] `SetDomainsForProject` high-level reconciler (create / update / remove based on existing state)
+- [x] `IsNotFound` helper for 404 distinction
+- [x] Tests: 18 covering wire shapes, lifecycle, errors, init config
+- [ ] Integration test against a real Caddy container (deferred to §12 cutover)
 
 ## 5. Docker wrapper (`internal/server/docker`)
 
