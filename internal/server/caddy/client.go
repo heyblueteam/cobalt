@@ -42,7 +42,21 @@ type Client struct {
 	// PlaceholderUpstream is the upstream new project routes start with.
 	// Defaults to DefaultPlaceholderUpstream.
 	PlaceholderUpstream string
+
+	// PatchVerifyBackoff is the per-attempt sleep schedule the
+	// VerifyServeService loop uses between PATCH and the verifying GET.
+	// nil means "use the package default" — production callers should
+	// leave this alone; tests shrink it to keep their runtime sane.
+	PatchVerifyBackoff []time.Duration
+
+	// StaticSitesDir is the on-disk root for static-deployment files
+	// Caddy serves via file_server. Empty means "use the package default"
+	// (DefaultStaticSitesDir, /cobalt/srv). Tests override this.
+	StaticSitesDir string
 }
+
+// DefaultStaticSitesDir is the on-disk root for static-deployment files.
+const DefaultStaticSitesDir = "/cobalt/srv"
 
 // NewUnixSocketClient returns a Client that dials Caddy on the given unix
 // socket. The HTTP "host" portion of the URL is fixed to "cobalt-caddy" by

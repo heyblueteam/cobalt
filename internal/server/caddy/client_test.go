@@ -44,18 +44,41 @@ func (f *fakeCaddy) handle(w http.ResponseWriter, r *http.Request) {
 	f.mu.Unlock()
 
 	// Special handling for /id/<name> — used by exists/get checks.
-	if id, ok := strings.CutPrefix(r.URL.Path, "/id/"); ok {
-		// Strip any sub-path like "/upstreams/0/dial".
-		if i := strings.Index(id, "/"); i >= 0 {
-			id = id[:i]
+	if rest, ok := strings.CutPrefix(r.URL.Path, "/id/"); ok {
+		// rest may be `<id>` or `<id>/<subpath>` (e.g. .../upstreams/0/dial).
+		id := rest
+		subpath := ""
+		if i := strings.Index(rest, "/"); i >= 0 {
+			id = rest[:i]
+			subpath = rest[i:]
 		}
 		switch r.Method {
 		case http.MethodGet:
-			if v, ok := f.byID[id]; ok {
+			v, ok := f.byID[id]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			// Special-case the upstreams[0].dial subpath that
+			// CurrentUpstream/VerifyServeService queries: parse the stored
+			// handler body and return just the dial as a JSON string.
+			if subpath == "/upstreams/0/dial" {
+				var doc struct {
+					Upstreams []struct {
+						Dial string `json:"dial"`
+					} `json:"upstreams"`
+				}
+				if err := json.Unmarshal(v, &doc); err == nil && len(doc.Upstreams) > 0 {
+					raw, _ := json.Marshal(doc.Upstreams[0].Dial)
+					w.Write(raw)
+					return
+				}
+				// If the stored value is already a bare JSON string (e.g.
+				// pre-populated by a test), return it as-is.
 				w.Write(v)
 				return
 			}
-			http.NotFound(w, r)
+			w.Write(v)
 			return
 		case http.MethodDelete:
 			if _, ok := f.byID[id]; !ok {

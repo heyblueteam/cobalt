@@ -160,6 +160,34 @@ func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	return scanDeployments(rows)
 }
 
+// GetLastSuccessfulDeployment returns the most recent successful
+// deployment for a project (highest number with status=success). Returns
+// ErrNotFound when no prior success exists — used by the deploy flow's
+// rollback path, where "no rollback target" means we don't try to revert.
+func (db *DB) GetLastSuccessfulDeployment(ctx context.Context, projectID int64) (*Deployment, error) {
+	var d Deployment
+	var status string
+	err := db.QueryRowContext(ctx, `
+        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
+               created_at, started_at, finished_at
+        FROM deployments
+        WHERE project_id = ? AND status = ?
+        ORDER BY number DESC
+        LIMIT 1
+    `, projectID, string(cobaltapi.StateSuccess)).Scan(
+		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
+		&d.CobaltfileOverride, &d.CreatedAt, &d.StartedAt, &d.FinishedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	d.Status = cobaltapi.State(status)
+	return &d, nil
+}
+
 // ActiveDeployments returns deployments currently in flight (any active
 // state). Used by daemon-restart recovery to mark them failed.
 func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {

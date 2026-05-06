@@ -156,20 +156,22 @@ The blue line through everything. Splitting into 4 sub-PRs because §8 is too bi
 - [ ] Build output streamed to per-deployment log file (lands in 8e)
 - [ ] Compose Preparer + Builder into a Runner the dispatcher uses (lands in 8c with the swap)
 
-### 8c. Cutover + rollback
+### 8c. Cutover + rollback ✓
 
-- [ ] Network create (per-deployment, id-keyed labels)
-- [ ] Service create per cobaltfile service (uses §5)
-- [ ] Healthcheck wait (improvement C): poll `docker service inspect --format '{{.UpdateStatus.State}}'` and per-task `Status.Health`; fall back to port-poll if no health command
-- [ ] Run before-deploy hook in one-shot container (with `extraRunParams` from cobaltfile per PR #92)
-- [ ] Two-phase commit (improvement D):
-  - Prepare: start new services, healthcheck, verify
-  - Commit: Caddy upstream swap (uses §4) **with PATCH verification (improvement A)**
-- [ ] Run after-deploy hook
-- [ ] On any failure during prepare: stop new services + new network, mark `failed`, no Caddy touch
-- [ ] On any failure during commit: revert Caddy to old upstream, stop new services, mark `failed`
-- [ ] Stop old services only AFTER `success` status set
-- [ ] Tests with fake docker + fake caddy
+- [x] Per-deployment network create (id-keyed labels via §5 helpers)
+- [x] `cobalt-main` shared overlay network for hooks (idempotent ensure)
+- [x] Service create per cobaltfile container service (uses §5 `CreateService`)
+- [x] Healthcheck wait (improvement C): `docker.WaitForServiceHealthy` reads per-task `.Status.Health == "healthy"`; falls back to task-state running for services without a healthcheck declared
+- [x] Hook runner: before/after one-shot containers on `cobalt-main` with `extraRunParams` (PR #92 baked in)
+- [x] Two-phase commit (improvement D): Phase 1 (prepare/build/start/healthcheck) leaves Caddy untouched; Phase 2 (commit) does the Caddy swap with PATCH verify (improvement A); on Phase 2 failure, revert + stop new services
+- [x] Caddy PATCH verification (improvement A): `caddy.VerifyServeService` does PATCH then GET-with-backoff (5 attempts, ~1.5s total); returns `*PatchVerifyError` on persistent drift
+- [x] Static-site / generator support: bind-mount-output approach to `c.StaticSiteDeploymentPath(...)`, `caddy.ServeStaticSite` swaps file_server handler
+- [x] After-hook runs after Caddy commit; failure logs warning but does NOT fail the deploy (matches upstream)
+- [x] Best-effort cleanup of old services after success (filter by deployment number prefix)
+- [x] Phase 1 failure path: stop new services we did start, no Caddy touch
+- [x] Phase 2 failure path: revert Caddy upstream to last successful deployment, stop new services
+- [x] First-deploy revert is a no-op (no `GetLastSuccessfulDeployment` target → log only)
+- [x] Tests: 9 covering happy path, prepare error, build error stops no services, healthcheck failure stops services + leaves Caddy untouched, Caddy verify failure reverts + cleans up, first-deploy-no-prior-success, after-hook failure does NOT roll back, no-web-service skips Caddy entirely, generator path with file_server swap
 
 ### 8d. Caddy convergence loop (improvement B)
 

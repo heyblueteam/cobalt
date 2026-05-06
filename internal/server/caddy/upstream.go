@@ -35,9 +35,20 @@ func (c *Client) ServeStaticSite(ctx context.Context, projectID int64, projectNa
 	body := map[string]any{
 		"@id":     ProjectHandlerID(projectID),
 		"handler": "file_server",
-		"root":    StaticSiteDeploymentPath(projectName, deploymentNumber),
+		"root":    c.StaticSiteDeploymentPath(projectName, deploymentNumber),
 	}
 	return c.do(ctx, http.MethodPatch, "/id/"+ProjectHandlerID(projectID), body, nil)
+}
+
+// StaticSiteDeploymentPath is the on-disk directory Caddy serves a static
+// deployment from, honoring c.StaticSitesDir. Generators write to this
+// path; ServeStaticSite makes Caddy read from it.
+func (c *Client) StaticSiteDeploymentPath(projectName string, deploymentNumber int) string {
+	root := c.StaticSitesDir
+	if root == "" {
+		root = DefaultStaticSitesDir
+	}
+	return filepath.Join(root, projectName, "deployments", strconv.Itoa(deploymentNumber))
 }
 
 // CurrentUpstream returns the host portion of the project's current
@@ -58,11 +69,11 @@ func (c *Client) CurrentUpstream(ctx context.Context, projectID int64) (string, 
 	return dial, nil
 }
 
-// StaticSiteDeploymentPath is the on-disk directory Caddy serves a static
-// deployment from. Exposed so the build flow can write files there before
-// asking Caddy to switch handlers.
+// StaticSiteDeploymentPath is the package-level form of the per-Client
+// helper, using DefaultStaticSitesDir. Prefer Client.StaticSiteDeploymentPath
+// when you have a Client handy — it honors per-Client overrides.
 func StaticSiteDeploymentPath(projectName string, deploymentNumber int) string {
-	return filepath.Join("/cobalt/srv", projectName, "deployments", strconv.Itoa(deploymentNumber))
+	return filepath.Join(DefaultStaticSitesDir, projectName, "deployments", strconv.Itoa(deploymentNumber))
 }
 
 // indexByte is a tiny helper kept here to avoid pulling in strings just for
