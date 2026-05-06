@@ -4,8 +4,8 @@ import (
 	"net/http"
 )
 
-// Register attaches every §9b-i route onto mux. All routes live under
-// /api/ and are expected to be wrapped in BearerAuth by the caller.
+// Register attaches every authenticated /api/ route onto mux. The mux
+// itself is expected to be wrapped in BearerAuth by the caller.
 func (h *Handler) Register(mux *http.ServeMux) {
 	// Projects
 	mux.HandleFunc("GET /api/projects", h.ListProjects)
@@ -29,4 +29,19 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/deployments", h.CreateDeployment)
 	mux.HandleFunc("GET /api/deployments/{id}", h.GetDeployment)
 	mux.HandleFunc("POST /api/deployments/{id}/cancel", h.CancelDeployment)
+
+	// GitHub apps & repos
+	mux.HandleFunc("GET /api/github-apps", h.ListGithubApps)
+	mux.HandleFunc("GET /api/github-app-repos", h.ListGithubAppRepos)
+	mux.HandleFunc("POST /api/github-apps/prune", h.PruneGithubApps)
+	mux.HandleFunc("POST /api/github-apps/create", h.CreatePendingApp)
+}
+
+// RegisterPublic attaches public (unauthenticated) routes onto mux.
+// These are the GitHub-facing endpoints that don't go through bearer
+// auth: webhook receiver and manifest-flow callbacks.
+func (h *Handler) RegisterPublic(mux *http.ServeMux) {
+	mux.HandleFunc("POST /webhooks/github", h.WebhookGithub)
+	mux.HandleFunc("GET /github-apps/{id}/create", h.ManifestForm)
+	mux.HandleFunc("GET /github-apps/{id}/created", h.ManifestCreated)
 }

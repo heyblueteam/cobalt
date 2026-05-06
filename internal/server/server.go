@@ -36,6 +36,12 @@ type Config struct {
 	// CaddySocket is the unix socket path for Caddy's admin API. Empty
 	// uses caddy.DefaultSocketPath.
 	CaddySocket string
+
+	// PublicHost is the daemon's public hostname (e.g. "cobalt.blue.cc").
+	// Used to build manifest URLs the user opens in a browser. Empty
+	// falls back to the request's Host header — fine for dev, but
+	// production should set this.
+	PublicHost string
 }
 
 // Run starts every daemon subsystem (storage, scheduler, dispatcher, HTTP
@@ -89,19 +95,22 @@ func Run(ctx context.Context, cfg Config) error {
 	defer sched.Stop()
 
 	apiMux := http.NewServeMux()
-	apiHandler := &api.Handler{
+	apiHandler := api.NewHandler(api.HandlerOpts{
 		DB:         db,
 		Caddy:      caddyCli,
+		GitHub:     githubCli,
 		Queue:      queue,
 		Dispatcher: dispatcher,
 		Log:        log,
-	}
+		PublicHost: cfg.PublicHost,
+	})
 	apiHandler.Register(apiMux)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, cobaltapi.Health{Status: "ok"})
 	})
+	apiHandler.RegisterPublic(mux)
 	mux.Handle("/api/", middleware.BearerAuth(db.DB, log)(apiMux))
 
 	handler := middleware.RequestID(

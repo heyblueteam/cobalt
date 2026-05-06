@@ -12,22 +12,68 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
+	"github.com/heyblueteam/cobalt/internal/server/github"
 	"github.com/heyblueteam/cobalt/internal/server/middleware"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
 
 // Handler is the per-package handler set. Constructor takes everything
-// the resource handlers depend on; tests inject fakes via the same
-// constructor.
+// the resource handlers depend on; tests inject fakes via NewHandler.
 type Handler struct {
 	DB         *store.DB
 	Caddy      *caddy.Client
+	GitHub     *github.Client
+	Queue      *deploy.Queue
+	Dispatcher *deploy.Dispatcher
+	Dedup      *webhookDedup
+	Log        *slog.Logger
+	// PublicHost is the daemon's public hostname (e.g. "cobalt.blue.cc").
+	// Used to build manifest URLs. Empty falls back to the request's
+	// Host header — fine for dev, but real deploys should set it.
+	PublicHost string
+}
+
+// HandlerOpts is the constructor input for NewHandler.
+type HandlerOpts struct {
+	DB         *store.DB
+	Caddy      *caddy.Client
+	GitHub     *github.Client
 	Queue      *deploy.Queue
 	Dispatcher *deploy.Dispatcher
 	Log        *slog.Logger
+	PublicHost string
+
+	// WebhookDedupTTL controls the in-memory dedup window for
+	// X-GitHub-Delivery. Zero means "use the package default" (10m).
+	WebhookDedupTTL time.Duration
+}
+
+// DefaultWebhookDedupTTL is the default lookback for X-GitHub-Delivery
+// dedup. GitHub's retry storms are over within seconds; 10 minutes is
+// plenty of cushion.
+const DefaultWebhookDedupTTL = 10 * time.Minute
+
+// NewHandler constructs a Handler with all the wiring (notably the
+// webhook dedup map) ready for use.
+func NewHandler(opts HandlerOpts) *Handler {
+	ttl := opts.WebhookDedupTTL
+	if ttl == 0 {
+		ttl = DefaultWebhookDedupTTL
+	}
+	return &Handler{
+		DB:         opts.DB,
+		Caddy:      opts.Caddy,
+		GitHub:     opts.GitHub,
+		Queue:      opts.Queue,
+		Dispatcher: opts.Dispatcher,
+		Dedup:      newWebhookDedup(ttl),
+		Log:        opts.Log,
+		PublicHost: opts.PublicHost,
+	}
 }
 
 // errorResponse is the body of every non-2xx response.
