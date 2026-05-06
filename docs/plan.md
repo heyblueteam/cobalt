@@ -54,24 +54,29 @@ Per-repo `cobalt.json` parser.
 
 ## 4. Caddy admin client (`internal/server/caddy`)
 
-Imperative model matching upstream behavior, with `cobalt-` prefixed `@id` keys.
+Imperative model matching upstream behavior, with `@id` keys keyed by the project's stable `id` (not its display name) per the identity/display split — see `docs/architecture.md`.
 
 - [ ] HTTP client over Unix socket
 - [ ] Initial-config writer (`/initconfig/config.json`)
-- [ ] Add / remove / patch project route by `@id`
-- [ ] Update domains for project
-- [ ] Swap upstream during deploy (the deploy cutover)
+- [ ] Add / remove / patch project route by `@id` (`cobalt-project-{id}`)
+- [ ] Update domains for project (`cobalt-project-hosts-{id}`)
+- [ ] Swap upstream during deploy (`cobalt-project-handler-{id}`) — the deploy cutover
 - [ ] Apex / www redirect helpers
 - [ ] Static-site `file_server` handler swap
 - [ ] Integration test against a real Caddy container
 
 ## 5. Docker wrapper (`internal/server/docker`)
 
+Per the identity/display split, every docker service / container / network created by cobalt carries **both** labels:
+- `cobalt.project.id={id}` — stable, used for every internal lookup / filter
+- `cobalt.project.name={name}` — display, for humans running `docker ps --filter`
+
 - [ ] Build image (`--no-cache`, `--secret` for env-as-build-arg)
-- [ ] Swarm service create / update / remove / rolling update
-- [ ] Container create / run / exec for hooks and `cobalt run`
+- [ ] Swarm service create / update / remove / rolling update with both labels
+- [ ] Container create / run / exec for hooks and `cobalt run` with both labels
+- [ ] Lookups (`list_services_for_project`, `list_networks_for_project`, etc.) filter by `cobalt.project.id`
 - [ ] Volume create / inspect / export / import
-- [ ] Image cleanup of orphaned tags (background worker)
+- [ ] Image cleanup of orphaned tags (background worker, id-keyed query)
 - [ ] Pass-through for `extraSwarmParams` and `extraRunParams`
 - [ ] Tests with a mock docker CLI fixture
 
@@ -88,10 +93,10 @@ Imperative model matching upstream behavior, with `cobalt-` prefixed `@id` keys.
 
 ## 7. Background workers (`internal/server/worker`)
 
-Async jobs the daemon runs on a schedule.
+Async jobs the daemon runs on a schedule. Cron tasks are keyed by `project_id` so renames don't disturb the scheduler.
 
-- [ ] Worker registry with cron-style scheduling
-- [ ] Image cleanup (hourly — prune unused tagged images)
+- [ ] Worker registry with cron-style scheduling, id-keyed task table
+- [ ] Image cleanup (hourly — prune unused tagged images, filter by `cobalt.project.id`)
 - [ ] Project-level service crons (per-project schedules from cobalt.json)
 - [ ] Tests with a mock clock
 
@@ -125,7 +130,7 @@ CLI surface follows `docs/cobalt-cli-commands.md`. All commands honor the projec
 - [ ] `cobalt init <user>@<host>` — bootstrap a server
 - [ ] `cobalt deploy [--commit] [--no-cache] [--file]`
 - [ ] `cobalt deployments list|cancel|output`
-- [ ] `cobalt projects list|add|remove|transfer`
+- [ ] `cobalt projects list|add|remove|rename|transfer` (rename is cheap thanks to identity/display split — see architecture)
 - [ ] `cobalt env list|get|set|remove`
 - [ ] `cobalt domains list|add|remove`
 - [ ] `cobalt logs` (SSE stream, always-follow)

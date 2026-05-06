@@ -52,11 +52,26 @@ test/               (planned)   integration + e2e tests against real Docker/Cadd
 - **Errors**: `errors.Is`/`errors.As`, no panics in request paths, structured logging at the boundary.
 - **Database**: SQLite. Plain SQL migrations under `migrations/`, embedded via `go:embed`, applied at daemon startup.
 
+## Identity vs display
+
+A project has two names: a **stable identifier** (its `id`) and a **display name** (its `name`). The identifier never changes; the display name is mutable via `cobalt projects rename`.
+
+The split exists so renaming a project is cheap. Upstream conflates the two — the Caddy routes, docker labels used for lookup, and worker keys are all keyed by the project's display name, so renaming would require rewriting all of them. We avoid that by keying internal plumbing on `id` from day one.
+
+Where each form is used:
+
+- **Identity (`project.id`)** — DB foreign keys, Caddy `@id` route keys (`cobalt-project-{id}`, `cobalt-project-handler-{id}`, `cobalt-project-hosts-{id}`), the docker label `cobalt.project.id` used to look up services / networks / containers, worker task keys, image-cleanup filters.
+- **Display (`project.name`)** — API URL paths (`/api/projects/{name}`), CLI output, docker service names (`{name}-{n}-{svc}`), docker network names (`cobalt-project-{name}-{n}`), image tags (`cobalt/project-{name}-{img}:{n}`), filesystem (`/cobalt/data/projects/{name}/`), the docker label `cobalt.project.name` used for human-facing `docker ps --filter`.
+
+A rename then collapses to: a UNIQUE check, an `UPDATE projects SET name = ?`, `os.Rename` on the project directory, and an event. Live services keep their old display name in their `cobalt.project.name` label and on disk until next deploy recreates them — same staleness model as a not-yet-rebuilt image tag, and acceptable.
+
+Reference: upstream design discussion in [disco-daemon issue #101](https://github.com/letsdiscodev/disco-daemon/issues/101).
+
 ## Caddy reconciler
 
 The upstream tool's Caddy integration is purely imperative — every operation is a single REST call to Caddy's admin API over a unix socket, addressed by `@id` references in the live config. There is no desired-state reconciler; on-disk and in-memory config can drift on rollback failures.
 
-**v1 plan:** match the upstream imperative model 1:1 (single REST calls, same payload shapes), but use `cobalt-`-prefixed `@id` keys (`cobalt-project-{name}`, `cobalt-project-handler-{name}`, ...). Caddy treats `@id` as an opaque address, so the prefix change is invisible to Caddy itself — it only affects how *we* address routes when patching.
+**v1 plan:** match the upstream imperative model 1:1 (single REST calls, same payload shapes), but key `@id`s by the project's stable id (`cobalt-project-{id}`, `cobalt-project-handler-{id}`, `cobalt-project-hosts-{id}`). Caddy treats `@id` as an opaque address, so this is invisible to Caddy — it just means renames don't have to rewrite Caddy state.
 
 **Later:** layer a separate reconciler (`internal/server/caddy/reconcile.go`) that periodically diffs desired-state against the admin API + on-disk config and converges. Will fix the rollback-drift class of bugs properly. The `caddy.Client` interface is shaped to support this without rewriting callers.
 

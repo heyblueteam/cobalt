@@ -114,13 +114,15 @@ Writes `current_project` into `~/.cobalt/config.json` for the active server entr
 cobalt projects list [--json]
 cobalt projects add <name> --github <org/repo> --branch <branch> [--domain <d>]
 cobalt projects remove <name> [--yes]
+cobalt projects rename <old> <new>
 cobalt projects transfer <name> --from <server> --to <server>
 ```
 
 Notes:
 - `add` takes `<name>` as positional. `--github` and `--branch` are required.
 - `remove` prompts for confirmation unless `--yes`.
-- `transfer` (was `move` upstream) avoids collision with a future `rename` command.
+- `rename` is cheap: only `projects.name` and the project's filesystem directory move. Caddy state, docker labels (id-keyed), and worker task keys are unaffected. Live docker service names keep the old display until the next deploy recreates them. See `docs/architecture.md` for the identity vs display rule.
+- `transfer` (was `move` upstream) is for cross-server migration, distinct from rename.
 
 ## Deployments
 
@@ -260,7 +262,7 @@ These will not exist in cobalt v1:
 
 | Upstream | Cobalt | Reason |
 |---|---|---|
-| `disco projects:move` | `cobalt projects transfer` | avoids future `projects rename` collision |
+| `disco projects:move` | `cobalt projects transfer` | avoids `projects rename` collision (rename is now a real command) |
 | `disco deploy:list / deploy:cancel / deploy:output` | `cobalt deployments list / cancel / output` | `deploy` stays the action verb; `deployments` is the noun-topic |
 | `disco discos list / remove` | `cobalt servers list / remove` | "discos" was self-referential; "servers" reads naturally |
 | `disco scale` (no list) | `cobalt scale list / get / set` | rounds out CRUD verbs for consistency |
