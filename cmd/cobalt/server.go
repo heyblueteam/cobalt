@@ -28,6 +28,7 @@ subcommands of the same binary, not by running 'cobalt server' directly.`,
 
 	cmd.Flags().StringVar(&cfg.Addr, "addr", ":80", "HTTP listen address")
 	cmd.Flags().StringVar(&cfg.DataDir, "data-dir", "/cobalt/data", "directory for sqlite db and project state")
+	cmd.Flags().StringVar(&cfg.CaddySocket, "caddy-socket", "", "Caddy admin unix socket path (empty = default /cobalt/caddy-socket/caddy.sock)")
 
 	return cmd
 }

@@ -5,13 +5,13 @@ import (
 	"log/slog"
 
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/store"
 )
 
 // ProjectLister returns every cobalt-managed project. Implemented by
-// store.DB; defined as an interface here to keep the worker package
-// loosely coupled and easily testable.
+// *store.DB; defined as an interface here so tests can substitute a fake.
 type ProjectLister interface {
-	ListProjects(ctx context.Context) ([]Project, error)
+	ListProjects(ctx context.Context) ([]store.Project, error)
 }
 
 // DeploymentNumberLister returns the deployment numbers that should
@@ -19,15 +19,6 @@ type ProjectLister interface {
 // running / serving). store.DB.ActiveDeploymentNumbers satisfies this.
 type DeploymentNumberLister interface {
 	ActiveDeploymentNumbers(ctx context.Context, projectID int64) ([]int, error)
-}
-
-// Project is the worker's local view of a project — just enough fields to
-// build image tags and labels. Mirrors store.Project's relevant fields so
-// the worker doesn't import store directly (avoids a tight coupling that
-// makes mocking harder).
-type Project struct {
-	ID   int64
-	Name string
 }
 
 // ImageRemover is the docker operation the cleanup job uses. We define

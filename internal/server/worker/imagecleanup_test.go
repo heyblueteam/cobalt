@@ -8,14 +8,15 @@ import (
 	"testing"
 
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/store"
 )
 
 type fakeProjectLister struct {
-	projects []Project
+	projects []store.Project
 	err      error
 }
 
-func (f *fakeProjectLister) ListProjects(_ context.Context) ([]Project, error) {
+func (f *fakeProjectLister) ListProjects(_ context.Context) ([]store.Project, error) {
 	return f.projects, f.err
 }
 
@@ -60,7 +61,7 @@ func TestCleanupImages_RemovesNonActiveTags(t *testing.T) {
 	t.Parallel()
 
 	projects := &fakeProjectLister{
-		projects: []Project{{ID: 1, Name: "api"}},
+		projects: []store.Project{{ID: 1, Name: "api"}},
 	}
 	deploys := &fakeDeployLister{
 		byProject: map[int64][]int{1: {7, 8}}, // 7 and 8 are still active
@@ -101,7 +102,7 @@ func TestCleanupImages_RemovesNonActiveTags(t *testing.T) {
 func TestCleanupImages_NoActiveKeepsNothing(t *testing.T) {
 	t.Parallel()
 
-	projects := &fakeProjectLister{projects: []Project{{ID: 1, Name: "api"}}}
+	projects := &fakeProjectLister{projects: []store.Project{{ID: 1, Name: "api"}}}
 	deploys := &fakeDeployLister{byProject: map[int64][]int{1: nil}}
 	images := &fakeImageOps{
 		byProject: map[string][]docker.ImageInfo{
@@ -124,7 +125,7 @@ func TestCleanupImages_PerProjectFailureSkipsNotHalts(t *testing.T) {
 	t.Parallel()
 
 	projects := &fakeProjectLister{
-		projects: []Project{{ID: 1, Name: "api"}, {ID: 2, Name: "web"}},
+		projects: []store.Project{{ID: 1, Name: "api"}, {ID: 2, Name: "web"}},
 	}
 	// API fails to list deploys; web succeeds.
 	deploys := &fakeDeployLister{
@@ -174,7 +175,7 @@ func (e *errOnFirstDeployLister) ActiveDeploymentNumbers(ctx context.Context, pr
 func TestCleanupImages_RemoveErrorContinues(t *testing.T) {
 	t.Parallel()
 
-	projects := &fakeProjectLister{projects: []Project{{ID: 1, Name: "api"}}}
+	projects := &fakeProjectLister{projects: []store.Project{{ID: 1, Name: "api"}}}
 	deploys := &fakeDeployLister{byProject: map[int64][]int{1: nil}}
 	images := &fakeImageOps{
 		byProject: map[string][]docker.ImageInfo{

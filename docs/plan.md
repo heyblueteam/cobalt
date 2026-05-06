@@ -189,19 +189,36 @@ Cleaner design than the original plan: instead of a separate `caddy_desired_stat
 - [x] Tests: 11 covering in-sync no-op, drift correction, missing-route recreate, static-site recreate via `ServeStaticSite`, static-site drift skipped (no cheap probe), no-last-success skip, missing-resolved-cobaltfile skip, no-domains skip, no-web-service skip, per-project error continues sweep, list-projects error bubbles
 - [ ] Wire reconciler into scheduler (`@every 30s`) on daemon startup — lands with §9 wiring
 
-### 8e. Per-deployment log rotation (improvement H)
+### 8e. Per-deployment log rotation (improvement H) ✓
 
-- [ ] Logs written to `/cobalt/data/logs/deployments/{project_name}/{n}.log` (using project display name; on rename, leave old logs in place)
-- [ ] Rotate to gzip when file exceeds 50MB or deployment is older than 30 days
-- [ ] API serves logs by streaming the file (with offset support for SSE follow)
-- [ ] Lands as a follow-up; not blocking 8a–8d
+- [x] `deploy.DeployLogPath` / `OpenDeployLog`: per-deployment append-mode file at `{dataDir}/logs/deployments/{name}/{n}.log`
+- [x] Orchestrator `openLog` helper: uses `LogWriter` if set (tests), otherwise opens the file under DataDir, fallback to `io.Discard` if open fails
+- [x] `worker.RotateDeployLogs`: per-cycle, gzips `.log` older than 30d, purges `.log.gz` older than 1y, atomic via tmp+rename
+- [x] Per-file failures logged + skipped — one bad file doesn't halt
+- [x] Tests covering rotate / purge / decompress round-trip / missing-root / defaults
+- [ ] API endpoint to stream a deploy's log file (SSE follow with offset) — lands with §9b
 
-## 9. HTTP API (`internal/server/api`)
+## 9. HTTP API + daemon wiring
+
+Splitting into sub-PRs since §9 spans both "infrastructure that finally collaborates" and "the entire CLI surface area".
+
+### 9a. Daemon wiring ✓
+
+- [x] `server.Run` opens store, runs `RecoverOnBoot`, constructs docker / caddy / github clients
+- [x] Wires `deploy.Orchestrator` (Preparer + Builder + tokens) and starts `deploy.Dispatcher`
+- [x] `worker.Scheduler` registers all 4 periodic tasks: image cleanup `@hourly`, pending-app cleanup `@every 10m`, Caddy reconcile `@every 30s`, deploy log rotation `@daily`
+- [x] CLI flag `--caddy-socket` (defaults to `caddy.DefaultSocketPath`)
+- [x] Shutdown reverses order: HTTP server → dispatcher → scheduler → store; ctx cancellation propagates everywhere
+- [x] Worker `ProjectLister` and `ListProjects` aligned with `*store.DB` (one canonical `Project` struct, removed worker-local mirror)
+- [x] Live smoke-tested: daemon boots cleanly, all subsystems log "started", `/healthz` 200, clean shutdown
+
+### 9b. HTTP API (handlers)
 
 - [ ] Resource handlers: deployments, projects, env, domains, scale, run, logs, volumes, github, meta, apikeys, invites
-- [ ] GitHub webhook receiver
+- [ ] GitHub webhook receiver with `X-GitHub-Delivery` dedup (improvement F)
 - [ ] Server-Sent Events for log + deploy-output streams
 - [ ] WebSocket endpoint for `cobalt run` (TTY + resize)
+- [ ] GitHub manifest-flow endpoints (`/github-apps/{id}/create` and `/created`)
 - [ ] Handwritten API reference doc
 
 ## 10. CLI subcommands (`cmd/cobalt`)
