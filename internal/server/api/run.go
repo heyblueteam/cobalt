@@ -202,10 +202,10 @@ func pumpToWS(wg *sync.WaitGroup, ctx context.Context, conn *websocket.Conn, r i
 // to "default" / no params if the cobaltfile isn't usable.
 func resolveRunImage(live *store.Deployment, serviceName string) (image string, extraParams []string) {
 	image = "default"
-	if !live.ResolvedCobaltfile.Valid {
+	if live.ResolvedCobaltfile == nil {
 		return image, nil
 	}
-	cf, err := cobaltfile.Parse([]byte(live.ResolvedCobaltfile.String))
+	cf, err := cobaltfile.Parse([]byte(*live.ResolvedCobaltfile))
 	if err != nil {
 		return image, nil
 	}

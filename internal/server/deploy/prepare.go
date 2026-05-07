@@ -122,7 +122,11 @@ func (p *gitPreparer) Prepare(ctx context.Context, project store.Project, dep st
 		}
 	}
 
-	target := strings.TrimSpace(dep.CommitSHA.String)
+	sha := ""
+	if dep.CommitSHA != nil {
+		sha = *dep.CommitSHA
+	}
+	target := strings.TrimSpace(sha)
 	if target == "" {
 		target = "origin/" + project.Branch
 	}
@@ -136,8 +140,8 @@ func (p *gitPreparer) Prepare(ctx context.Context, project store.Project, dep st
 	}
 
 	override := ""
-	if dep.CobaltfileOverride.Valid {
-		override = dep.CobaltfileOverride.String
+	if dep.CobaltfileOverride != nil && *dep.CobaltfileOverride != "" {
+		override = *dep.CobaltfileOverride
 	}
 	cf, err := loadCobaltfile(repoDir, override)
 	if err != nil {

@@ -3,11 +3,9 @@ package deploy
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
@@ -144,24 +142,9 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
 	return nil
 }
 
-// getProject fetches the project for a deployment by id. We don't yet
-// have a GetProjectByID helper in store; do it inline.
+// getProject fetches the project for a deployment by id.
 func (o *Orchestrator) getProject(ctx context.Context, id int64) (*store.Project, error) {
-	var p store.Project
-	err := o.DB.QueryRowContext(ctx, `
-        SELECT id, name, github_repo, branch, github_app_installation_id,
-               created_at, updated_at
-        FROM projects WHERE id = ?
-    `, id).Scan(
-		&p.ID, &p.Name, &p.GithubRepo, &p.Branch, &p.GithubAppInstallationID,
-		&p.CreatedAt, &p.UpdatedAt,
-	)
-	if errors.Is(err, os.ErrNotExist) || err != nil {
-		// Note: sql.ErrNoRows produces store.ErrNotFound semantics if we
-		// imported it; for now any error is fatal at this level.
-		return nil, err
-	}
-	return &p, nil
+	return o.DB.GetProjectByID(ctx, id)
 }
 
 // openLog returns a writer for the deploy's stdout/stderr capture, plus a

@@ -141,14 +141,14 @@ func deploymentToAPI(d store.Deployment) cobaltapi.Deployment {
 		NoCache:   d.NoCache,
 		CreatedAt: d.CreatedAt,
 	}
-	if d.CommitSHA.Valid {
-		out.CommitSHA = d.CommitSHA.String
+	if d.CommitSHA != nil {
+		out.CommitSHA = *d.CommitSHA
 	}
-	if d.StartedAt.Valid {
-		out.StartedAt = d.StartedAt.Int64
+	if d.StartedAt != nil {
+		out.StartedAt = *d.StartedAt
 	}
-	if d.FinishedAt.Valid {
-		out.FinishedAt = d.FinishedAt.Int64
+	if d.FinishedAt != nil {
+		out.FinishedAt = *d.FinishedAt
 	}
 	return out
 }

@@ -28,7 +28,12 @@ type Config struct {
 	// Addr is the HTTP listen address (e.g., ":80").
 	Addr string
 
-	// DataDir is the writable root for sqlite, BuildKit cache, deployment
+	// RqliteURL is the URL of the rqlite node (e.g., "http://localhost:4001").
+	// Cobalt connects to this URL for persistence. When using the sidecar
+	// model (default), this is "http://localhost:4001".
+	RqliteURL string
+
+	// DataDir is the writable root for BuildKit cache, deployment
 	// logs, repo workspaces, and the static-sites tree. Mounted as a
 	// volume in the daemon container.
 	DataDir string
@@ -57,13 +62,16 @@ type Config struct {
 // start HTTP. Shutdown reverses.
 func Run(ctx context.Context, cfg Config) error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	log.Info("cobalt starting", "addr", cfg.Addr, "data_dir", cfg.DataDir)
+	log.Info("cobalt starting", "addr", cfg.Addr, "rqlite_url", cfg.RqliteURL)
 
-	db, err := store.Open(cfg.DataDir)
+	db, err := store.Open(cfg.RqliteURL)
 	if err != nil {
 		return err
 	}
-	defer db.Close()
+
+	if err := db.InitSchema(ctx); err != nil {
+		return err
+	}
 
 	if err := deploy.RecoverOnBoot(ctx, db, log); err != nil {
 		log.Error("recover-on-boot failed", "error", err)
@@ -117,7 +125,7 @@ func Run(ctx context.Context, cfg Config) error {
 		writeJSON(w, cobaltapi.Health{Status: "ok"})
 	})
 	apiHandler.RegisterPublic(mux)
-	mux.Handle("/api/", middleware.BearerAuth(db.DB, log)(apiMux))
+	mux.Handle("/api/", middleware.BearerAuth(db.Client, log)(apiMux))
 
 	handler := middleware.RequestID(
 		middleware.Recover(log)(

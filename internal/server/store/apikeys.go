@@ -2,82 +2,86 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 )
 
-// APIKey is a row from apikeys. The raw key is never persisted —
-// only its sha256 hash. The API key handler returns the raw bytes
-// once at creation time and they cannot be recovered after that.
 type APIKey struct {
 	ID         int64
 	Name       string
 	CreatedAt  int64
-	LastUsedAt sql.NullInt64
+	LastUsedAt int64
 }
 
-// CreateAPIKey inserts a new row. The caller is responsible for
-// generating the random key bytes and passing the sha256 hash here —
-// keeping hashing logic out of store avoids a circular dep with
-// internal/server/middleware (which provides HashAPIKey for the
-// auth path's lookup).
 func (db *DB) CreateAPIKey(ctx context.Context, hash, name string) (int64, error) {
-	res, err := db.ExecContext(ctx,
-		`INSERT INTO apikeys (key_hash, name, created_at) VALUES (?, ?, unixepoch())`,
+	resp, err := db.ExecuteSingle(ctx,
+		`INSERT INTO apikeys (key_hash, name, created_at) VALUES (?, ?, strftime('%s', 'now'))`,
 		hash, name,
 	)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	if len(resp.Results) == 0 {
+		return 0, nil
+	}
+	return resp.Results[0].LastInsertID, nil
 }
 
-// ListAPIKeys returns every key row sans hash, ordered by created_at.
 func (db *DB) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
-	rows, err := db.QueryContext(ctx,
+	resp, err := db.QuerySingle(ctx,
 		`SELECT id, name, created_at, last_used_at FROM apikeys ORDER BY created_at`,
 	)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []APIKey
-	for rows.Next() {
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	out := make([]APIKey, 0, len(results[0].Values))
+	for _, row := range results[0].Values {
 		var k APIKey
-		if err := rows.Scan(&k.ID, &k.Name, &k.CreatedAt, &k.LastUsedAt); err != nil {
-			return nil, err
-		}
+		k.ID = toInt64(row[0])
+		k.Name = toString(row[1])
+		k.CreatedAt = toInt64(row[2])
+		k.LastUsedAt = toInt64(row[3])
 		out = append(out, k)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// GetAPIKeyByID fetches a single key by id. Returns ErrNotFound when
-// no row matches.
 func (db *DB) GetAPIKeyByID(ctx context.Context, id int64) (*APIKey, error) {
-	var k APIKey
-	err := db.QueryRowContext(ctx,
+	resp, err := db.QuerySingle(ctx,
 		`SELECT id, name, created_at, last_used_at FROM apikeys WHERE id = ?`,
 		id,
-	).Scan(&k.ID, &k.Name, &k.CreatedAt, &k.LastUsedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+	)
 	if err != nil {
 		return nil, err
 	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	row := results[0].Values[0]
+	var k APIKey
+	k.ID = toInt64(row[0])
+	k.Name = toString(row[1])
+	k.CreatedAt = toInt64(row[2])
+	k.LastUsedAt = toInt64(row[3])
 	return &k, nil
 }
 
-// DeleteAPIKey revokes a key by id. Returns ErrNotFound when no row
-// matched (idempotent failure mode for callers).
 func (db *DB) DeleteAPIKey(ctx context.Context, id int64) error {
-	res, err := db.ExecContext(ctx, `DELETE FROM apikeys WHERE id = ?`, id)
+	resp, err := db.ExecuteSingle(ctx, `DELETE FROM apikeys WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if len(resp.Results) == 0 || resp.Results[0].RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil

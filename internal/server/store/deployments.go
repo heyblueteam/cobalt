@@ -2,36 +2,27 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"strings"
 
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
+	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
-// Deployment is a row from the deployments table.
 type Deployment struct {
 	ID                 int64
 	ProjectID          int64
 	Number             int
 	Status             cobaltapi.State
-	CommitSHA          sql.NullString
+	CommitSHA          *string
 	NoCache            bool
-	CobaltfileOverride sql.NullString
-	// ResolvedCobaltfile is the cobaltfile that was actually used for the
-	// deployment (after merging override or reading from the repo). The
-	// Caddy convergence reconciler reads this when computing the desired
-	// state for the live deployment.
-	ResolvedCobaltfile sql.NullString
+	CobaltfileOverride *string
+	ResolvedCobaltfile *string
 	CreatedAt          int64
-	StartedAt          sql.NullInt64
-	FinishedAt         sql.NullInt64
+	StartedAt          *int64
+	FinishedAt         *int64
 }
 
-// activeKeepImageStatuses is the set of statuses that keep a deployment's
-// image alive for image cleanup. It includes Queued (the deployment hasn't
-// started yet but might) plus all active states plus Success (the live
-// deployment).
 var activeKeepImageStatuses = []cobaltapi.State{
 	cobaltapi.StateQueued,
 	cobaltapi.StateFetching,
@@ -40,84 +31,98 @@ var activeKeepImageStatuses = []cobaltapi.State{
 	cobaltapi.StateSuccess,
 }
 
-// ActiveDeploymentNumbers returns the deployment numbers for a project
-// whose images must be retained — anything queued, in flight, or live.
 func (db *DB) ActiveDeploymentNumbers(ctx context.Context, projectID int64) ([]int, error) {
+	statusStrings := make([]string, len(activeKeepImageStatuses))
+	for i, s := range activeKeepImageStatuses {
+		statusStrings[i] = string(s)
+	}
+
+	inClause := placeholders(len(activeKeepImageStatuses))
+	q := `SELECT number FROM deployments WHERE project_id = ? AND status IN (` + inClause + `)`
+
 	args := make([]any, 0, len(activeKeepImageStatuses)+1)
 	args = append(args, projectID)
-	for _, s := range activeKeepImageStatuses {
-		args = append(args, string(s))
+	for _, s := range statusStrings {
+		args = append(args, s)
 	}
-	rows, err := db.QueryContext(ctx,
-		`SELECT number FROM deployments WHERE project_id = ? AND status IN (`+
-			placeholders(len(activeKeepImageStatuses))+`)`,
-		args...,
-	)
+
+	stmt, err := rqlitehttp.NewSQLStatement(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
 	var out []int
-	for rows.Next() {
-		var n int
-		if err := rows.Scan(&n); err != nil {
-			return nil, err
-		}
-		out = append(out, n)
+	for _, row := range results[0].Values {
+		out = append(out, int(toInt64(row[0])))
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// CreateDeployment inserts a new deployment row. The number must be the
-// next monotonic integer for this project; callers typically use
-// NextDeploymentNumber inside a transaction to allocate it.
 func (db *DB) CreateDeployment(ctx context.Context, d Deployment) (int64, error) {
-	res, err := db.ExecContext(ctx, `
+	var commitSHA any = nil
+	if d.CommitSHA != nil {
+		commitSHA = *d.CommitSHA
+	}
+	resp, err := db.ExecuteSingle(ctx, `
         INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, created_at)
-        VALUES (?, ?, ?, ?, ?, unixepoch())
-    `, d.ProjectID, d.Number, string(d.Status), d.CommitSHA, boolToInt(d.NoCache))
+        VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))
+    `, d.ProjectID, d.Number, string(d.Status), commitSHA, boolToInt(d.NoCache))
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	if len(resp.Results) == 0 {
+		return 0, nil
+	}
+	return resp.Results[0].LastInsertID, nil
 }
 
-// NextDeploymentNumber returns max(number)+1 for a project, or 1 if none.
-// Run inside a transaction to avoid races with concurrent inserts.
 func (db *DB) NextDeploymentNumber(ctx context.Context, projectID int64) (int, error) {
-	var n sql.NullInt64
-	err := db.QueryRowContext(ctx,
-		`SELECT MAX(number) FROM deployments WHERE project_id = ?`,
-		projectID,
-	).Scan(&n)
+	resp, err := db.QuerySingle(ctx, `
+        SELECT MAX(number) FROM deployments WHERE project_id = ?
+    `, projectID)
 	if err != nil {
 		return 0, err
 	}
-	if !n.Valid {
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return 0, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
 		return 1, nil
 	}
-	return int(n.Int64) + 1, nil
+	val := results[0].Values[0][0]
+	if val == nil {
+		return 1, nil
+	}
+	return int(toInt64(val)) + 1, nil
 }
 
-// SetDeploymentStatus moves a deployment to a new status. started_at is
-// stamped on the first transition out of Queued; finished_at is stamped on
-// any transition into a terminal state.
 func (db *DB) SetDeploymentStatus(ctx context.Context, id int64, status cobaltapi.State) error {
 	switch {
 	case status == cobaltapi.StateFetching:
-		_, err := db.ExecContext(ctx,
-			`UPDATE deployments SET status = ?, started_at = COALESCE(started_at, unixepoch()) WHERE id = ?`,
+		_, err := db.ExecuteSingle(ctx,
+			`UPDATE deployments SET status = ?, started_at = COALESCE(started_at, strftime('%s', 'now')) WHERE id = ?`,
 			string(status), id,
 		)
 		return err
 	case status.IsTerminal():
-		_, err := db.ExecContext(ctx,
-			`UPDATE deployments SET status = ?, finished_at = unixepoch() WHERE id = ?`,
+		_, err := db.ExecuteSingle(ctx,
+			`UPDATE deployments SET status = ?, finished_at = strftime('%s', 'now') WHERE id = ?`,
 			string(status), id,
 		)
 		return err
 	default:
-		_, err := db.ExecContext(ctx,
+		_, err := db.ExecuteSingle(ctx,
 			`UPDATE deployments SET status = ? WHERE id = ?`,
 			string(status), id,
 		)
@@ -125,56 +130,80 @@ func (db *DB) SetDeploymentStatus(ctx context.Context, id int64, status cobaltap
 	}
 }
 
-// GetDeployment returns a single deployment by id.
 func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) {
-	var d Deployment
-	var status string
-	err := db.QueryRowContext(ctx, `
+	resp, err := db.QuerySingle(ctx, `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments WHERE id = ?
-    `, id).Scan(
-		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-		&d.CobaltfileOverride, &d.ResolvedCobaltfile,
-		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+    `, id)
 	if err != nil {
 		return nil, err
 	}
-	d.Status = cobaltapi.State(status)
-	return &d, nil
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	return scanDeploymentRow(results[0].Values[0]), nil
 }
 
-// ListDeploymentsForProject returns deployments for a project ordered
-// most-recent first (highest number first). limit caps the result; pass 0
-// for "no cap" (returns everything).
 func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, limit int) ([]Deployment, error) {
-	q := `SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
+	if limit > 0 {
+		stmt, err := rqlitehttp.NewSQLStatement(`
+            SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
+                   resolved_cobaltfile, created_at, started_at, finished_at
+            FROM deployments
+            WHERE project_id = ?
+            ORDER BY number DESC
+            LIMIT ?
+        `, projectID, limit)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+		if err != nil {
+			return nil, err
+		}
+		if hasError, _, errMsg := resp.HasError(); hasError {
+			return nil, errors.New(errMsg)
+		}
+		results := resp.GetQueryResults()
+		if len(results) == 0 {
+			return nil, nil
+		}
+		deps, _ := scanDeployments(results[0].Values)
+		return deps, nil
+	}
+
+	stmt, err := rqlitehttp.NewSQLStatement(`
+        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments
         WHERE project_id = ?
-        ORDER BY number DESC`
-	args := []any{projectID}
-	if limit > 0 {
-		q += ` LIMIT ?`
-		args = append(args, limit)
-	}
-	rows, err := db.QueryContext(ctx, q, args...)
+        ORDER BY number DESC
+    `, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanDeployments(rows)
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	deps, _ := scanDeployments(results[0].Values)
+	return deps, nil
 }
 
-// QueuedDeployments returns every queued deployment, ordered by
-// (project_id, number). Used by the dispatcher to pick the next deploy
-// per project.
 func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
-	rows, err := db.QueryContext(ctx, `
+	stmt, err := rqlitehttp.NewSQLStatement(`
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments
@@ -184,88 +213,128 @@ func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanDeployments(rows)
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	deps, _ := scanDeployments(results[0].Values)
+	return deps, nil
 }
 
-// SetResolvedCobaltfile persists the cobaltfile that was used for a
-// deployment. The orchestrator calls this after Preparer parses
-// cobalt.json (or merges the inline override) so the convergence
-// reconciler has authoritative state to read.
 func (db *DB) SetResolvedCobaltfile(ctx context.Context, deploymentID int64, raw string) error {
-	_, err := db.ExecContext(ctx,
+	_, err := db.ExecuteSingle(ctx,
 		`UPDATE deployments SET resolved_cobaltfile = ? WHERE id = ?`,
 		raw, deploymentID,
 	)
 	return err
 }
 
-// GetLastSuccessfulDeployment returns the most recent successful
-// deployment for a project (highest number with status=success). Returns
-// ErrNotFound when no prior success exists — used by the deploy flow's
-// rollback path, where "no rollback target" means we don't try to revert.
 func (db *DB) GetLastSuccessfulDeployment(ctx context.Context, projectID int64) (*Deployment, error) {
-	var d Deployment
-	var status string
-	err := db.QueryRowContext(ctx, `
+	resp, err := db.QuerySingle(ctx, `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                resolved_cobaltfile, created_at, started_at, finished_at
         FROM deployments
         WHERE project_id = ? AND status = ?
         ORDER BY number DESC
         LIMIT 1
-    `, projectID, string(cobaltapi.StateSuccess)).Scan(
-		&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-		&d.CobaltfileOverride, &d.ResolvedCobaltfile,
-		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
+    `, projectID, string(cobaltapi.StateSuccess))
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
 		return nil, ErrNotFound
 	}
-	if err != nil {
-		return nil, err
-	}
-	d.Status = cobaltapi.State(status)
-	return &d, nil
+	d := scanDeploymentRow(results[0].Values[0])
+	return d, nil
 }
 
-// ActiveDeployments returns deployments currently in flight (any active
-// state). Used by daemon-restart recovery to mark them failed.
 func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {
 	active := cobaltapi.ActiveStatesList()
-	args := make([]any, 0, len(active))
-	for _, s := range active {
-		args = append(args, string(s))
+	activeStrings := make([]string, len(active))
+	for i, s := range active {
+		activeStrings[i] = string(s)
 	}
-	rows, err := db.QueryContext(ctx, `
+
+	inClause := placeholders(len(active))
+	q := `
         SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
                resolved_cobaltfile, created_at, started_at, finished_at
-        FROM deployments WHERE status IN (`+placeholders(len(active))+`)
+        FROM deployments WHERE status IN (` + inClause + `)
         ORDER BY project_id, number
-    `, args...)
+    `
+
+	args := make([]any, 0, len(active))
+	for _, s := range activeStrings {
+		args = append(args, s)
+	}
+
+	stmt, err := rqlitehttp.NewSQLStatement(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanDeployments(rows)
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	deps, _ := scanDeployments(results[0].Values)
+	return deps, nil
 }
 
-func scanDeployments(rows *sql.Rows) ([]Deployment, error) {
+func scanDeployments(rows [][]any) ([]Deployment, error) {
 	var out []Deployment
-	for rows.Next() {
-		var d Deployment
-		var status string
-		if err := rows.Scan(
-			&d.ID, &d.ProjectID, &d.Number, &status, &d.CommitSHA, &d.NoCache,
-			&d.CobaltfileOverride, &d.ResolvedCobaltfile,
-		&d.CreatedAt, &d.StartedAt, &d.FinishedAt,
-		); err != nil {
-			return nil, err
-		}
-		d.Status = cobaltapi.State(status)
-		out = append(out, d)
+	for _, row := range rows {
+		out = append(out, *scanDeploymentRow(row))
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+func scanDeploymentRow(row []any) *Deployment {
+	var d Deployment
+	d.ID = toInt64(row[0])
+	d.ProjectID = toInt64(row[1])
+	d.Number = int(toInt64(row[2]))
+	d.Status = cobaltapi.State(toString(row[3]))
+	if row[4] != nil {
+		s := toString(row[4])
+		d.CommitSHA = &s
+	}
+	d.NoCache = toInt64(row[5]) != 0
+	if row[6] != nil {
+		s := toString(row[6])
+		d.CobaltfileOverride = &s
+	}
+	if row[7] != nil {
+		s := toString(row[7])
+		d.ResolvedCobaltfile = &s
+	}
+	d.CreatedAt = toInt64(row[8])
+	if row[9] != nil {
+		v := toInt64(row[9])
+		d.StartedAt = &v
+	}
+	if row[10] != nil {
+		v := toInt64(row[10])
+		d.FinishedAt = &v
+	}
+	return &d
 }
 
 func placeholders(n int) string {

@@ -2,44 +2,45 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
+	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
-// EnvVar is a single project environment variable. Value is plain text in
-// v1; AES-GCM at rest is deferred per the plan.
 type EnvVar struct {
 	Key   string
 	Value string
 }
 
-// ListEnvVars returns every env var for a project, ordered by key.
 func (db *DB) ListEnvVars(ctx context.Context, projectID int64) ([]EnvVar, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT key, value FROM env_vars WHERE project_id = ? ORDER BY key`,
-		projectID,
-	)
+	stmt, err := rqlitehttp.NewSQLStatement(`
+		SELECT key, value FROM env_vars WHERE project_id = ? ORDER BY key
+	`, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []EnvVar
-	for rows.Next() {
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	out := make([]EnvVar, 0, len(results[0].Values))
+	for _, row := range results[0].Values {
 		var e EnvVar
-		var v []byte
-		if err := rows.Scan(&e.Key, &v); err != nil {
-			return nil, err
-		}
-		e.Value = string(v)
+		e.Key = toString(row[0])
+		e.Value = blobToString(row[1])
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// EnvVarMap is a convenience wrapper returning env vars as map[string]string,
-// the shape docker.BuildOpts.EnvSecrets and docker.RunOpts.EnvVars want.
 func (db *DB) EnvVarMap(ctx context.Context, projectID int64) (map[string]string, error) {
 	vars, err := db.ListEnvVars(ctx, projectID)
 	if err != nil {
@@ -52,41 +53,37 @@ func (db *DB) EnvVarMap(ctx context.Context, projectID int64) (map[string]string
 	return m, nil
 }
 
-// GetEnvVar returns a single env var. Returns ErrNotFound if no row matches.
 func (db *DB) GetEnvVar(ctx context.Context, projectID int64, key string) (*EnvVar, error) {
-	var v []byte
-	err := db.QueryRowContext(ctx,
-		`SELECT value FROM env_vars WHERE project_id = ? AND key = ?`,
-		projectID, key,
-	).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+	resp, err := db.QuerySingle(ctx, `
+		SELECT value FROM env_vars WHERE project_id = ? AND key = ?
+	`, projectID, key)
 	if err != nil {
 		return nil, err
 	}
-	return &EnvVar{Key: key, Value: string(v)}, nil
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	return &EnvVar{Key: key, Value: blobToString(results[0].Values[0][0])}, nil
 }
 
-// SetEnvVar inserts or updates an env var for a project. Idempotent.
-// AES-GCM encryption at rest is deferred per the plan; value stored
-// plaintext in v1.
 func (db *DB) SetEnvVar(ctx context.Context, projectID int64, key, value string) error {
 	if err := validator.ValidateEnvKey(key); err != nil {
 		return err
 	}
-	_, err := db.ExecContext(ctx, `
-        INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
-        VALUES (?, ?, ?, unixepoch(), unixepoch())
-        ON CONFLICT(project_id, key) DO UPDATE SET
-            value = excluded.value,
-            updated_at = unixepoch()
-    `, projectID, key, []byte(value))
+	_, err := db.ExecuteSingle(ctx, `
+		INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
+		VALUES (?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+		ON CONFLICT(project_id, key) DO UPDATE SET
+			value = excluded.value,
+			updated_at = strftime('%s', 'now')
+	`, projectID, key, value)
 	return err
 }
 
-// SetEnvVars sets multiple env vars in a single transaction. Either all
-// succeed or none do.
 func (db *DB) SetEnvVars(ctx context.Context, projectID int64, vars map[string]string) error {
 	if len(vars) == 0 {
 		return nil
@@ -96,43 +93,46 @@ func (db *DB) SetEnvVars(ctx context.Context, projectID int64, vars map[string]s
 			return err
 		}
 	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.PrepareContext(ctx, `
-        INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
-        VALUES (?, ?, ?, unixepoch(), unixepoch())
-        ON CONFLICT(project_id, key) DO UPDATE SET
-            value = excluded.value,
-            updated_at = unixepoch()
-    `)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
+	stmts := make(rqlitehttp.SQLStatements, 0, len(vars))
 	for k, v := range vars {
-		if _, err := stmt.ExecContext(ctx, projectID, k, []byte(v)); err != nil {
+		stmt, err := rqlitehttp.NewSQLStatement(`
+			INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
+			VALUES (?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+			ON CONFLICT(project_id, key) DO UPDATE SET
+				value = excluded.value,
+				updated_at = strftime('%s', 'now')
+		`, projectID, k, v)
+		if err != nil {
 			return err
 		}
+		stmts = append(stmts, stmt)
 	}
-	return tx.Commit()
-}
-
-// DeleteEnvVar removes a single env var. Returns ErrNotFound if no row
-// matched.
-func (db *DB) DeleteEnvVar(ctx context.Context, projectID int64, key string) error {
-	res, err := db.ExecContext(ctx,
-		`DELETE FROM env_vars WHERE project_id = ? AND key = ?`,
-		projectID, key,
-	)
+	resp, err := db.Execute(ctx, stmts, &rqlitehttp.ExecuteOptions{Transaction: true})
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return errors.New(errMsg)
+	}
+	return nil
+}
+
+func (db *DB) DeleteEnvVar(ctx context.Context, projectID int64, key string) error {
+	resp, err := db.ExecuteSingle(ctx, `
+		DELETE FROM env_vars WHERE project_id = ? AND key = ?
+	`, projectID, key)
+	if err != nil {
+		return err
+	}
+	if len(resp.Results) == 0 || resp.Results[0].RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
+}
+
+func blobToString(v any) string {
+	if b, ok := v.([]byte); ok {
+		return string(b)
+	}
+	return toString(v)
 }

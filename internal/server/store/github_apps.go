@@ -3,14 +3,13 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
+
+	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
-// GithubApp is a row from github_apps. The PrivateKey is the PEM-encoded
-// RSA private key cobalt uses to mint installation tokens.
 type GithubApp struct {
 	ID            int64
-	AppID         int64 // GitHub's id
+	AppID         int64
 	Slug          sql.NullString
 	Owner         string
 	PrivateKey    string
@@ -22,61 +21,88 @@ type GithubApp struct {
 	CreatedAt     int64
 }
 
-// GithubAppInstallation is a row from github_app_installations.
 type GithubAppInstallation struct {
 	ID                   int64
-	AppID                int64 // FK to github_apps.id
-	InstallationID       int64 // GitHub's installation id
+	AppID                int64
+	InstallationID       int64
 	AccountLogin         string
 	AccessToken          sql.NullString
 	AccessTokenExpiresAt sql.NullInt64
 	CreatedAt            int64
 }
 
-// GetGithubApp returns the app row for a given local id.
 func (db *DB) GetGithubApp(ctx context.Context, id int64) (*GithubApp, error) {
-	var a GithubApp
-	err := db.QueryRowContext(ctx, `
+	resp, err := db.QuerySingle(ctx, `
         SELECT id, app_id, slug, owner, private_key, webhook_secret,
                client_id, client_secret, name, html_url, created_at
         FROM github_apps WHERE id = ?
-    `, id).Scan(
-		&a.ID, &a.AppID, &a.Slug, &a.Owner, &a.PrivateKey, &a.WebhookSecret,
-		&a.ClientID, &a.ClientSecret, &a.Name, &a.HTMLURL, &a.CreatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+    `, id)
 	if err != nil {
 		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	row := results[0].Values[0]
+	a := GithubApp{
+		ID:            toInt64(row[0]),
+		AppID:         toInt64(row[1]),
+		Owner:         toString(row[3]),
+		PrivateKey:    toString(row[4]),
+		WebhookSecret: toString(row[5]),
+		CreatedAt:     toInt64(row[10]),
+	}
+	if row[2] != nil {
+		a.Slug = sql.NullString{String: toString(row[2]), Valid: true}
+	}
+	if row[6] != nil {
+		a.ClientID = sql.NullString{String: toString(row[6]), Valid: true}
+	}
+	if row[7] != nil {
+		a.ClientSecret = sql.NullString{String: toString(row[7]), Valid: true}
+	}
+	if row[8] != nil {
+		a.Name = sql.NullString{String: toString(row[8]), Valid: true}
+	}
+	if row[9] != nil {
+		a.HTMLURL = sql.NullString{String: toString(row[9]), Valid: true}
 	}
 	return &a, nil
 }
 
-// GetGithubAppInstallation returns an installation row by local id.
 func (db *DB) GetGithubAppInstallation(ctx context.Context, id int64) (*GithubAppInstallation, error) {
-	var inst GithubAppInstallation
-	err := db.QueryRowContext(ctx, `
+	resp, err := db.QuerySingle(ctx, `
         SELECT id, app_id, installation_id, account_login,
                access_token, access_token_expires_at, created_at
         FROM github_app_installations WHERE id = ?
-    `, id).Scan(
-		&inst.ID, &inst.AppID, &inst.InstallationID, &inst.AccountLogin,
-		&inst.AccessToken, &inst.AccessTokenExpiresAt, &inst.CreatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+    `, id)
 	if err != nil {
 		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	row := results[0].Values[0]
+	inst := GithubAppInstallation{
+		ID:             toInt64(row[0]),
+		AppID:          toInt64(row[1]),
+		InstallationID: toInt64(row[2]),
+		AccountLogin:   toString(row[3]),
+		CreatedAt:      toInt64(row[6]),
+	}
+	if row[4] != nil {
+		inst.AccessToken = sql.NullString{String: toString(row[4]), Valid: true}
+	}
+	if row[5] != nil {
+		inst.AccessTokenExpiresAt = sql.NullInt64{Int64: toInt64(row[5]), Valid: true}
 	}
 	return &inst, nil
 }
 
-// SetInstallationToken caches a freshly-minted installation token on the
-// installation row.
 func (db *DB) SetInstallationToken(ctx context.Context, id int64, token string, expiresAtUnix int64) error {
-	res, err := db.ExecContext(ctx, `
+	resp, err := db.ExecuteSingle(ctx, `
         UPDATE github_app_installations
         SET access_token = ?, access_token_expires_at = ?
         WHERE id = ?
@@ -84,116 +110,159 @@ func (db *DB) SetInstallationToken(ctx context.Context, id int64, token string, 
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if len(resp.Results) == 0 || resp.Results[0].RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-// CreateGithubApp inserts a row from a manifest-conversion result.
 func (db *DB) CreateGithubApp(ctx context.Context, a GithubApp) (int64, error) {
-	res, err := db.ExecContext(ctx, `
+	slug := a.Slug
+	if !slug.Valid {
+		slug = sql.NullString{}
+	}
+	clientID := a.ClientID
+	if !clientID.Valid {
+		clientID = sql.NullString{}
+	}
+	clientSecret := a.ClientSecret
+	if !clientSecret.Valid {
+		clientSecret = sql.NullString{}
+	}
+	appName := a.Name
+	if !appName.Valid {
+		appName = sql.NullString{}
+	}
+	htmlURL := a.HTMLURL
+	if !htmlURL.Valid {
+		htmlURL = sql.NullString{}
+	}
+
+	resp, err := db.ExecuteSingle(ctx, `
         INSERT INTO github_apps (
             app_id, slug, owner, private_key, webhook_secret,
             client_id, client_secret, name, html_url, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
-    `, a.AppID, a.Slug, a.Owner, a.PrivateKey, a.WebhookSecret,
-		a.ClientID, a.ClientSecret, a.Name, a.HTMLURL)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+    `, a.AppID, slug, a.Owner, a.PrivateKey, a.WebhookSecret,
+		clientID, clientSecret, appName, htmlURL)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	if len(resp.Results) == 0 {
+		return 0, nil
+	}
+	return resp.Results[0].LastInsertID, nil
 }
 
-// CreateGithubAppInstallation inserts a row from an `installation` webhook.
 func (db *DB) CreateGithubAppInstallation(ctx context.Context, inst GithubAppInstallation) (int64, error) {
-	res, err := db.ExecContext(ctx, `
+	resp, err := db.ExecuteSingle(ctx, `
         INSERT INTO github_app_installations (
             app_id, installation_id, account_login, created_at
-        ) VALUES (?, ?, ?, unixepoch())
+        ) VALUES (?, ?, ?, strftime('%s', 'now'))
     `, inst.AppID, inst.InstallationID, inst.AccountLogin)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	if len(resp.Results) == 0 {
+		return 0, nil
+	}
+	return resp.Results[0].LastInsertID, nil
 }
 
-// GetGithubAppByAppID looks up an app by GitHub's id (the value GitHub
-// puts in the X-GitHub-Hook-Installation-Target-ID header). Used by the
-// webhook receiver to find the right webhook secret to verify against.
 func (db *DB) GetGithubAppByAppID(ctx context.Context, appID int64) (*GithubApp, error) {
-	var a GithubApp
-	err := db.QueryRowContext(ctx, `
+	resp, err := db.QuerySingle(ctx, `
         SELECT id, app_id, slug, owner, private_key, webhook_secret,
                client_id, client_secret, name, html_url, created_at
         FROM github_apps WHERE app_id = ?
-    `, appID).Scan(
-		&a.ID, &a.AppID, &a.Slug, &a.Owner, &a.PrivateKey, &a.WebhookSecret,
-		&a.ClientID, &a.ClientSecret, &a.Name, &a.HTMLURL, &a.CreatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+    `, appID)
 	if err != nil {
 		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	row := results[0].Values[0]
+	a := GithubApp{
+		ID:            toInt64(row[0]),
+		AppID:         toInt64(row[1]),
+		Owner:         toString(row[3]),
+		PrivateKey:    toString(row[4]),
+		WebhookSecret: toString(row[5]),
+		CreatedAt:     toInt64(row[10]),
+	}
+	if row[2] != nil {
+		a.Slug = sql.NullString{String: toString(row[2]), Valid: true}
+	}
+	if row[6] != nil {
+		a.ClientID = sql.NullString{String: toString(row[6]), Valid: true}
+	}
+	if row[7] != nil {
+		a.ClientSecret = sql.NullString{String: toString(row[7]), Valid: true}
+	}
+	if row[8] != nil {
+		a.Name = sql.NullString{String: toString(row[8]), Valid: true}
+	}
+	if row[9] != nil {
+		a.HTMLURL = sql.NullString{String: toString(row[9]), Valid: true}
 	}
 	return &a, nil
 }
 
-// GetGithubAppInstallationByInstallationID looks up an installation by
-// GitHub's installation id (from webhook payloads). Returns ErrNotFound
-// when missing.
 func (db *DB) GetGithubAppInstallationByInstallationID(ctx context.Context, instID int64) (*GithubAppInstallation, error) {
-	var inst GithubAppInstallation
-	err := db.QueryRowContext(ctx, `
+	resp, err := db.QuerySingle(ctx, `
         SELECT id, app_id, installation_id, account_login,
                access_token, access_token_expires_at, created_at
         FROM github_app_installations WHERE installation_id = ?
-    `, instID).Scan(
-		&inst.ID, &inst.AppID, &inst.InstallationID, &inst.AccountLogin,
-		&inst.AccessToken, &inst.AccessTokenExpiresAt, &inst.CreatedAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+    `, instID)
 	if err != nil {
 		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	row := results[0].Values[0]
+	inst := GithubAppInstallation{
+		ID:             toInt64(row[0]),
+		AppID:          toInt64(row[1]),
+		InstallationID: toInt64(row[2]),
+		AccountLogin:   toString(row[3]),
+		CreatedAt:      toInt64(row[6]),
+	}
+	if row[4] != nil {
+		inst.AccessToken = sql.NullString{String: toString(row[4]), Valid: true}
+	}
+	if row[5] != nil {
+		inst.AccessTokenExpiresAt = sql.NullInt64{Int64: toInt64(row[5]), Valid: true}
 	}
 	return &inst, nil
 }
 
-// DeleteGithubAppInstallation removes an installation by local id.
-// Cascade deletes its repos via FK.
 func (db *DB) DeleteGithubAppInstallation(ctx context.Context, id int64) error {
-	res, err := db.ExecContext(ctx, `DELETE FROM github_app_installations WHERE id = ?`, id)
+	resp, err := db.ExecuteSingle(ctx, `DELETE FROM github_app_installations WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if len(resp.Results) == 0 || resp.Results[0].RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-// DeleteGithubApp removes an app row. Cascade removes installations and
-// their repos via FK.
 func (db *DB) DeleteGithubApp(ctx context.Context, id int64) error {
-	res, err := db.ExecContext(ctx, `DELETE FROM github_apps WHERE id = ?`, id)
+	resp, err := db.ExecuteSingle(ctx, `DELETE FROM github_apps WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	if len(resp.Results) == 0 || resp.Results[0].RowsAffected == 0 {
 		return ErrNotFound
 	}
 	return nil
 }
 
-// ListGithubApps returns every registered GitHub App.
 func (db *DB) ListGithubApps(ctx context.Context) ([]GithubApp, error) {
-	rows, err := db.QueryContext(ctx, `
+	stmt, err := rqlitehttp.NewSQLStatement(`
         SELECT id, app_id, slug, owner, private_key, webhook_secret,
                client_id, client_secret, name, html_url, created_at
         FROM github_apps ORDER BY id
@@ -201,25 +270,46 @@ func (db *DB) ListGithubApps(ctx context.Context) ([]GithubApp, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
 	var out []GithubApp
-	for rows.Next() {
-		var a GithubApp
-		if err := rows.Scan(
-			&a.ID, &a.AppID, &a.Slug, &a.Owner, &a.PrivateKey, &a.WebhookSecret,
-			&a.ClientID, &a.ClientSecret, &a.Name, &a.HTMLURL, &a.CreatedAt,
-		); err != nil {
-			return nil, err
+	for _, row := range results[0].Values {
+		a := GithubApp{
+			ID:            toInt64(row[0]),
+			AppID:         toInt64(row[1]),
+			Owner:         toString(row[3]),
+			PrivateKey:    toString(row[4]),
+			WebhookSecret: toString(row[5]),
+			CreatedAt:     toInt64(row[10]),
+		}
+		if row[2] != nil {
+			a.Slug = sql.NullString{String: toString(row[2]), Valid: true}
+		}
+		if row[6] != nil {
+			a.ClientID = sql.NullString{String: toString(row[6]), Valid: true}
+		}
+		if row[7] != nil {
+			a.ClientSecret = sql.NullString{String: toString(row[7]), Valid: true}
+		}
+		if row[8] != nil {
+			a.Name = sql.NullString{String: toString(row[8]), Valid: true}
+		}
+		if row[9] != nil {
+			a.HTMLURL = sql.NullString{String: toString(row[9]), Valid: true}
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
-// ListGithubAppInstallations returns every installation belonging to an
-// app (by local app id).
 func (db *DB) ListGithubAppInstallations(ctx context.Context, appID int64) ([]GithubAppInstallation, error) {
-	rows, err := db.QueryContext(ctx, `
+	stmt, err := rqlitehttp.NewSQLStatement(`
         SELECT id, app_id, installation_id, account_login,
                access_token, access_token_expires_at, created_at
         FROM github_app_installations WHERE app_id = ? ORDER BY id
@@ -227,17 +317,30 @@ func (db *DB) ListGithubAppInstallations(ctx context.Context, appID int64) ([]Gi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
 	var out []GithubAppInstallation
-	for rows.Next() {
-		var inst GithubAppInstallation
-		if err := rows.Scan(
-			&inst.ID, &inst.AppID, &inst.InstallationID, &inst.AccountLogin,
-			&inst.AccessToken, &inst.AccessTokenExpiresAt, &inst.CreatedAt,
-		); err != nil {
-			return nil, err
+	for _, row := range results[0].Values {
+		inst := GithubAppInstallation{
+			ID:             toInt64(row[0]),
+			AppID:          toInt64(row[1]),
+			InstallationID: toInt64(row[2]),
+			AccountLogin:   toString(row[3]),
+			CreatedAt:      toInt64(row[6]),
+		}
+		if row[4] != nil {
+			inst.AccessToken = sql.NullString{String: toString(row[4]), Valid: true}
+		}
+		if row[5] != nil {
+			inst.AccessTokenExpiresAt = sql.NullInt64{Int64: toInt64(row[5]), Valid: true}
 		}
 		out = append(out, inst)
 	}
-	return out, rows.Err()
+	return out, nil
 }

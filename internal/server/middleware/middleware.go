@@ -1,12 +1,9 @@
-// Package middleware holds the daemon's HTTP middleware: request id,
-// structured logging, panic recovery, and bearer-token auth.
 package middleware
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"log/slog"
@@ -16,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
 type ctxKey int
@@ -25,7 +23,6 @@ const (
 	ctxKeyAPIKeyID
 )
 
-// RequestID assigns or echoes a request ID, available via RequestID(ctx).
 func RequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-ID")
@@ -37,8 +34,6 @@ func RequestID(next http.Handler) http.Handler {
 	})
 }
 
-// Logger logs each request once it completes, with method, path, status,
-// duration, and request ID.
 func Logger(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -56,7 +51,6 @@ func Logger(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// Recover converts panics from downstream handlers into a logged 500.
 func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -75,12 +69,7 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// BearerAuth requires Authorization: Bearer <apiKey>. The raw key is hashed
-// with SHA-256 and compared in constant time against apikeys.key_hash.
-//
-// On success, the matched apikeys.id is stored in the request context and
-// last_used_at is updated best-effort (errors logged but not returned).
-func BearerAuth(db *sql.DB, log *slog.Logger) func(http.Handler) http.Handler {
+func BearerAuth(db *rqlitehttp.Client, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			raw, err := extractBearer(r)
@@ -94,7 +83,7 @@ func BearerAuth(db *sql.DB, log *slog.Logger) func(http.Handler) http.Handler {
 				return
 			}
 			go func(id int64) {
-				_, err := db.Exec(`UPDATE apikeys SET last_used_at = unixepoch() WHERE id = ?`, id)
+				_, err := db.ExecuteSingle(r.Context(), `UPDATE apikeys SET last_used_at = strftime('%s', 'now') WHERE id = ?`, id)
 				if err != nil {
 					log.Warn("update last_used_at", "id", id, "error", err)
 				}
@@ -117,19 +106,19 @@ func extractBearer(r *http.Request) (string, error) {
 	return tok, nil
 }
 
-func lookupAPIKey(ctx context.Context, db *sql.DB, raw string) (int64, bool) {
+func lookupAPIKey(ctx context.Context, db *rqlitehttp.Client, raw string) (int64, bool) {
 	want := hashKey(raw)
-	rows, err := db.QueryContext(ctx, `SELECT id, key_hash FROM apikeys`)
+	resp, err := db.QuerySingle(ctx, `SELECT id, key_hash FROM apikeys`)
 	if err != nil {
 		return 0, false
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var got string
-		if err := rows.Scan(&id, &got); err != nil {
-			return 0, false
-		}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return 0, false
+	}
+	for _, row := range results[0].Values {
+		id := toInt64(row[0])
+		got := toString(row[1])
 		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
 			return id, true
 		}
@@ -137,8 +126,6 @@ func lookupAPIKey(ctx context.Context, db *sql.DB, raw string) (int64, bool) {
 	return 0, false
 }
 
-// HashAPIKey returns the canonical storage form of a raw API key.
-// Exposed so apikey-creation code can store keys consistently.
 func HashAPIKey(raw string) string { return hashKey(raw) }
 
 func hashKey(raw string) string {
@@ -146,13 +133,11 @@ func hashKey(raw string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// RequestIDFrom returns the request ID stored in ctx by RequestID, or "".
 func RequestIDFrom(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyRequestID).(string)
 	return v
 }
 
-// APIKeyIDFrom returns the apikeys.id stored in ctx by BearerAuth, or 0.
 func APIKeyIDFrom(ctx context.Context) int64 {
 	v, _ := ctx.Value(ctxKeyAPIKeyID).(int64)
 	return v
@@ -175,4 +160,26 @@ func (w *statusWriter) WriteHeader(code int) {
 func (w *statusWriter) Write(b []byte) (int, error) {
 	w.wrote = true
 	return w.ResponseWriter.Write(b)
+}
+
+func toInt64(v any) int64 {
+	if v == nil {
+		return 0
+	}
+	switch x := v.(type) {
+	case int64:
+		return x
+	case int:
+		return int64(x)
+	case float64:
+		return int64(x)
+	}
+	return 0
+}
+
+func toString(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
 }

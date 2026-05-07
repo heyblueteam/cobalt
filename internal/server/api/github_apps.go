@@ -54,8 +54,8 @@ func (h *Handler) ListGithubAppRepos(w http.ResponseWriter, r *http.Request) {
 					FullName:       repo.FullName,
 					Private:        repo.Private,
 				}
-				if repo.DefaultBranch.Valid {
-					api.DefaultBranch = repo.DefaultBranch.String
+				if repo.DefaultBranch != "" {
+					api.DefaultBranch = repo.DefaultBranch
 				}
 				out = append(out, api)
 			}

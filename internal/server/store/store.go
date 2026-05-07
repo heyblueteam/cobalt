@@ -1,73 +1,146 @@
-// Package store is the daemon's persistence layer. It wraps SQLite, runs
-// embedded SQL migrations on Open, and exposes typed CRUD methods for each
-// resource. Callers outside the daemon must not import this package.
 package store
 
 import (
-	"database/sql"
+	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
-// DB wraps a *sql.DB plus the data directory it was opened in.
 type DB struct {
-	*sql.DB
-	DataDir string
+	*rqlitehttp.Client
 }
 
 var ErrProjectNameTaken = errors.New("store: project name already in use")
 
-// ErrNotFound is returned by Get* methods when no row matches.
 var ErrNotFound = errors.New("store: not found")
 
-// isUniqueConstraint returns true if err is a SQLite UNIQUE constraint
-// violation (error code 1555 or message contains "UNIQUE constraint").
-func isUniqueConstraint(err error) bool {
-	if err == nil {
-		return false
+func Open(url string) (*DB, error) {
+	if url == "" {
+		return nil, errors.New("store.Open: url is required")
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "UNIQUE constraint")
-}
-
-// Open opens (or creates) the cobalt SQLite database under dataDir, runs any
-// pending migrations, and returns a *DB with WAL + busy_timeout configured.
-func Open(dataDir string) (*DB, error) {
-	if dataDir == "" {
-		return nil, errors.New("store.Open: dataDir is required")
-	}
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, fmt.Errorf("store.Open: create data dir: %w", err)
-	}
-
-	dsn := "file:" + filepath.Join(dataDir, "cobalt.db") +
-		"?_pragma=journal_mode(WAL)" +
-		"&_pragma=busy_timeout(5000)" +
-		"&_pragma=foreign_keys(ON)" +
-		"&_pragma=synchronous(NORMAL)"
-
-	sqlDB, err := sql.Open("sqlite", dsn)
+	client, err := rqlitehttp.NewClient(url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store.Open: %w", err)
 	}
-	// SQLite is single-writer; one connection avoids "database is locked"
-	// surprises while still letting WAL readers proceed in parallel.
-	sqlDB.SetMaxOpenConns(1)
+	return &DB{Client: client}, nil
+}
 
-	if err := sqlDB.Ping(); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("store.Open: ping: %w", err)
-	}
+func (db *DB) Ping(ctx context.Context) error {
+	_, err := db.Ready(ctx, nil)
+	return err
+}
 
-	db := &DB{DB: sqlDB, DataDir: dataDir}
-	if err := db.migrate(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
+func (db *DB) InitSchema(ctx context.Context) error {
+	stmts := rqlitehttp.NewSQLStatementsFromStrings([]string{
+		`CREATE TABLE IF NOT EXISTS projects (
+			id                            INTEGER PRIMARY KEY AUTOINCREMENT,
+			name                          TEXT NOT NULL UNIQUE,
+			github_repo                   TEXT NOT NULL,
+			branch                        TEXT NOT NULL,
+			github_app_installation_id    INTEGER,
+			created_at                    INTEGER NOT NULL,
+			updated_at                    INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS deployments (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			number        INTEGER NOT NULL,
+			status        TEXT NOT NULL,
+			commit_sha    TEXT,
+			no_cache      INTEGER NOT NULL DEFAULT 0,
+			cobaltfile_override TEXT,
+			resolved_cobaltfile TEXT,
+			created_at    INTEGER NOT NULL,
+			started_at    INTEGER,
+			finished_at   INTEGER,
+			UNIQUE (project_id, number)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_deployments_project_status ON deployments(project_id, status)`,
+		`CREATE TABLE IF NOT EXISTS env_vars (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			key           TEXT NOT NULL,
+			value         BLOB NOT NULL,
+			created_at    INTEGER NOT NULL,
+			updated_at    INTEGER NOT NULL,
+			UNIQUE (project_id, key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS domains (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			name          TEXT NOT NULL UNIQUE,
+			created_at    INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_domains_project ON domains(project_id)`,
+		`CREATE TABLE IF NOT EXISTS apikeys (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			key_hash      TEXT NOT NULL UNIQUE,
+			name          TEXT NOT NULL,
+			created_at    INTEGER NOT NULL,
+			last_used_at  INTEGER
+		)`,
+		`CREATE TABLE IF NOT EXISTS apikey_invites (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			token         TEXT NOT NULL UNIQUE,
+			name          TEXT NOT NULL,
+			created_at    INTEGER NOT NULL,
+			accepted_at   INTEGER,
+			expires_at    INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS github_apps (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			app_id          INTEGER NOT NULL UNIQUE,
+			slug            TEXT,
+			owner           TEXT NOT NULL,
+			private_key     TEXT NOT NULL,
+			webhook_secret  TEXT NOT NULL,
+			client_id       TEXT,
+			client_secret   TEXT,
+			name            TEXT,
+			html_url        TEXT,
+			created_at      INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS github_app_installations (
+			id                INTEGER PRIMARY KEY AUTOINCREMENT,
+			app_id            INTEGER NOT NULL REFERENCES github_apps(id) ON DELETE CASCADE,
+			installation_id   INTEGER NOT NULL UNIQUE,
+			account_login     TEXT NOT NULL,
+			access_token      TEXT,
+			access_token_expires_at INTEGER,
+			created_at        INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS github_app_repos (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			installation_id INTEGER NOT NULL REFERENCES github_app_installations(id) ON DELETE CASCADE,
+			repo_id         INTEGER NOT NULL UNIQUE,
+			full_name       TEXT NOT NULL,
+			private         INTEGER NOT NULL DEFAULT 0,
+			default_branch  TEXT,
+			created_at      INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_github_repos_installation ON github_app_repos(installation_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_github_repos_full_name ON github_app_repos(full_name)`,
+		`CREATE TABLE IF NOT EXISTS pending_github_apps (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			state         TEXT NOT NULL UNIQUE,
+			organization  TEXT NOT NULL,
+			created_at    INTEGER NOT NULL,
+			expires_at    INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS command_runs (
+			id            INTEGER PRIMARY KEY AUTOINCREMENT,
+			project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			service       TEXT,
+			command       TEXT NOT NULL,
+			status        TEXT NOT NULL,
+			exit_code     INTEGER,
+			created_at    INTEGER NOT NULL,
+			finished_at   INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_runs_project ON command_runs(project_id, created_at)`,
+	})
+	_, err := db.Execute(ctx, stmts, nil)
+	return err
 }

@@ -104,8 +104,8 @@ func apiKeyToAPI(k store.APIKey) cobaltapi.APIKey {
 		Name:      k.Name,
 		CreatedAt: k.CreatedAt,
 	}
-	if k.LastUsedAt.Valid {
-		out.LastUsedAt = k.LastUsedAt.Int64
+	if k.LastUsedAt > 0 {
+		out.LastUsedAt = k.LastUsedAt
 	}
 	return out
 }

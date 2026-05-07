@@ -96,13 +96,11 @@ func reconcileProject(
 	if err != nil {
 		return false, fmt.Errorf("get last success: %w", err)
 	}
-	if !live.ResolvedCobaltfile.Valid {
-		// Deployments from before §8d don't have the field. Skip rather
-		// than guess — the next deploy will populate it.
+	if live.ResolvedCobaltfile == nil {
 		return false, nil
 	}
 
-	cf, err := cobaltfile.Parse([]byte(live.ResolvedCobaltfile.String))
+	cf, err := cobaltfile.Parse([]byte(*live.ResolvedCobaltfile))
 	if err != nil {
 		return false, fmt.Errorf("parse stored cobaltfile: %w", err)
 	}
