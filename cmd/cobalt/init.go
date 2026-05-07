@@ -27,18 +27,21 @@ func newInitCmd() *cobra.Command {
 		keyPassphrase string
 	)
 
-	cmd := &cobra.Command{
+		cmd := &cobra.Command{
 		Use:   "init <user@host>",
 		Short: "Initialize cobalt on a remote server",
-		Long: `SSH into a target host and start a cobalt stack using Docker Compose.
+		Long: `SSH into a target host, install Docker if needed, initialize Docker Swarm,
+and start a cobalt stack using Docker Compose.
 
 This command will:
   1. Connect to the target host via SSH
-  2. Create /opt/cobalt directory
-  3. Upload docker-compose.yml and start the stack
-  4. Wait for the cobalt daemon to become healthy
-  5. Create an initial API key
-  6. Save the server configuration locally
+  2. Install Docker if not already installed
+  3. Initialize Docker Swarm if not already initialized
+  4. Create /opt/cobalt directory
+  5. Upload docker-compose.yml and start the stack
+  6. Wait for the cobalt daemon to become healthy
+  7. Create an initial API key
+  8. Save the server configuration locally
 
 Examples:
   # Initialize on a server using default latest tag
@@ -58,10 +61,10 @@ Examples:
 				publicHost = host
 			}
 
-			ctx, cancel := context.WithTimeout(cmd.Context(), 5*time.Minute)
-			defer cancel()
+		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
+		defer cancel()
 
-			fmt.Fprintf(output.Stderr, "[1/6] Connecting to %s...\n", target)
+			fmt.Fprintf(output.Stderr, "[1/8] Connecting to %s...\n", target)
 
 			var auth ssh.AuthMethod
 			if keyPath != "" {
@@ -89,16 +92,47 @@ Examples:
 			}
 			defer conn.Close()
 
-			fmt.Fprintf(output.Stderr, "[2/6] Connected. Setting up cobalt stack...\n")
+			fmt.Fprintf(output.Stderr, "[2/8] Connected. Checking Docker installation...\n")
+
+			dockerCheck := conn.Run(ctx, "docker --version")
+			if dockerCheck.Err != nil || dockerCheck.ExitCode != 0 {
+				fmt.Fprintf(output.Stderr, "[2b/8] Docker not found. Installing Docker...\n")
+				installDocker := conn.Run(ctx, "curl -fsSL https://get.docker.com | sh")
+				if installDocker.ExitCode != 0 {
+					return fmt.Errorf("docker installation failed: %s", installDocker.Stderr)
+				}
+				fmt.Fprintf(output.Stderr, "[2b/8] Docker installed.\n")
+			} else {
+				fmt.Fprintf(output.Stderr, "[2/8] Docker found: %s", strings.TrimSpace(dockerCheck.Stdout))
+			}
+
+			fmt.Fprintf(output.Stderr, "[3/8] Checking Docker Swarm...\n")
+			swarmResult := conn.Run(ctx, "docker info --format '{{.Swarm.LocalNodeState}}'")
+			swarmState := strings.TrimSpace(swarmResult.Stdout)
+			if swarmState != "active" {
+				fmt.Fprintf(output.Stderr, "[3b/8] Docker Swarm not initialized. Initializing...\n")
+				initSwarm := conn.Run(ctx, "docker swarm init")
+				if initSwarm.ExitCode != 0 {
+					return fmt.Errorf("swarm init failed: %s", initSwarm.Stderr)
+				}
+				fmt.Fprintf(output.Stderr, "[3b/8] Docker Swarm initialized.\n")
+			} else {
+				fmt.Fprintf(output.Stderr, "[3/8] Docker Swarm active.\n")
+			}
+
+			fmt.Fprintf(output.Stderr, "[4/8] Creating /opt/cobalt directory...\n")
+			if r := conn.Run(ctx, "mkdir -p /opt/cobalt"); r.Err != nil {
+				return fmt.Errorf("create /opt/cobalt: %w", r.Err)
+			}
 
 			composePath := "/opt/cobalt/docker-compose.yml"
 			if composeFile != "" {
-				fmt.Fprintf(output.Stderr, "[3/6] Uploading custom compose file: %s\n", composeFile)
+				fmt.Fprintf(output.Stderr, "[5/8] Uploading custom compose file: %s\n", composeFile)
 				if err := conn.ScpTo(composeFile, composePath); err != nil {
 					return fmt.Errorf("upload compose file: %w", err)
 				}
 			} else {
-				fmt.Fprintf(output.Stderr, "[3/6] Creating docker-compose.yml...\n")
+				fmt.Fprintf(output.Stderr, "[5/8] Creating docker-compose.yml...\n")
 				composeContent, err := defaultComposeYAML(cobaltVersion, publicHost, dataDir)
 				if err != nil {
 					return fmt.Errorf("generate compose file: %w", err)
@@ -108,8 +142,8 @@ Examples:
 				}
 			}
 
-			fmt.Fprintf(output.Stderr, "[4/6] Starting Docker Compose stack...\n")
-			result := conn.Run(ctx, fmt.Sprintf("cd /opt/cobalt && docker compose up -d"))
+			fmt.Fprintf(output.Stderr, "[6/8] Starting Docker Compose stack...\n")
+			result := conn.Run(ctx, "cd /opt/cobalt && docker compose up -d")
 			if result.Err != nil {
 				return fmt.Errorf("docker compose up failed: %w", result.Err)
 			}
@@ -117,13 +151,13 @@ Examples:
 				return fmt.Errorf("docker compose up failed (exit %d): %s", result.ExitCode, result.Stderr)
 			}
 
-			fmt.Fprintf(output.Stderr, "[5/6] Waiting for cobalt to be healthy...\n")
+			fmt.Fprintf(output.Stderr, "[7/8] Waiting for cobalt to be healthy...\n")
 			daemonURL := fmt.Sprintf("http://%s/healthz", host)
 			if err := waitForHealthy(ctx, daemonURL, 60*time.Second); err != nil {
 				return fmt.Errorf("daemon not healthy: %w", err)
 			}
 
-			fmt.Fprintf(output.Stderr, "[6/6] Creating API key...\n")
+			fmt.Fprintf(output.Stderr, "[8/8] Creating API key...\n")
 			apiKey, err := createAPIKey(ctx, daemonURL)
 			if err != nil {
 				return fmt.Errorf("create API key: %w", err)
