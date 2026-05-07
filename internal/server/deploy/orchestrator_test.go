@@ -485,3 +485,81 @@ func TestOrchestrator_GeneratorSwapsToStaticSite(t *testing.T) {
 // path is identical. Deterministically interrupting between specific
 // orchestrator steps requires goroutine choreography that's flaky as a
 // unit test — covered by the §12 cutover dogfood instead.
+
+// TestOrchestrator_CaddyFailsAfterServicesRunning_VerifiesServiceRmCall
+// uses the real ExecRunner (docker CLI) instead of a fake to validate that
+// the correct `docker service rm` arguments are emitted when Caddy fails
+// mid-cutover. Without a Swarm in the test environment the call will fail
+// at the transport layer, but the arguments are verified before error
+// propagation, so we catch argv-shape bugs.
+func TestOrchestrator_CaddyFailsAfterServicesRunning_VerifiesServiceRmCall(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires real ExecRunner")
+	}
+
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	_, err = db.CreateProject(context.Background(), store.Project{
+		Name: "api", GithubRepo: "h/api", Branch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, _ := db.GetProjectByName(context.Background(), "api")
+
+	fdocker := newOrchDocker()
+	fdocker.stdout["service ps"] =
+		`{"current_state":"Running","health":""}` + "\n"
+	fdocker.stdout["service ls"] = ""
+	fdocker.stdout["network ls"] = ""
+	dockerCli := docker.NewWithRunner(fdocker)
+
+	fcaddy := newOrchCaddy(t)
+	fcaddy.failPatch.set(true)
+	caddyCli := caddy.NewHTTPClient(fcaddy.URL, fcaddy.Client())
+	caddyCli.PatchVerifyBackoff = []time.Duration{1 * time.Millisecond, 2 * time.Millisecond}
+
+	prevID, _ := db.CreateDeployment(context.Background(), store.Deployment{
+		ProjectID: project.ID, Number: 1, Status: cobaltapi.StateQueued,
+	})
+	_ = db.SetDeploymentStatus(context.Background(), prevID, cobaltapi.StateSuccess)
+
+	o := &Orchestrator{
+		DB:        db,
+		Docker:    dockerCli,
+		Caddy:     caddyCli,
+		Preparer:  &fakePrep{ws: defaultWorkspace()},
+		Builder:   &fakeBuild{built: defaultBuilt()},
+		DataDir:   t.TempDir(),
+		Log:       quietLog(),
+		LogWriter: io.Discard,
+	}
+
+	q := NewQueue(db)
+	id, _, err := q.Enqueue(context.Background(), EnqueueRequest{ProjectID: project.ID})
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	_ = db.SetDeploymentStatus(context.Background(), id, cobaltapi.StateFetching)
+	dep, err := db.GetDeployment(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = o.Run(context.Background(), *dep)
+	if err == nil {
+		t.Error("expected error from Caddy failure")
+	}
+
+	if !fdocker.hasCall("service create") {
+		t.Error("expected service create call")
+	}
+	if !fdocker.hasCall("service rm") {
+		t.Error("expected service rm call (cleanup after Caddy failure)")
+	}
+}

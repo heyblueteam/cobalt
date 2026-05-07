@@ -256,10 +256,12 @@ func TestRecoverOnBoot(t *testing.T) {
 	pid := newProject(t, db, "api")
 	ctx := context.Background()
 
-	// Three deploys: queued, building, success.
+	// Four deploys: queued, building, swapping, success.
 	queuedID, _, _ := NewQueue(db).Enqueue(ctx, EnqueueRequest{ProjectID: pid})
 	buildingID, _, _ := NewQueue(db).Enqueue(ctx, EnqueueRequest{ProjectID: pid})
 	_ = db.SetDeploymentStatus(ctx, buildingID, cobaltapi.StateBuilding)
+	swappingID, _, _ := NewQueue(db).Enqueue(ctx, EnqueueRequest{ProjectID: pid})
+	_ = db.SetDeploymentStatus(ctx, swappingID, cobaltapi.StateSwapping)
 	successID, _, _ := NewQueue(db).Enqueue(ctx, EnqueueRequest{ProjectID: pid})
 	_ = db.SetDeploymentStatus(ctx, successID, cobaltapi.StateSuccess)
 
@@ -273,7 +275,8 @@ func TestRecoverOnBoot(t *testing.T) {
 	}{
 		{queuedID, cobaltapi.StateQueued},     // untouched
 		{buildingID, cobaltapi.StateFailed},   // recovered
-		{successID, cobaltapi.StateSuccess},   // untouched
+		{swappingID, cobaltapi.StateFailed},   // recovered (crashed mid-cutover)
+		{successID, cobaltapi.StateSuccess},  // untouched
 	}
 	for _, c := range cases {
 		dep, err := db.GetDeployment(ctx, c.id)
