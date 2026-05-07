@@ -25,6 +25,7 @@ func newInitCmd() *cobra.Command {
 		dataDir       string
 		keyPath       string
 		keyPassphrase string
+		password      string
 	)
 
 		cmd := &cobra.Command{
@@ -51,7 +52,11 @@ Examples:
   cobalt init root@server.blue.cc --version v1.0.0 --public-host cobalt.blue.cc
 
   # Use a custom compose file for air-gapped deployments
-  cobalt init user@192.168.1.100 --compose-file ./my-compose.yml`,
+  cobalt init user@192.168.1.100 --compose-file ./my-compose.yml
+
+  # Use password authentication (not recommended, use --key or SSH agent instead)
+  cobalt init root@server.blue.cc --password mypassword
+`,
 		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -74,6 +79,10 @@ Examples:
 					conn.Close()
 					auth = ssh.AgentAuth{Socket: socket}
 				}
+			}
+
+			if auth == nil && password != "" {
+				auth = ssh.PasswordAuth{Password: password}
 			}
 
 			if auth == nil {
@@ -197,6 +206,7 @@ Examples:
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/cobalt/data", "data directory for cobalt")
 	cmd.Flags().StringVar(&keyPath, "key", "", "path to SSH private key")
 	cmd.Flags().StringVar(&keyPassphrase, "key-passphrase", "", "passphrase for SSH private key (if encrypted)")
+	cmd.Flags().StringVar(&password, "password", "", "SSH password (use interactively or via SSH agent for better security)")
 
 	return cmd
 }
