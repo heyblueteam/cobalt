@@ -22,19 +22,37 @@ archives:
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
-dockers_v2:
-  - images:
-      - "ghcr.io/heyblueteam/cobalt"
-    tags:
-      - "v{{ .Version }}"
-      - "{{ if not .IsNightly }}latest{{ end }}"
-    labels:
-      "org.opencontainers.image.description": "Deployment glue for Docker Swarm + Caddy"
-      "org.opencontainers.image.created": "{{.Date}}"
-      "org.opencontainers.image.name": "{{.ProjectName}}"
-      "org.opencontainers.image.revision": "{{.FullCommit}}"
-      "org.opencontainers.image.version": "{{.Version}}"
-      "org.opencontainers.image.source": "{{.GitURL}}"
+dockers:
+  - id: cobalt
+    image_templates:
+      - "ghcr.io/heyblueteam/cobalt:{{ .Version }}"
+      - "ghcr.io/heyblueteam/cobalt:latest"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/amd64"
+    goarch: amd64
+  - id: cobalt-arm64
+    image_templates:
+      - "ghcr.io/heyblueteam/cobalt:{{ .Version }}-arm64"
+      - "ghcr.io/heyblueteam/cobalt:latest-arm64"
+    dockerfile: Dockerfile
+    use: buildx
+    build_flag_templates:
+      - "--pull"
+      - "--platform=linux/arm64"
+    goarch: arm64
+
+docker_manifests:
+  - name_template: "ghcr.io/heyblueteam/cobalt:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/heyblueteam/cobalt:{{ .Version }}-amd64"
+      - "ghcr.io/heyblueteam/cobalt:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/heyblueteam/cobalt:latest"
+    image_templates:
+      - "ghcr.io/heyblueteam/cobalt:latest-amd64"
+      - "ghcr.io/heyblueteam/cobalt:latest-arm64"
 
 homebrew_casks:
   - name: cobalt
