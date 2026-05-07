@@ -29,11 +29,7 @@ type streamEnv struct {
 func newStreamEnv(t *testing.T) *streamEnv {
 	t.Helper()
 	dataDir := t.TempDir()
-	db, err := store.Open(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	mux := http.NewServeMux()
 	h := NewHandler(HandlerOpts{

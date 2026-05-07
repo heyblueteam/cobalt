@@ -30,12 +30,7 @@ type testEnv struct {
 
 func newEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-
+	db := openTestDB(t)
 	q := deploy.NewQueue(db)
 	mux := http.NewServeMux()
 	h := &Handler{

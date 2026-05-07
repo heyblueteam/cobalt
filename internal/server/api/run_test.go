@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -63,11 +62,7 @@ func (f *runFakeDocker) Run(_ context.Context, args []string, stdin io.Reader, s
 
 func newRunEnv(t *testing.T) *runEnv {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	fdocker := &runFakeDocker{}
 	dockerCli := docker.NewWithRunner(fdocker)
@@ -309,34 +304,35 @@ func TestRun_NoSuccessfulDeployReturns404(t *testing.T) {
 
 func TestRun_ResolveImage_Defaults(t *testing.T) {
 	t.Parallel()
+	ptr := func(s string) *string { return &s }
 	cases := []struct {
 		name           string
-		resolved       sql.NullString
+		resolved       *string
 		serviceName    string
 		wantImage      string
 		wantExtraParam bool
 	}{
 		{
 			name:        "no resolved cobaltfile uses default",
-			resolved:    sql.NullString{},
+			resolved:    nil,
 			serviceName: "web",
 			wantImage:   "default",
 		},
 		{
 			name:        "service not in cobaltfile uses default",
-			resolved:    sql.NullString{String: `{"version":"1.0","services":{"other":{}}}`, Valid: true},
+			resolved:    ptr(`{"version":"1.0","services":{"other":{}}}`),
 			serviceName: "web",
 			wantImage:   "default",
 		},
 		{
 			name:        "service overrides image",
-			resolved:    sql.NullString{String: `{"version":"1.0","services":{"web":{"image":"alt"}},"images":{"alt":{"dockerfile":"Dockerfile"}}}`, Valid: true},
+			resolved:    ptr(`{"version":"1.0","services":{"web":{"image":"alt"}},"images":{"alt":{"dockerfile":"Dockerfile"}}}`),
 			serviceName: "web",
 			wantImage:   "alt",
 		},
 		{
 			name:           "extraRunParams threaded through",
-			resolved:       sql.NullString{String: `{"version":"1.0","services":{"web":{"port":3000,"extraRunParams":"--add-host host.docker.internal:host-gateway"}}}`, Valid: true},
+			resolved:       ptr(`{"version":"1.0","services":{"web":{"port":3000,"extraRunParams":"--add-host host.docker.internal:host-gateway"}}}`),
 			serviceName:    "web",
 			wantImage:      "default",
 			wantExtraParam: true,

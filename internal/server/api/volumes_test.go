@@ -59,11 +59,7 @@ func firstWords(s string, n int) string {
 
 func newVolumesEnv(t *testing.T) (*testEnv, *volumesFakeDocker) {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	fdocker := &volumesFakeDocker{stdout: map[string]string{}}
 	dockerCli := docker.NewWithRunner(fdocker)

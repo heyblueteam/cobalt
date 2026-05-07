@@ -32,11 +32,7 @@ type webhookEnv struct {
 
 func newWebhookEnv(t *testing.T) *webhookEnv {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	q := deploy.NewQueue(db)
 	mux := http.NewServeMux()
@@ -57,9 +53,15 @@ func newWebhookEnv(t *testing.T) *webhookEnv {
 		WebhookSecret: "test-secret",
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("CreateGithubApp: %v", err)
 	}
-	app, _ := db.GetGithubApp(context.Background(), appID)
+	app, err := db.GetGithubApp(context.Background(), appID)
+	if err != nil {
+		t.Fatalf("GetGithubApp(%d): %v", appID, err)
+	}
+	if app == nil {
+		t.Fatalf("GetGithubApp(%d): nil app, no error — store inconsistency", appID)
+	}
 	return &webhookEnv{t: t, srv: srv, db: db, app: app, q: q}
 }
 
@@ -154,8 +156,8 @@ func TestWebhook_PushEnqueuesDeployForTrackingProject(t *testing.T) {
 	if len(deps) != 1 {
 		t.Errorf("queued: %d, want 1", len(deps))
 	}
-	if len(deps) > 0 && deps[0].CommitSHA.String != "abc123" {
-		t.Errorf("commit: %q", deps[0].CommitSHA.String)
+	if len(deps) > 0 && (deps[0].CommitSHA == nil || *deps[0].CommitSHA != "abc123") {
+		t.Errorf("commit: %+v", deps[0].CommitSHA)
 	}
 }
 

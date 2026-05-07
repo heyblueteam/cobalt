@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"database/sql"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/store"
+	"github.com/heyblueteam/cobalt/internal/storetest"
 )
 
 func TestRequestID_Generates(t *testing.T) {
@@ -68,7 +68,7 @@ func TestBearerAuth(t *testing.T) {
 	insertAPIKey(t, db, "secret-key", "test")
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mw := BearerAuth(db.DB, log)
+	mw := BearerAuth(db.Client, log)
 
 	cases := []struct {
 		name   string
@@ -108,7 +108,7 @@ func TestBearerAuth_UpdatesLastUsedAt(t *testing.T) {
 	id := insertAPIKey(t, db, "k", "test")
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := BearerAuth(db.DB, log)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := BearerAuth(db.Client, log)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	req := httptest.NewRequest("GET", "/", nil)
@@ -116,16 +116,21 @@ func TestBearerAuth_UpdatesLastUsedAt(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), req)
 
 	// last_used_at write is async; poll briefly.
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		var lu sql.NullInt64
-		if err := db.QueryRow(`SELECT last_used_at FROM apikeys WHERE id=?`, id).Scan(&lu); err != nil {
-			t.Fatalf("scan: %v", err)
+		resp, err := db.Client.QuerySingle(context.Background(),
+			`SELECT last_used_at FROM apikeys WHERE id=?`, id)
+		if err != nil {
+			t.Fatalf("query: %v", err)
 		}
-		if lu.Valid {
-			return
+		results := resp.GetQueryResults()
+		if len(results) > 0 && len(results[0].Values) > 0 {
+			v := results[0].Values[0][0]
+			if v != nil {
+				return
+			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	t.Error("last_used_at never updated")
 }
@@ -151,23 +156,20 @@ func TestLogger_RecordsStatus(t *testing.T) {
 
 func newTestDB(t *testing.T) *store.DB {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return storetest.OpenDB(t)
 }
 
 func insertAPIKey(t *testing.T, db *store.DB, raw, name string) int64 {
 	t.Helper()
-	res, err := db.ExecContext(context.Background(),
+	resp, err := db.Client.ExecuteSingle(context.Background(),
 		`INSERT INTO apikeys (key_hash, name, created_at) VALUES (?, ?, unixepoch())`,
 		HashAPIKey(raw), name,
 	)
 	if err != nil {
 		t.Fatalf("insert apikey: %v", err)
 	}
-	id, _ := res.LastInsertId()
-	return id
+	if len(resp.Results) == 0 {
+		t.Fatal("no execute results")
+	}
+	return resp.Results[0].LastInsertID
 }

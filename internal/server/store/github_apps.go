@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 
 	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
@@ -117,41 +118,49 @@ func (db *DB) SetInstallationToken(ctx context.Context, id int64, token string, 
 }
 
 func (db *DB) CreateGithubApp(ctx context.Context, a GithubApp) (int64, error) {
-	slug := a.Slug
-	if !slug.Valid {
-		slug = sql.NullString{}
-	}
-	clientID := a.ClientID
-	if !clientID.Valid {
-		clientID = sql.NullString{}
-	}
-	clientSecret := a.ClientSecret
-	if !clientSecret.Valid {
-		clientSecret = sql.NullString{}
-	}
-	appName := a.Name
-	if !appName.Valid {
-		appName = sql.NullString{}
-	}
-	htmlURL := a.HTMLURL
-	if !htmlURL.Valid {
-		htmlURL = sql.NullString{}
-	}
-
 	resp, err := db.ExecuteSingle(ctx, `
         INSERT INTO github_apps (
             app_id, slug, owner, private_key, webhook_secret,
             client_id, client_secret, name, html_url, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-    `, a.AppID, slug, a.Owner, a.PrivateKey, a.WebhookSecret,
-		clientID, clientSecret, appName, htmlURL)
+    `, a.AppID, nullStringArg(a.Slug), a.Owner, a.PrivateKey, a.WebhookSecret,
+		nullStringArg(a.ClientID), nullStringArg(a.ClientSecret),
+		nullStringArg(a.Name), nullStringArg(a.HTMLURL))
 	if err != nil {
+		return 0, err
+	}
+	if err := resultErr(resp); err != nil {
 		return 0, err
 	}
 	if len(resp.Results) == 0 {
 		return 0, nil
 	}
 	return resp.Results[0].LastInsertID, nil
+}
+
+// nullStringArg converts a sql.NullString to a value the rqlite-go-http
+// SDK binds correctly. The SDK marshals struct values verbatim, which
+// breaks parameter ordering when an INVALID NullString is passed; we
+// must convert to nil (= bind NULL) instead.
+func nullStringArg(n sql.NullString) any {
+	if !n.Valid {
+		return nil
+	}
+	return n.String
+}
+
+// resultErr surfaces a per-statement error. rqlite returns HTTP 200 with
+// the SQL error embedded in Results[0].Error — silent failures otherwise.
+func resultErr(resp *rqlitehttp.ExecuteResponse) error {
+	if resp == nil {
+		return nil
+	}
+	for _, r := range resp.Results {
+		if r.Error != "" {
+			return errors.New(r.Error)
+		}
+	}
+	return nil
 }
 
 func (db *DB) CreateGithubAppInstallation(ctx context.Context, inst GithubAppInstallation) (int64, error) {

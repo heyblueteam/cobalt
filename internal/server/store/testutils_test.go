@@ -2,19 +2,32 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
 
+// openTestDB starts a fresh rqlited container, opens a *DB connected to it,
+// runs InitSchema, and registers cleanup. Mirrors storetest.OpenDB but
+// lives in this package to avoid the import cycle (storetest imports store,
+// so store can't import storetest in its tests).
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
 
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("docker not found in PATH; openTestDB tests require docker")
+	}
+
 	dir := t.TempDir()
 	port := chooseUnusedPort(t)
-	containerName := "cobalt-test-rqlite-" + t.Name()
+	containerName := "cobalt-test-rqlite-" + sanitize(t.Name()) + "-" + randomSuffix()
+
+	stopRqlitedContainer(containerName)
 
 	if err := startRqlitedContainer(containerName, dir, port); err != nil {
 		t.Fatalf("start rqlited container: %v", err)
@@ -33,13 +46,13 @@ func openTestDB(t *testing.T) *DB {
 	}
 
 	if err := db.InitSchema(context.Background()); err != nil {
-		db.Client.Close()
+		_ = db.Client.Close()
 		stopRqlitedContainer(containerName)
 		t.Fatalf("InitSchema: %v", err)
 	}
 
 	t.Cleanup(func() {
-		db.Client.Close()
+		_ = db.Client.Close()
 		stopRqlitedContainer(containerName)
 	})
 
@@ -50,6 +63,7 @@ func startRqlitedContainer(name, dataDir, hostPort string) error {
 	cmd := exec.Command("docker", "run",
 		"--name", name,
 		"--rm",
+		"--detach",
 		"--user", "root",
 		"-v", dataDir+":/rqlite/data",
 		"-p", hostPort+":4001",
@@ -61,11 +75,11 @@ func startRqlitedContainer(name, dataDir, hostPort string) error {
 	)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Start()
+	return cmd.Run()
 }
 
 func stopRqlitedContainer(name string) {
-	exec.Command("docker", "stop", name).Run()
+	_ = exec.Command("docker", "stop", name).Run()
 }
 
 func chooseUnusedPort(t *testing.T) string {
@@ -94,11 +108,26 @@ func waitForRqlite(url string, timeout time.Duration) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		err = db.Ping(ctx)
 		cancel()
-		db.Client.Close()
+		_ = db.Client.Close()
 		if err == nil {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	return false
+}
+
+func sanitize(name string) string {
+	name = strings.ReplaceAll(name, "/", "_")
+	name = strings.ToLower(name)
+	if len(name) > 50 {
+		name = name[:50]
+	}
+	return name
+}
+
+func randomSuffix() string {
+	var b [4]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
 }

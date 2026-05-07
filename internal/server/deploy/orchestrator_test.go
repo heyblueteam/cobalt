@@ -202,11 +202,7 @@ func quietLog() *slog.Logger {
 
 func setupOrchestrator(t *testing.T) (*Orchestrator, *orchestratorDocker, *orchestratorCaddy, *store.DB, store.Project) {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	pid, err := db.CreateProject(context.Background(), store.Project{
 		Name: "api", GithubRepo: "h/api", Branch: "main",
@@ -498,13 +494,9 @@ func TestOrchestrator_CaddyFailsAfterServicesRunning_VerifiesServiceRmCall(t *te
 		t.Skip("requires real ExecRunner")
 	}
 
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
+	db := openTestDB(t)
 
-	_, err = db.CreateProject(context.Background(), store.Project{
+	_, err := db.CreateProject(context.Background(), store.Project{
 		Name: "api", GithubRepo: "h/api", Branch: "main",
 	})
 	if err != nil {

@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"sync"
@@ -574,7 +573,8 @@ func TestReconcile_ProjectRouteExistsError_DoesNotHaltSweep(t *testing.T) {
 	}
 }
 
-// helper to build a sql.NullString for cobaltfile json
-func nullStr(raw string) sql.NullString {
-	return sql.NullString{String: raw, Valid: true}
+// helper to build a *string for cobaltfile json (the resolved-cobaltfile
+// column is nullable; nil = "no resolved cobaltfile yet").
+func nullStr(raw string) *string {
+	return &raw
 }

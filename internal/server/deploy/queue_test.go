@@ -5,17 +5,13 @@ import (
 	"testing"
 
 	"github.com/heyblueteam/cobalt/internal/server/store"
+	"github.com/heyblueteam/cobalt/internal/storetest"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
 func openTestDB(t *testing.T) *store.DB {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
+	return storetest.OpenDB(t)
 }
 
 func newProject(t *testing.T, db *store.DB, name string) int64 {
@@ -84,7 +80,7 @@ func TestQueue_EnqueuePreservesOptionalFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetDeployment: %v", err)
 	}
-	if !dep.CommitSHA.Valid || dep.CommitSHA.String != "abc123" {
+	if dep.CommitSHA == nil || *dep.CommitSHA != "abc123" {
 		t.Errorf("commit_sha: %+v", dep.CommitSHA)
 	}
 	if !dep.NoCache {

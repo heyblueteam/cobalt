@@ -9,17 +9,12 @@ import (
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
-	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
 func TestMetaInfo(t *testing.T) {
 	t.Parallel()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 
 	mux := http.NewServeMux()
 	h := NewHandler(HandlerOpts{

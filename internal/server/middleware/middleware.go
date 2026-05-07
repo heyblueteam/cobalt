@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -173,6 +174,9 @@ func toInt64(v any) int64 {
 		return int64(x)
 	case float64:
 		return int64(x)
+	case json.Number:
+		i, _ := x.Int64()
+		return i
 	}
 	return 0
 }

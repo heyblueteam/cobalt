@@ -9,17 +9,12 @@ import (
 	"testing"
 
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
-	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
 func newAPIKeysEnv(t *testing.T) *testEnv {
 	t.Helper()
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
+	db := openTestDB(t)
 	q := deploy.NewQueue(db)
 	mux := http.NewServeMux()
 	h := NewHandler(HandlerOpts{
@@ -135,20 +130,16 @@ func TestAPIKeys_GeneratedKeyHashesCorrectly(t *testing.T) {
 
 func TestAPIKeys_StoreLastUsedNullable(t *testing.T) {
 	t.Parallel()
-	// The store struct uses sql.NullInt64 for LastUsedAt; the API
-	// shape uses int64 (omitempty). Verify a freshly-created key
-	// doesn't surface a nonsensical 0 value through omitempty.
-	db, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	_, err = db.CreateAPIKey(context.Background(), "deadbeef", "x")
+	// The store column is nullable; reads turn NULL into int64(0).
+	// The API shape uses int64 with omitempty, so 0 must never reach
+	// the wire as `last_used_at: 0` for a freshly-created key.
+	db := openTestDB(t)
+	_, err := db.CreateAPIKey(context.Background(), "deadbeef", "x")
 	if err != nil {
 		t.Fatal(err)
 	}
 	keys, _ := db.ListAPIKeys(context.Background())
-	if len(keys) != 1 || keys[0].LastUsedAt.Valid {
-		t.Errorf("LastUsedAt should be NULL initially; got %+v", keys[0].LastUsedAt)
+	if len(keys) != 1 || keys[0].LastUsedAt != 0 {
+		t.Errorf("LastUsedAt should be 0 initially; got %+v", keys[0].LastUsedAt)
 	}
 }
