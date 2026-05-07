@@ -50,18 +50,6 @@ homebrew_casks:
     binaries:
       - "cobalt"
 
-scoops:
-  - name: cobalt
-    repository:
-      owner: heyblueteam
-      name: scoop-bucket
-      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
-      branch: main
-    directory: bucket
-    homepage: https://cobalt.devel
-    description: "Deployment glue for Docker Swarm + Caddy"
-    license: MIT
-
 checksum:
   name_template: "checksums.txt"
 
