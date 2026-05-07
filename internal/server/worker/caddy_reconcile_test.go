@@ -416,6 +416,44 @@ func TestReconcile_ListProjectsErrorBubbles(t *testing.T) {
 	}
 }
 
+func TestReconcile_CaddyRouteMissingButPriorDeploy_CallsAddProjectRouteFirst(t *testing.T) {
+	t.Parallel()
+	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
+		Version: "1.0",
+		Services: map[string]cobaltfile.Service{
+			"web": {Type: cobaltfile.TypeContainer, Image: "default", Port: 3000},
+		},
+		Images: map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	})
+	st := &fakeReconcileStore{
+		projects: []store.Project{{ID: 1, Name: "api"}},
+		lastByID: map[int64]*store.Deployment{
+			1: {ID: 10, ProjectID: 1, Number: 3, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf)},
+		},
+		domains: map[int64][]string{1: {"api.example.com"}},
+	}
+	cy := newFakeReconcileCaddy()
+	cy.routeExists[1] = false
+
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if corrected != 1 {
+		t.Errorf("corrected: %d, want 1", corrected)
+	}
+	if len(cy.addCalls) != 1 {
+		t.Errorf("AddProjectRoute calls: %d, want 1", len(cy.addCalls))
+	}
+	if len(cy.serveCalls) != 1 {
+		t.Errorf("ServeService calls: %d, want 1", len(cy.serveCalls))
+	}
+	if len(cy.domainCalls) != 0 {
+		t.Errorf("SetDomainsForProject should NOT be called in route-missing path: got %d calls", len(cy.domainCalls))
+	}
+}
+
 // helper to build a sql.NullString for cobaltfile json
 func nullStr(raw string) sql.NullString {
 	return sql.NullString{String: raw, Valid: true}

@@ -125,3 +125,34 @@ func TestVerifyServeService_HonorsContextCancel(t *testing.T) {
 		t.Error("expected context error")
 	}
 }
+
+func TestVerifyServeService_TransientReadFailure_RetriesAndSucceeds(t *testing.T) {
+	t.Parallel()
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := attempts.Add(1)
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// First attempt: connection reset (transient). Second: stale.
+		// Third: correct — retry should recover.
+		if n == 1 {
+			http.Error(w, "connection reset", http.StatusBadGateway)
+			return
+		}
+		if n == 2 {
+			_, _ = w.Write([]byte(`"old-upstream"`))
+			return
+		}
+		_, _ = w.Write([]byte(`"myapp-7-web"`))
+	}))
+	defer srv.Close()
+	c := NewHTTPClient(srv.URL, srv.Client())
+	c.PatchVerifyBackoff = fastBackoff
+
+	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000); err != nil {
+		t.Errorf("expected success after transient read failure, got: %v", err)
+	}
+}
