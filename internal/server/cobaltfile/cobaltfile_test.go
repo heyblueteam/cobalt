@@ -25,9 +25,8 @@ func TestParse_Empty(t *testing.T) {
 	}
 }
 
-func TestParse_BlueAPIShape(t *testing.T) {
+func TestParse_ContainerWithExtraSwarmParams(t *testing.T) {
 	t.Parallel()
-	// Mirrors api/cobalt.json shape today (per docs/disco.md).
 	src := `{
         "version": "1.0",
         "services": {
@@ -56,6 +55,142 @@ func TestParse_BlueAPIShape(t *testing.T) {
 	}
 	if _, ok := cf.Images[DefaultImageName]; !ok {
 		t.Error("default image should auto-inject for container services")
+	}
+}
+
+func TestParse_ContainerWithExtraRunParams(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {
+            "web": {
+                "port": 4000,
+                "extraRunParams": "--host host.docker.internal:host-gateway"
+            }
+        }
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	web := cf.Services["web"]
+	if web.ExtraRunParams != "--host host.docker.internal:host-gateway" {
+		t.Errorf("extraRunParams: got %q", web.ExtraRunParams)
+	}
+}
+
+func TestParse_StaticContainer(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {
+            "web": {
+                "type": "static",
+                "port": 3000,
+                "publicPath": "dist"
+            }
+        }
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	web := cf.Services["web"]
+	if web.Type != TypeStatic {
+		t.Errorf("type: got %q, want static", web.Type)
+	}
+	if web.Port != 3000 {
+		t.Errorf("port: got %d, want 3000", web.Port)
+	}
+	if web.PublicPath != "dist" {
+		t.Errorf("publicPath: got %q, want dist", web.PublicPath)
+	}
+}
+
+func TestParse_HTTPPort(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {
+            "web": {
+                "port": 80
+            }
+        }
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cf.Services["web"].Port != 80 {
+		t.Errorf("port: got %d, want 80", cf.Services["web"].Port)
+	}
+}
+
+func TestParse_CustomPort(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {
+            "web": {
+                "port": 4500
+            }
+        }
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cf.Services["web"].Port != 4500 {
+		t.Errorf("port: got %d, want 4500", cf.Services["web"].Port)
+	}
+}
+
+func TestParse_PrebuiltImageWithVolumesAndHealth(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {
+            "web": {
+                "image": "ghcr.io/example/image:latest",
+                "port": 2322,
+                "exposedInternally": true,
+                "health": {
+                    "command": "exit 0"
+                },
+                "volumes": [
+                    {
+                        "name": "data",
+                        "destinationPath": "/app/data"
+                    }
+                ]
+            }
+        },
+        "images": {
+            "ghcr.io/example/image:latest": {}
+        }
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	web := cf.Services["web"]
+	if web.Image != "ghcr.io/example/image:latest" {
+		t.Errorf("image: got %q", web.Image)
+	}
+	if web.Port != 2322 {
+		t.Errorf("port: got %d, want 2322", web.Port)
+	}
+	if !web.ExposedInternally {
+		t.Error("exposedInternally: got false, want true")
+	}
+	if web.Health == nil || web.Health.Command != "exit 0" {
+		t.Errorf("health: got %v", web.Health)
+	}
+	if len(web.Volumes) != 1 || web.Volumes[0].Name != "data" {
+		t.Errorf("volumes: got %v", web.Volumes)
+	}
+	if web.Volumes[0].DestinationPath != "/app/data" {
+		t.Errorf("volume destinationPath: got %q", web.Volumes[0].DestinationPath)
 	}
 }
 
