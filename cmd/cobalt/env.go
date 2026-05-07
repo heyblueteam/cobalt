@@ -6,6 +6,7 @@ import (
 
 	"github.com/heyblueteam/cobalt/internal/output"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 	"github.com/spf13/cobra"
 )
 
@@ -83,6 +84,9 @@ Examples:
 				if len(parts) != 2 {
 					return fmt.Errorf("invalid format: %q — expected KEY=VAL", kv)
 				}
+				if err := validator.ValidateEnvKey(parts[0]); err != nil {
+					return err
+				}
 				vars[parts[0]] = parts[1]
 			}
 			redeploy, _ := cmd.Flags().GetBool("redeploy")
@@ -124,6 +128,9 @@ Examples:
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			key := args[0]
+			if err := validator.ValidateEnvKey(key); err != nil {
+				return err
+			}
 			if err := confirm(cmd, "Remove env var \""+key+"\"?"); err != nil {
 				return err
 			}

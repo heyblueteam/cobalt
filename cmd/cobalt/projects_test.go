@@ -182,8 +182,8 @@ func TestProjectsAddMissingGitHub(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing --github")
 	}
-	if !contains(err.Error(), "github") {
-		t.Errorf("expected github error, got: %v", err)
+	if !contains(err.Error(), "GitHub") {
+		t.Errorf("expected GitHub error, got: %v", err)
 	}
 }
 

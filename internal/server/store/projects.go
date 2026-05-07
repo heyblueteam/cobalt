@@ -19,11 +19,6 @@ type Project struct {
 	UpdatedAt                int64
 }
 
-var ErrProjectNameTaken = errors.New("store: project name already in use")
-
-// ErrNotFound is returned by Get* methods when no row matches.
-var ErrNotFound = errors.New("store: not found")
-
 // ListProjects returns every project, ordered by name.
 func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 	rows, err := db.QueryContext(ctx, `
@@ -103,6 +98,9 @@ func (db *DB) CreateProject(ctx context.Context, p Project) (int64, error) {
         VALUES (?, ?, ?, ?, unixepoch(), unixepoch())
     `, p.Name, p.GithubRepo, p.Branch, p.GithubAppInstallationID)
 	if err != nil {
+		if isUniqueConstraint(err) {
+			return 0, ErrProjectNameTaken
+		}
 		return 0, err
 	}
 	return res.LastInsertId()

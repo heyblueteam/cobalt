@@ -7,6 +7,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/client"
 	"github.com/heyblueteam/cobalt/internal/output"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 	"github.com/spf13/cobra"
 )
 
@@ -85,14 +86,18 @@ Examples:
 				return err
 			}
 			cname := args[0]
+			if err := validator.ValidateProjectName(cname); err != nil {
+				return err
+			}
+			gh := cmd.Flag("github").Value.String()
+			if err := validator.ValidateGitHubRepo(gh); err != nil {
+				return err
+			}
 			req := cobaltapi.ProjectCreateRequest{
 				Name:       cname,
-				GithubRepo: cmd.Flag("github").Value.String(),
+				GithubRepo: gh,
 				Branch:     cmd.Flag("branch").Value.String(),
 				Domain:     cmd.Flag("domain").Value.String(),
-			}
-			if req.GithubRepo == "" {
-				return fmt.Errorf("--github is required (e.g., --github owner/repo)")
 			}
 			cl := client.New(srv)
 			project, err := cl.CreateProject(cmd.Context(), req)
@@ -148,6 +153,9 @@ Examples:
 		Args:  cobra.ExactArgs(2),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			oldName, newName := args[0], args[1]
+			if err := validator.ValidateProjectName(newName); err != nil {
+				return err
+			}
 			replacer := strings.NewReplacer("\"", "\\\"", "\\", "\\\\")
 			msg := fmt.Sprintf("Rename project \"%s\" to \"%s\"?", replacer.Replace(oldName), replacer.Replace(newName))
 			if err := confirm(cmd, msg); err != nil {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver
 )
@@ -17,6 +18,21 @@ import (
 type DB struct {
 	*sql.DB
 	DataDir string
+}
+
+var ErrProjectNameTaken = errors.New("store: project name already in use")
+
+// ErrNotFound is returned by Get* methods when no row matches.
+var ErrNotFound = errors.New("store: not found")
+
+// isUniqueConstraint returns true if err is a SQLite UNIQUE constraint
+// violation (error code 1555 or message contains "UNIQUE constraint").
+func isUniqueConstraint(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "UNIQUE constraint")
 }
 
 // Open opens (or creates) the cobalt SQLite database under dataDir, runs any

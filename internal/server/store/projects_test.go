@@ -98,6 +98,21 @@ func TestRenameProject(t *testing.T) {
 	}
 }
 
+func TestCreateProject_NameTaken(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	_, err := db.CreateProject(ctx, Project{Name: "api", GithubRepo: "h/api", Branch: "main"})
+	if err != nil {
+		t.Fatalf("first create: %v", err)
+	}
+	_, err = db.CreateProject(ctx, Project{Name: "api", GithubRepo: "h/api2", Branch: "main"})
+	if !errors.Is(err, ErrProjectNameTaken) {
+		t.Errorf("got %v, want ErrProjectNameTaken", err)
+	}
+}
+
 func TestDeleteProject(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
