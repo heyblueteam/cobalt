@@ -22,22 +22,21 @@ archives:
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
-dockers:
-  - id: cobalt
-    image_templates:
-      - "ghcr.io/heyblueteam/cobalt:{{ .Version }}"
-      - "ghcr.io/heyblueteam/cobalt:latest"
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--build-arg VERSION={{.Version}}"
+dockers_v2:
+  - images:
+      - "ghcr.io/heyblueteam/cobalt"
+    tags:
+      - "v{{ .Version }}"
+      - "{{ if not .IsNightly }}latest{{ end }}"
+    labels:
+      "org.opencontainers.image.description": "Deployment glue for Docker Swarm + Caddy"
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.name": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "{{.GitURL}}"
 
-docker_assets:
-  - type: "image"
-    image_templates:
-      - "ghcr.io/heyblueteam/cobalt:{{ .Version }}"
-      - "ghcr.io/heyblueteam/cobalt:latest"
-
-brews:
+homebrew_casks:
   - name: cobalt
     repository:
       owner: heyblueteam
@@ -46,10 +45,10 @@ brews:
     homepage: https://cobalt.devel
     description: "Deployment glue for Docker Swarm + Caddy"
     license: MIT
-    install: |
-      bin.install "cobalt"
-    test: |
-      system "#{bin}/cobalt", "version"
+    url:
+      verified: "github.com/heyblueteam/cobalt"
+    binaries:
+      - "cobalt"
 
 scoops:
   - name: cobalt

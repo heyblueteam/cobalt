@@ -8,14 +8,13 @@ COPY . .
 ARG TARGETOS
 ARG TARGETARCH
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
     -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/cobalt ./cmd/cobalt
 
 # rqlited sidecar — download architecture-specific binary
 FROM --platform=$TARGETOS/$TARGETARCH debian:stable-slim AS rqlited
 ARG RQLITE_VERSION=10.0.3
-ARG TARGETARCH
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && case "${TARGETARCH}" in \
