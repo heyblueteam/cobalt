@@ -16,6 +16,22 @@ func (c *Client) GetMetaInfo(ctx context.Context) (*cobaltapi.MetaInfo, error) {
 	return &info, nil
 }
 
+func (c *Client) SetMetaHost(ctx context.Context, host string) (*cobaltapi.MetaInfo, error) {
+	var info cobaltapi.MetaInfo
+	if err := c.post(ctx, "/api/meta/host", cobaltapi.MetaHostRequest{Host: host}, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+type UpgradeDaemonRequest struct {
+	Image string `json:"image,omitempty"`
+}
+
+func (c *Client) UpgradeDaemon(ctx context.Context, req UpgradeDaemonRequest) error {
+	return c.post(ctx, "/api/meta/upgrade", req, nil)
+}
+
 func (c *Client) ListVolumes(ctx context.Context, project string) ([]cobaltapi.Volume, error) {
 	var vols []cobaltapi.Volume
 	if err := c.get(ctx, fmt.Sprintf("/api/projects/%s/volumes", project), &vols); err != nil {

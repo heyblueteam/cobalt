@@ -16,6 +16,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Env vars
 	mux.HandleFunc("GET /api/projects/{name}/env", h.ListEnv)
+	mux.HandleFunc("GET /api/projects/{name}/env/{key}", h.GetEnv)
 	mux.HandleFunc("POST /api/projects/{name}/env", h.SetEnv)
 	mux.HandleFunc("DELETE /api/projects/{name}/env/{key}", h.DeleteEnv)
 
@@ -57,6 +58,8 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Meta
 	mux.HandleFunc("GET /api/meta/info", h.GetMetaInfo)
+	mux.HandleFunc("POST /api/meta/upgrade", h.MetaUpgrade)
+	mux.HandleFunc("POST /api/meta/host", h.MetaHost)
 }
 
 // RegisterPublic attaches public (unauthenticated) routes onto mux.

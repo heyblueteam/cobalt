@@ -28,6 +28,31 @@ func (h *Handler) ListEnv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out)
 }
 
+// GetEnv implements GET /api/projects/{name}/env/{key}. Returns a single
+// env var's key and value, or 404 if not found.
+func (h *Handler) GetEnv(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.projectFromPath(w, r)
+	if !ok {
+		return
+	}
+	key := r.PathValue("key")
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "missing env key")
+		return
+	}
+	envVar, err := h.DB.GetEnvVar(r.Context(), p.ID, key)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "env var not found")
+			return
+		}
+		h.Log.Error("api: get env", "project_id", p.ID, "key", key, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, cobaltapi.EnvVar{Key: envVar.Key, Value: envVar.Value})
+}
+
 // SetEnv implements POST /api/projects/{name}/env. Idempotent bulk
 // upsert. Optionally enqueues a redeploy when req.Redeploy is true.
 //

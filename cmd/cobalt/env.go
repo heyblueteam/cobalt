@@ -18,6 +18,7 @@ func newEnvCmd() *cobra.Command {
 	cmd.PersistentFlags().String("project", "", "project name")
 	cmd.AddCommand(
 		newEnvListCmd(),
+		newEnvGetCmd(),
 		newEnvSetCmd(),
 		newEnvRemoveCmd(),
 	)
@@ -56,6 +57,39 @@ Examples:
 				rows = append(rows, []string{v.Key, v.Value})
 			}
 			output.PrintTable(headers, rows)
+			return nil
+		}),
+	}
+}
+
+func newEnvGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "get <KEY>",
+		Short: "Get a single environment variable",
+		Long: `Prints the value of a single environment variable.
+
+Examples:
+  cobalt env get NODE_ENV --project api
+  cobalt env get API_KEY --project api --json`,
+		Args: cobra.ExactArgs(1),
+		RunE: runE(func(cmd *cobra.Command, args []string) error {
+			key := args[0]
+			if err := validator.ValidateEnvKey(key); err != nil {
+				return err
+			}
+			pc, err := newProjectClient(cmd)
+			if err != nil {
+				return err
+			}
+			envVar, err := pc.GetEnvVar(cmd.Context(), pc.WrapProject(), key)
+			if err != nil {
+				return err
+			}
+			if output.IsJSON() {
+				output.PrintJSON(envVar)
+				return nil
+			}
+			output.PrintLines(fmt.Sprintf("%s=%s", envVar.Key, envVar.Value))
 			return nil
 		}),
 	}
