@@ -39,8 +39,6 @@ x-cobalt-base: &cobalt-base
   depends_on:
     rqlite:
       condition: service_healthy
-    caddy-ssl:
-      condition: service_started
   volumes:
     - cobalt-data:/cobalt/data
     - caddy-socket:/cobalt/caddy-socket:shared
@@ -94,7 +92,7 @@ services:
       --adapter caddyfile
     restart: unless-stopped
     depends_on:
-      - cobalt
+      - rqlite
 
   # The cobalt daemon. Handles HTTP API, deploy orchestration, workers.
   # Shares the Caddy unix socket for admin API communication.
