@@ -7,8 +7,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/api"
@@ -32,6 +37,11 @@ type Config struct {
 	// Cobalt connects to this URL for persistence. When using the sidecar
 	// model (default), this is "http://localhost:4001".
 	RqliteURL string
+
+	// RqlitedPath is the path to the rqlited binary. If empty and sidecar
+	// mode is enabled (the default), cobalt will look for "rqlited" in $PATH.
+	// Set to empty string to connect to an externally-managed rqlite node.
+	RqlitedPath string
 
 	// DataDir is the writable root for BuildKit cache, deployment
 	// logs, repo workspaces, and the static-sites tree. Mounted as a
@@ -63,6 +73,28 @@ type Config struct {
 func Run(ctx context.Context, cfg Config) error {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	log.Info("cobalt starting", "addr", cfg.Addr, "rqlite_url", cfg.RqliteURL)
+
+	// Start rqlited sidecar if no external URL is provided
+	var sidecarStop func()
+	if cfg.RqlitedPath != "none" && looksLikeLocalURL(cfg.RqliteURL) {
+		var rqlitedPath string
+		if cfg.RqlitedPath != "" {
+			rqlitedPath = cfg.RqlitedPath
+		} else {
+			var err error
+			rqlitedPath, err = findRqlited()
+			if err != nil {
+				return err
+			}
+		}
+
+		sidecar, err := startRqlitedSidecar(log, rqlitedPath, cfg.RqliteURL, cfg.DataDir)
+		if err != nil {
+			return err
+		}
+		sidecarStop = sidecar.stop
+		defer sidecarStop()
+	}
 
 	db, err := store.Open(cfg.RqliteURL)
 	if err != nil {
@@ -205,5 +237,120 @@ func registerScheduledJobs(
 			log.Warn("deploy log rotation failed", "error", err)
 		}
 	})
+}
+
+// looksLikeLocalURL returns true if the URL looks like a local sidecar URL
+// (localhost or no host specified).
+func looksLikeLocalURL(url string) bool {
+	return url == "" || url == "http://localhost:4001" || url == "http://127.0.0.1:4001"
+}
+
+// findRqlited searches for rqlited in PATH.
+func findRqlited() (string, error) {
+	path, err := exec.LookPath("rqlited")
+	if err == nil {
+		return path, nil
+	}
+	return "", errors.New("rqlited not found in PATH; set --rqlited-path or install rqlited")
+}
+
+// sidecar manages a rqlited subprocess.
+type sidecar struct {
+	cmd    *exec.Cmd
+	stopFn func()
+	log    *slog.Logger
+}
+
+// startRqlitedSidecar starts rqlited as a subprocess and waits for it to be ready.
+// The dataDir is used for rqlite's persistent state.
+func startRqlitedSidecar(log *slog.Logger, rqlitedPath, rqliteURL, dataDir string) (*sidecar, error) {
+	// Extract host:port from URL for binding
+	host, port, err := splitHostPort(rqliteURL)
+	if err != nil {
+		return nil, errors.New("invalid rqlite URL: " + rqliteURL)
+	}
+
+	// Ensure data directory exists
+	rqliteDataDir := filepath.Join(dataDir, "rqlite-data")
+	if err := os.MkdirAll(rqliteDataDir, 0o755); err != nil {
+		return nil, errors.New("create rqlite data dir: " + err.Error())
+	}
+
+	bindAddr := net.JoinHostPort(host, port)
+	advAddr := "localhost:" + port
+
+	cmd := exec.Command(rqlitedPath,
+		"-http-addr", bindAddr,
+		"-http-adv-addr", advAddr,
+		rqliteDataDir,
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// Detach so rqlited survives when cobalt exits (for restarts)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return nil, errors.New("start rqlited: " + err.Error())
+	}
+
+	log.Info("rqlited sidecar started", "pid", cmd.Process.Pid, "data_dir", rqliteDataDir)
+
+	// Wait for rqlited to be ready
+	if !waitForRqlited(rqliteURL, 10*time.Second) {
+		cmd.Process.Kill()
+		return nil, errors.New("rqlited sidecar not ready in 10s")
+	}
+
+	sc := &sidecar{cmd: cmd, log: log}
+	sc.stopFn = func() {
+		// Kill the process group to ensure rqlited dies
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		cmd.Wait()
+		log.Info("rqlited sidecar stopped")
+	}
+
+	return sc, nil
+}
+
+func (s *sidecar) stop() {
+	s.stopFn()
+}
+
+// waitForRqlited polls the rqlite URL until it's ready.
+func waitForRqlited(url string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		db, err := store.Open(url)
+		if err != nil {
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		err = db.Ping(context.Background())
+		db.Client.Close()
+		if err == nil {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
+// splitHostPort extracts host and port from a URL like "http://localhost:4001".
+func splitHostPort(urlStr string) (host, port string, err error) {
+	u, err := url.Parse("http://" + urlStr)
+	if err != nil {
+		u, err = url.Parse(urlStr)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	if u.Host == "" {
+		return "localhost", "4001", nil
+	}
+	host, port, err = net.SplitHostPort(u.Host)
+	if err != nil {
+		return "localhost", "4001", nil
+	}
+	return host, port, nil
 }
 

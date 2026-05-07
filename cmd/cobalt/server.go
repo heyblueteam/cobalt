@@ -29,6 +29,7 @@ subcommands of the same binary, not by running 'cobalt server' directly.`,
 
 	cmd.Flags().StringVar(&cfg.Addr, "addr", ":80", "HTTP listen address")
 	cmd.Flags().StringVar(&cfg.RqliteURL, "rqlite-url", "http://localhost:4001", "rqlite node URL")
+	cmd.Flags().StringVar(&cfg.RqlitedPath, "rqlited-path", "", "path to rqlited binary (empty = look in PATH; set to 'none' to disable sidecar)")
 	cmd.Flags().StringVar(&cfg.DataDir, "data-dir", "/cobalt/data", "directory for project state (BuildKit cache, deploy logs, workspaces)")
 	cmd.Flags().StringVar(&cfg.CaddySocket, "caddy-socket", "", "Caddy admin unix socket path (empty = default /cobalt/caddy-socket/caddy.sock)")
 	cmd.Flags().StringVar(&cfg.PublicHost, "public-host", "", "daemon's public hostname for manifest URLs (empty = use request Host header)")
