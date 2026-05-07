@@ -206,6 +206,7 @@ func newCaddyClient(cfg Config) *caddy.Client {
 //
 // Cadence:
 //   - image cleanup           hourly  (prune docker images for inactive deploys)
+//   - network cleanup         hourly  (prune overlay networks for inactive deploys)
 //   - pending app cleanup     10m     (drop expired manifest-flow rows)
 //   - caddy reconcile         30s     (root fix for upstream issue #97)
 //   - deploy log rotation     daily   (gzip > 30d, purge gz > 1y)
@@ -220,6 +221,11 @@ func registerScheduledJobs(
 	_ = sched.Schedule("image-cleanup", "@hourly", func(ctx context.Context) {
 		if _, err := worker.CleanupImages(ctx, log, db, db, dockerCli); err != nil {
 			log.Warn("image cleanup failed", "error", err)
+		}
+	})
+	_ = sched.Schedule("network-cleanup", "@hourly", func(ctx context.Context) {
+		if _, err := worker.CleanupNetworks(ctx, log, db, db, dockerCli); err != nil {
+			log.Warn("network cleanup failed", "error", err)
 		}
 	})
 	_ = sched.Schedule("pending-apps-cleanup", "@every 10m", func(ctx context.Context) {

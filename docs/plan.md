@@ -114,6 +114,7 @@ Async jobs the daemon runs on a schedule. Cron tasks are keyed by `project_id` s
 
 - [x] `Scheduler` wrapping `robfig/cron/v3` with slog logger, panic recovery, Start/Stop/Schedule/Remove
 - [x] Image cleanup task (logic) — sweep all projects, drop image tags whose deployment number is no longer active, log-and-continue on per-project failure
+- [x] Network cleanup task — sweep overlay networks, drop ones whose deployment number is no longer active. Filtering by `cobalt.project.id` label avoids touching unlabeled networks; deployment-numbered names sidestep moby/moby#37338 (we never re-create with the same name); docker's "active endpoints" error is the race-protection if a deploy is mid-flight.
 - [x] Pending-GitHub-app cleanup task (logic) — drop rows past `expires_at` so abandoned manifest flows don't accumulate
 - [x] Store CRUD for the worker's needs: `ListProjects`, `CreateProject`, `GetProjectByName`, `RenameProject`, `DeleteProject`, `ActiveDeploymentNumbers`, `CreateDeployment`, `SetDeploymentStatus`, `DeleteExpiredPendingApps`
 - [x] Tests: scheduler (fires, removes, panics survived, Stop waits for in-flight, double-start no-op), image cleanup (active retained, non-active removed, per-project errors don't halt sweep, remove errors don't halt), pending-app cleanup, store CRUD against real sqlite
@@ -206,7 +207,7 @@ Splitting into sub-PRs since §9 spans both "infrastructure that finally collabo
 
 - [x] `server.Run` opens store, runs `RecoverOnBoot`, constructs docker / caddy / github clients
 - [x] Wires `deploy.Orchestrator` (Preparer + Builder + tokens) and starts `deploy.Dispatcher`
-- [x] `worker.Scheduler` registers all 4 periodic tasks: image cleanup `@hourly`, pending-app cleanup `@every 10m`, Caddy reconcile `@every 30s`, deploy log rotation `@daily`
+- [x] `worker.Scheduler` registers all 5 periodic tasks: image cleanup `@hourly`, network cleanup `@hourly`, pending-app cleanup `@every 10m`, Caddy reconcile `@every 30s`, deploy log rotation `@daily`
 - [x] CLI flag `--caddy-socket` (defaults to `caddy.DefaultSocketPath`)
 - [x] Shutdown reverses order: HTTP server → dispatcher → scheduler → store; ctx cancellation propagates everywhere
 - [x] Worker `ProjectLister` and `ListProjects` aligned with `*store.DB` (one canonical `Project` struct, removed worker-local mirror)
