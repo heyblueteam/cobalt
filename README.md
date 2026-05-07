@@ -1,6 +1,8 @@
 # Cobalt
 
-**Cobalt** — Deploy anything, anywhere. A self-hosted deployment platform for Docker Swarm with automatic HTTPS via Caddy.
+**Cobalt** — Deploy anything, anywhere. 
+
+An open-source, self-hostable alternative to Heroku, Netlify, Render, Vercel, and AWS Amplify. Built for Docker Swarm with automatic HTTPS via Caddy.
 
 Powers mission-critical infrastructure for over 19,000 organizations via [Blue](https://blue.cc).
 
@@ -10,6 +12,7 @@ Powers mission-critical infrastructure for over 19,000 organizations via [Blue](
 ## Features
 
 - **Zero-config deployments** — Push to Git, Cobalt handles the rest
+- **cobalt.json** — Drop a single config file in your repo and it just works
 - **Automatic HTTPS** — Caddy integrates seamlessly, certificates auto-renew
 - **Docker Swarm ready** — Single command deploys your stack to Swarm
 - **Sidecar database** — Built-in rqlite for HA-ready persistence (no external DB needed)
