@@ -95,7 +95,7 @@ func (q *Queue) Cancel(ctx context.Context, deploymentID int64) (cancelInFlight 
 		// transition the row to canceled when the runner returns.
 		return true, nil
 	case d.Status.IsTerminal():
-		return false, fmt.Errorf("deploy: cannot cancel %s deployment", d.Status)
+		return false, fmt.Errorf("%w: cannot cancel %s deployment", ErrDeploymentNotCancelable, d.Status)
 	default:
 		return false, fmt.Errorf("deploy: unknown status %q", d.Status)
 	}

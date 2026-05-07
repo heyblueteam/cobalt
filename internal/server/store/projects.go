@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // Project is a row from the projects table.
@@ -16,6 +18,8 @@ type Project struct {
 	CreatedAt                int64
 	UpdatedAt                int64
 }
+
+var ErrProjectNameTaken = errors.New("store: project name already in use")
 
 // ErrNotFound is returned by Get* methods when no row matches.
 var ErrNotFound = errors.New("store: not found")
@@ -91,6 +95,9 @@ func (db *DB) GetProjectByName(ctx context.Context, name string) (*Project, erro
 
 // CreateProject inserts a new project row and returns the row's id.
 func (db *DB) CreateProject(ctx context.Context, p Project) (int64, error) {
+	if err := validator.ValidateProjectName(p.Name); err != nil {
+		return 0, err
+	}
 	res, err := db.ExecContext(ctx, `
         INSERT INTO projects (name, github_repo, branch, github_app_installation_id, created_at, updated_at)
         VALUES (?, ?, ?, ?, unixepoch(), unixepoch())

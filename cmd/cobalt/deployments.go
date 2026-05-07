@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/client"
@@ -159,7 +158,7 @@ Examples:
 			}
 
 			if err := output.FollowDeployOutput(cmd.Context(), pc.Client, targetDeployment.ID, 0, output.Stdout); err != nil {
-				if !strings.Contains(err.Error(), "context canceled") {
+				if !cobaltapi.IsContextCanceled(err) {
 					return err
 				}
 			}

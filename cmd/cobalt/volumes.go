@@ -75,13 +75,12 @@ Examples:
   cobalt volumes export --project api --volume data --output data.tar.gz
   cobalt volumes export --project api --volume data --force | tar tzf -`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
+			if err := requireString(cmd, "volume"); err != nil {
+				return err
+			}
 			vol, _ := cmd.Flags().GetString("volume")
 			outPath, _ := cmd.Flags().GetString("output")
 			force, _ := cmd.Flags().GetBool("force")
-
-			if vol == "" {
-				return fmt.Errorf("--volume is required")
-			}
 
 			if outPath == "" {
 				if !output.IsStdoutTTY() && !force {

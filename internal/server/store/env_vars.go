@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // EnvVar is a single project environment variable. Value is plain text in
@@ -70,6 +72,9 @@ func (db *DB) GetEnvVar(ctx context.Context, projectID int64, key string) (*EnvV
 // AES-GCM encryption at rest is deferred per the plan; value stored
 // plaintext in v1.
 func (db *DB) SetEnvVar(ctx context.Context, projectID int64, key, value string) error {
+	if err := validator.ValidateEnvKey(key); err != nil {
+		return err
+	}
 	_, err := db.ExecContext(ctx, `
         INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
         VALUES (?, ?, ?, unixepoch(), unixepoch())
@@ -85,6 +90,11 @@ func (db *DB) SetEnvVar(ctx context.Context, projectID int64, key, value string)
 func (db *DB) SetEnvVars(ctx context.Context, projectID int64, vars map[string]string) error {
 	if len(vars) == 0 {
 		return nil
+	}
+	for k := range vars {
+		if err := validator.ValidateEnvKey(k); err != nil {
+			return err
+		}
 	}
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

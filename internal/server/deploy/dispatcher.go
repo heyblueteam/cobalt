@@ -114,13 +114,13 @@ func (d *Dispatcher) Cancel(ctx context.Context, deploymentID int64) error {
 		return err
 	}
 	if !dep.Status.IsActive() {
-		return errors.New("deploy: not in-flight")
+		return ErrNotInFlight
 	}
 	d.mu.Lock()
 	cancel, ok := d.inflight[dep.ProjectID]
 	d.mu.Unlock()
 	if !ok {
-		return errors.New("deploy: not tracked in dispatcher")
+		return ErrNotTracked
 	}
 	cancel()
 	return nil

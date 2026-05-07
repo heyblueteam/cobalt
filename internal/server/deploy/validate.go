@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
@@ -21,7 +20,7 @@ import (
 // down, sqlite locked) are NOT this function's concern.
 func Validate(ctx context.Context, db *store.DB, req EnqueueRequest) error {
 	if req.ProjectID <= 0 {
-		return errors.New("deploy: project_id required")
+		return ErrProjectIDRequired
 	}
 
 	// Project existence — confirms the API key holder isn't pointing at a
@@ -40,7 +39,7 @@ func Validate(ctx context.Context, db *store.DB, req EnqueueRequest) error {
 
 	if req.CobaltfileOverride != "" {
 		if _, err := cobaltfile.Parse([]byte(req.CobaltfileOverride)); err != nil {
-			return fmt.Errorf("deploy: invalid cobaltfile: %w", err)
+			return fmt.Errorf("%w: %w", ErrCobaltfileInvalid, err)
 		}
 	}
 

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/heyblueteam/cobalt/internal/client"
 	"github.com/heyblueteam/cobalt/internal/output"
@@ -62,7 +61,7 @@ Use --no-follow to enqueue and exit immediately.`,
 
 			status := string(d.Status)
 			if err := output.FollowDeployOutput(cmd.Context(), pc.Client, d.ID, 0, output.Stdout); err != nil {
-				if !strings.Contains(err.Error(), "context canceled") {
+				if !cobaltapi.IsContextCanceled(err) {
 					return err
 				}
 			}
