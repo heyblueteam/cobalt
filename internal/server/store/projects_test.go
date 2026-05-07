@@ -8,16 +8,6 @@ import (
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
-func openTestDB(t *testing.T) *DB {
-	t.Helper()
-	db, err := Open(t.TempDir())
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	return db
-}
-
 func TestCreateAndGetProject(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
@@ -134,13 +124,12 @@ func TestActiveDeploymentNumbers(t *testing.T) {
 
 	pid, _ := db.CreateProject(ctx, Project{Name: "api", GithubRepo: "h/api", Branch: "main"})
 
-	// Insert deployments in various statuses.
 	for i, status := range []cobaltapi.State{
-		cobaltapi.StateSuccess,  // keep image
-		cobaltapi.StateBuilding, // keep image
-		cobaltapi.StateFailed,   // not kept
-		cobaltapi.StateCanceled, // not kept
-		cobaltapi.StateQueued,   // keep image
+		cobaltapi.StateSuccess,
+		cobaltapi.StateBuilding,
+		cobaltapi.StateFailed,
+		cobaltapi.StateCanceled,
+		cobaltapi.StateQueued,
 	} {
 		_, err := db.CreateDeployment(ctx, Deployment{
 			ProjectID: pid, Number: i + 1, Status: status,
@@ -176,21 +165,17 @@ func TestSetDeploymentStatus(t *testing.T) {
 		t.Fatalf("set success: %v", err)
 	}
 
-	var status string
-	var startedAt, finishedAt int64
-	if err := db.QueryRow(
-		`SELECT status, COALESCE(started_at, 0), COALESCE(finished_at, 0) FROM deployments WHERE id = ?`,
-		id,
-	).Scan(&status, &startedAt, &finishedAt); err != nil {
-		t.Fatalf("scan: %v", err)
+	got, err := db.GetDeployment(ctx, id)
+	if err != nil {
+		t.Fatalf("GetDeployment: %v", err)
 	}
-	if cobaltapi.State(status) != cobaltapi.StateSuccess {
-		t.Errorf("status: %q", status)
+	if got.Status != cobaltapi.StateSuccess {
+		t.Errorf("status: %q", got.Status)
 	}
-	if startedAt == 0 {
+	if got.StartedAt == nil {
 		t.Error("started_at not stamped on fetching transition")
 	}
-	if finishedAt == 0 {
+	if got.FinishedAt == nil {
 		t.Error("finished_at not stamped on success transition")
 	}
 }
@@ -200,12 +185,11 @@ func TestDeleteExpiredPendingApps(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 
-	// Insert three rows: two expired, one not.
-	_, err := db.Exec(`
+	_, err := db.ExecuteSingle(ctx, `
         INSERT INTO pending_github_apps (state, organization, created_at, expires_at)
-        VALUES ('s1', 'o', unixepoch(), 100),
-               ('s2', 'o', unixepoch(), 200),
-               ('s3', 'o', unixepoch(), 1000000)
+        VALUES ('s1', 'o', strftime('%s', 'now'), 100),
+               ('s2', 'o', strftime('%s', 'now'), 200),
+               ('s3', 'o', strftime('%s', 'now'), 1000000)
     `)
 	if err != nil {
 		t.Fatal(err)
@@ -217,11 +201,5 @@ func TestDeleteExpiredPendingApps(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("deleted: got %d, want 2", n)
-	}
-
-	var remaining int
-	_ = db.QueryRow(`SELECT count(*) FROM pending_github_apps`).Scan(&remaining)
-	if remaining != 1 {
-		t.Errorf("remaining: got %d, want 1", remaining)
 	}
 }

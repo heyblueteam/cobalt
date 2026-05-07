@@ -144,6 +144,12 @@ func (db *DB) CreateProject(ctx context.Context, p Project) (int64, error) {
 	if len(resp.Results) == 0 {
 		return 0, nil
 	}
+	if resp.Results[0].Error != "" {
+		if isUniqueConstraintErr(errors.New(resp.Results[0].Error)) {
+			return 0, ErrProjectNameTaken
+		}
+		return 0, errors.New(resp.Results[0].Error)
+	}
 	return resp.Results[0].LastInsertID, nil
 }
 
