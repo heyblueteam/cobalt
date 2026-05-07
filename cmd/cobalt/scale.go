@@ -31,7 +31,8 @@ func newScaleListCmd() *cobra.Command {
 most recent deployment.
 
 Examples:
-  cobalt scale list --project api`,
+  cobalt scale list --project api
+  cobalt scale list --project api --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {

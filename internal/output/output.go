@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 var (
@@ -100,8 +100,7 @@ func Errf(format string, args ...any) {
 }
 
 func IsTTY(f *os.File) bool {
-	_, err := unix.IoctlGetTermios(int(f.Fd()), unix.TIOCGETA)
-	return err == nil
+	return term.IsTerminal(int(f.Fd()))
 }
 
 func IsStdoutTTY() bool { return IsTTY(os.Stdout) }

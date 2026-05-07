@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/client"
 	"github.com/heyblueteam/cobalt/internal/output"
@@ -181,7 +182,5 @@ func fmtTime(unix int64) string {
 	if unix == 0 {
 		return ""
 	}
-	// Just print the raw Unix timestamp for now. A proper time formatting
-	// helper can be added later.
-	return fmt.Sprintf("%d", unix)
+	return time.Unix(unix, 0).Format("2006-01-02 15:04:05")
 }

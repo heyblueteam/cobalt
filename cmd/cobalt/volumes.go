@@ -32,7 +32,8 @@ func newVolumesListCmd() *cobra.Command {
 persistent data like databases and uploads.
 
 Examples:
-  cobalt volumes list --project api`,
+  cobalt volumes list --project api
+  cobalt volumes list --project api --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {

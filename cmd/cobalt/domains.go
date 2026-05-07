@@ -28,7 +28,8 @@ func newDomainsListCmd() *cobra.Command {
 		Long: `Lists all domains attached to a project.
 
 Examples:
-  cobalt domains list --project api`,
+  cobalt domains list --project api
+  cobalt domains list --project api --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {
