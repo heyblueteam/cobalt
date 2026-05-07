@@ -146,7 +146,7 @@ Most deployment tools force you into a specific workflow. Cobalt is different:
 
 ## Documentation
 
-Full documentation at [cobalt.devel](https://cobalt.devel).
+Full documentation coming soon.
 
 ## Development
 
@@ -192,4 +192,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
-Built by [Blue](https://blue.cc) | [cobalt.devel](https://cobalt.devel)
+Built by [Blue](https://blue.cc)
