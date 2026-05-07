@@ -202,7 +202,7 @@ func TestVersion(t *testing.T) {
 
 func TestSubcommandsRegistered(t *testing.T) {
 	root := newRootCmd()
-	for _, name := range []string{"server", "servers", "use"} {
+	for _, name := range []string{"server", "servers", "use", "init"} {
 		cmd, _, err := root.Find([]string{name})
 		if err != nil {
 			t.Errorf("subcommand %q not found: %v", name, err)
@@ -211,6 +211,59 @@ func TestSubcommandsRegistered(t *testing.T) {
 		if cmd.Name() != name {
 			t.Errorf("name: got %s, want %s", cmd.Name(), name)
 		}
+	}
+}
+
+func TestInitCommand_Help(t *testing.T) {
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetArgs([]string{"init", "--help"})
+	err := root.Execute()
+	if err != nil {
+		t.Fatalf("execute --help: %v", err)
+	}
+	got := buf.String()
+	if !contains(got, "SSH into a target host") {
+		t.Errorf("missing description in help: %s", got)
+	}
+	if !contains(got, "--version") {
+		t.Errorf("missing --version flag in help: %s", got)
+	}
+}
+
+func TestInitCommand_Args(t *testing.T) {
+	root := newRootCmd()
+	root.SetArgs([]string{"init"})
+	err := root.Execute()
+	if err == nil {
+		t.Error("expected error for missing args, got nil")
+	}
+}
+
+func TestDefaultComposeYAML(t *testing.T) {
+	yaml, err := defaultComposeYAML("v1.0.0", "cobalt.example.com", "/custom/data")
+	if err != nil {
+		t.Fatalf("defaultComposeYAML: %v", err)
+	}
+
+	if !contains(yaml, "ghcr.io/heyblueteam/cobalt:v1.0.0") {
+		t.Errorf("compose yaml missing expected image tag")
+	}
+	if !contains(yaml, "cobalt.example.com") {
+		t.Errorf("compose yaml missing public host")
+	}
+	if !contains(yaml, "/custom/data") {
+		t.Errorf("compose yaml missing custom data dir")
+	}
+	if !contains(yaml, "rqlite") {
+		t.Errorf("compose yaml missing rqlite service")
+	}
+	if !contains(yaml, "caddy") {
+		t.Errorf("compose yaml missing caddy service")
+	}
+	if !contains(yaml, "unless-stopped") {
+		t.Errorf("compose yaml missing restart policy")
 	}
 }
 
