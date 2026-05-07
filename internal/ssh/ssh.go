@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -100,7 +101,7 @@ func NewClient(user, host string, auth AuthMethod) *Client {
 			User:            user,
 			Auth:            auth.auth(),
 			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-			Timeout:         10,
+			Timeout:         10 * time.Second,
 		},
 	}
 }
