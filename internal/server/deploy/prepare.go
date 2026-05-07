@@ -96,7 +96,13 @@ func (p *gitPreparer) Prepare(ctx context.Context, project store.Project, dep st
 	if err != nil {
 		return nil, err
 	}
-	cloneURL := github.CloneURL(tok.Token, project.GithubRepo)
+	// Empty token = no installation grants access. Clone anonymously;
+	// works iff the repo is public, otherwise git fails with a clear
+	// "Repository not found" the user can act on.
+	cloneURL := github.AnonymousCloneURL(project.GithubRepo)
+	if tok.Token != "" {
+		cloneURL = github.CloneURL(tok.Token, project.GithubRepo)
+	}
 
 	repoDir := filepath.Join(p.dataDir, "projects", project.Name, "repo")
 	if err := os.MkdirAll(filepath.Dir(repoDir), 0o755); err != nil {

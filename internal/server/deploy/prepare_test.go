@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,6 +13,10 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/github"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
+
+// ptrString returns &s. Used in tests to populate the *string nullable
+// fields on store.Deployment (CommitSHA, CobaltfileOverride, ResolvedCobaltfile).
+func ptrString(s string) *string { return &s }
 
 // fakeGit records every git invocation and lets tests inject canned
 // stdout / errors per command.
@@ -173,7 +176,7 @@ func TestPreparer_HonorsCommitOverride(t *testing.T) {
 	p := NewPreparer(dir, tok, g)
 	_, err := p.Prepare(context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"},
-		store.Deployment{CommitSHA: sql.NullString{String: "specific-sha", Valid: true}},
+		store.Deployment{CommitSHA: ptrString("specific-sha")},
 	)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
@@ -185,6 +188,48 @@ func TestPreparer_HonorsCommitOverride(t *testing.T) {
 	last := checkouts[0]
 	if last[len(last)-1] != "specific-sha" {
 		t.Errorf("checkout target: got %q, want specific-sha", last[len(last)-1])
+	}
+}
+
+// TestPreparer_PublicRepoUsesAnonymousURL: a project whose token
+// provider returns the zero token (no installation grants access)
+// must clone via the unauthenticated GitHub URL — never one with an
+// empty `x-access-token:` placeholder.
+func TestPreparer_PublicRepoUsesAnonymousURL(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	g := newFakeGit()
+	g.stdout["rev-parse"] = "abc"
+
+	tok := &fakeTokenProvider{} // zero token = anonymous signal
+	p := NewPreparer(dir, tok, g)
+
+	repoDir := filepath.Join(dir, "projects", "api", "repo")
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "cobalt.json"),
+		[]byte(`{"version":"1.0","services":{"web":{}}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := p.Prepare(context.Background(),
+		store.Project{Name: "api", GithubRepo: "public/repo", Branch: "main"},
+		store.Deployment{},
+	); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	cloneCalls := g.callsFor("clone")
+	if len(cloneCalls) != 1 {
+		t.Fatalf("expected 1 clone call, got %d", len(cloneCalls))
+	}
+	url := cloneCalls[0][2] // [dir, "clone", url, dest]
+	if strings.Contains(url, "x-access-token") {
+		t.Errorf("anonymous clone leaked auth placeholder: %q", url)
+	}
+	if !strings.HasPrefix(url, "https://github.com/public/repo") {
+		t.Errorf("clone URL: got %q, want https://github.com/public/repo*", url)
 	}
 }
 
@@ -204,9 +249,7 @@ func TestPreparer_HonorsCobaltfileOverride(t *testing.T) {
 	p := NewPreparer(dir, tok, g)
 	ws, err := p.Prepare(context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"},
-		store.Deployment{CobaltfileOverride: sql.NullString{
-			String: `{"version":"1.0","services":{"web":{"port":9999}}}`, Valid: true,
-		}},
+		store.Deployment{CobaltfileOverride: ptrString(`{"version":"1.0","services":{"web":{"port":9999}}}`)},
 	)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)

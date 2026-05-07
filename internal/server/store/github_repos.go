@@ -79,6 +79,51 @@ func (db *DB) GetGithubRepoByFullName(ctx context.Context, fullName string) (*Gi
 	return &r, nil
 }
 
+// ListGithubReposByFullName returns every repo row matching fullName,
+// ordered so the installation with the freshest cached token comes first
+// (NULL-expiry rows last). The token resolver tries each candidate in
+// order until one yields a working installation token.
+//
+// Today the schema enforces a unique repo_id, so the slice is at most
+// length 1 in practice — but the resolver is shaped as a loop so that
+// loosening that constraint later (one repo, multiple installations)
+// requires no caller changes.
+func (db *DB) ListGithubReposByFullName(ctx context.Context, fullName string) ([]GithubAppRepo, error) {
+	resp, err := db.QuerySingle(ctx, `
+        SELECT r.id, r.installation_id, r.repo_id, r.full_name,
+               r.private, r.default_branch, r.created_at
+        FROM github_app_repos r
+        JOIN github_app_installations i ON i.id = r.installation_id
+        WHERE r.full_name = ?
+        ORDER BY i.access_token_expires_at IS NULL, i.access_token_expires_at DESC
+    `, fullName)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	out := make([]GithubAppRepo, 0, len(results[0].Values))
+	for _, row := range results[0].Values {
+		var r GithubAppRepo
+		r.ID = toInt64(row[0])
+		r.InstallationID = toInt64(row[1])
+		r.RepoID = toInt64(row[2])
+		r.FullName = toString(row[3])
+		r.Private = toInt64(row[4]) != 0
+		if row[5] != nil {
+			r.DefaultBranch = toString(row[5])
+		}
+		r.CreatedAt = toInt64(row[6])
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 func (db *DB) ListGithubReposForInstallation(ctx context.Context, installationID int64) ([]GithubAppRepo, error) {
 	resp, err := db.QuerySingle(ctx, `
         SELECT id, installation_id, repo_id, full_name, private, default_branch, created_at

@@ -48,3 +48,10 @@ func (c *Client) ListInstallationRepos(ctx context.Context, installationToken st
 func CloneURL(installationToken, fullName string) string {
 	return fmt.Sprintf("https://x-access-token:%s@github.com/%s.git", installationToken, fullName)
 }
+
+// AnonymousCloneURL returns the unauthenticated HTTPS clone URL for a public
+// repo. Used when no GitHub App installation grants us access — the deploy
+// will succeed iff the repo is public.
+func AnonymousCloneURL(fullName string) string {
+	return fmt.Sprintf("https://github.com/%s.git", fullName)
+}
