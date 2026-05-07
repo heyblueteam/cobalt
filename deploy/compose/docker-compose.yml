@@ -1,0 +1,115 @@
+# Cobalt deployment stack.
+#
+# Services:
+#   rqlite  - SQLite-over-HTTP distributed database (single node for v1)
+#   caddy   - TLS terminator + reverse proxy, admin API on unix socket
+#   cobalt  - Daemon: HTTP API, deploy orchestrator, background workers
+#
+# Usage:
+#   docker compose up -d
+#   docker compose ps
+#   docker compose logs -f cobalt
+#
+# The cobalt service expects:
+#   - Docker socket mounted at /var/run/docker.sock (to shell out to host docker)
+#   - rqlite available at rqlite:4001
+#   - Caddy admin socket shared at /cobalt/caddy-socket/caddy.sock
+#
+# Network topology:
+#   - cobalt-main (attachable overlay) created by the daemon on first deploy
+#   - Services communicate over the compose-defined bridge network
+#
+# Volumes:
+#   cobalt-data      - BuildKit cache, deploy logs, workspaces
+#   caddy-data       - Caddy's auto-managed TLS and acme certs
+#   caddy-config     - Caddy's persistent config
+#
+# Ports:
+#   80   - HTTP (redirects to 443 if standalone TLS enabled)
+#   443  - HTTPS (standalone TLS; omit caddy-ssl service below if behind a tunnel)
+#
+# Environment variables for cobalt:
+#   COBALT_PUBLIC_HOST  - Daemon's public hostname (used in GitHub App manifest URLs)
+#   COBALT_DATA_DIR      - Override data directory (default /cobalt/data)
+#
+version: "3.9"
+
+x-cobalt-base: &cobalt-base
+  image: ghcr.io/heyblueteam/cobalt:${COBALT_VERSION:-latest}
+  depends_on:
+    rqlite:
+      condition: service_healthy
+    caddy-ssl:
+      condition: service_started
+  volumes:
+    - cobalt-data:/cobalt/data
+    - caddy-socket:/cobalt/caddy-socket:shared
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment:
+    COBALT_DATA_DIR: /cobalt/data
+  restart: unless-stopped
+  command: >
+    server
+    --addr :80
+    --rqlite-url http://rqlite:4001
+    --data-dir /cobalt/data
+    --caddy-socket /cobalt/caddy-socket/caddy.sock
+    --public-host ${COBALT_PUBLIC_HOST:-}
+
+services:
+  # rqlite is the persistence layer. Single-node for v1.
+  # In production (v2+), you'd run a 3-node rqlite cluster for HA.
+  rqlite:
+    image: ghcr.io/rqlite/rqlite:${RQLITE_VERSION:-v8.31.0}
+    command: >
+      rqlited
+      -d /db
+      -o /rqlite
+      --join ""
+    volumes:
+      - rqlite-data:/db
+    healthcheck:
+      test: ["CMD", "rqlite", "nodes"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Caddy handles TLS termination and routes traffic to cobalt.
+  # Admin API runs over a unix socket shared with the cobalt container.
+  caddy-ssl:
+    image: caddy:${CADDY_VERSION:-2.7.6}
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-socket:/cobalt/caddy-socket:shared
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    entrypoint: []
+    command: >
+      caddy run
+      --config /etc/caddy/Caddyfile
+      --adapter caddyfile
+    restart: unless-stopped
+    depends_on:
+      - cobalt
+
+  # The cobalt daemon. Handles HTTP API, deploy orchestration, workers.
+  # Shares the Caddy unix socket for admin API communication.
+  cobalt:
+    <<: *cobalt-base
+    labels:
+      - "cobalt.daemon=true"
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  cobalt-data:
+  rqlite-data:
+  caddy-data:
+  caddy-config:
+  caddy-socket:

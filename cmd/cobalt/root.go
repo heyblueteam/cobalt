@@ -20,6 +20,7 @@ func newRootCmd() *cobra.Command {
 	cmd.PersistentFlags().Bool("yes", false, "skip confirmation prompts")
 
 	cmd.AddCommand(
+		newInitCmd(),
 		newServerCmd(),
 		newServersCmd(),
 		newUseCmd(),
