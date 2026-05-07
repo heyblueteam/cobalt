@@ -41,31 +41,29 @@ x-cobalt-base: &cobalt-base
       condition: service_healthy
   volumes:
     - cobalt-data:/cobalt/data
-    - caddy-socket:/cobalt/caddy-socket:shared
+    - caddy-socket:/cobalt/caddy-socket
     - /var/run/docker.sock:/var/run/docker.sock
   environment:
     COBALT_DATA_DIR: /cobalt/data
   restart: unless-stopped
   command: >
     server
-    --addr :80
+    --addr 0.0.0.0:8080
     --rqlite-url http://rqlite:4001
     --data-dir /cobalt/data
     --caddy-socket /cobalt/caddy-socket/caddy.sock
-    --public-host ${COBALT_PUBLIC_HOST:-}
+    ${COBALT_PUBLIC_HOST:+"--public-host"}${COBALT_PUBLIC_HOST:+"$COBALT_PUBLIC_HOST"}
 
 services:
   # rqlite is the persistence layer. Single-node for v1.
   # In production (v2+), you'd run a 3-node rqlite cluster for HA.
   rqlite:
-    image: ghcr.io/rqlite/rqlite:${RQLITE_VERSION:-v8.31.0}
-    command: >
-      rqlited
-      -d /db
-      -o /rqlite
-      --join ""
+    image: rqlite/rqlite:${RQLITE_VERSION:-latest}
+    environment:
+      HTTP_ADDR: "0.0.0.0:4001"
+      HTTP_ADV_ADDR: "rqlite:4001"
     volumes:
-      - rqlite-data:/db
+      - rqlite-data:/rqlite/file
     healthcheck:
       test: ["CMD", "rqlite", "nodes"]
       interval: 5s
@@ -80,7 +78,7 @@ services:
     volumes:
       - caddy-data:/data
       - caddy-config:/config
-      - caddy-socket:/cobalt/caddy-socket:shared
+      - caddy-socket:/cobalt/caddy-socket
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
       - "80:80"

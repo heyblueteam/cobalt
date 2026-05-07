@@ -1,0 +1,12 @@
+{
+  admin unix//cobalt/caddy-socket/caddy.sock
+}
+
+:80 {
+  reverse_proxy cobalt:8080
+}
+
+:443 {
+  tls internal
+  reverse_proxy cobalt:8080
+}
