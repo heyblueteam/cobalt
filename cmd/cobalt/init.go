@@ -28,9 +28,10 @@ var initCaddyfileInternal string
 
 // caddyfileFor picks the Caddyfile shape that matches the public host:
 // auto-HTTPS via Let's Encrypt for a real domain, tls-internal (self-signed)
-// for an IP / localhost where Let's Encrypt can't issue.
-func caddyfileFor(publicHost string) string {
-	if isIPOrLocalhost(publicHost) {
+// for an IP / localhost or when the operator explicitly opts into insecure
+// TLS for a dev install.
+func caddyfileFor(publicHost string, insecureTLS bool) string {
+	if insecureTLS || isIPOrLocalhost(publicHost) {
 		return initCaddyfileInternal
 	}
 	return initCaddyfileAutoHTTPS
@@ -53,6 +54,7 @@ func newInitCmd() *cobra.Command {
 		keyPassphrase string
 		password      string
 		localImage    string
+		insecureTLS   bool
 	)
 
 		cmd := &cobra.Command{
@@ -78,6 +80,9 @@ Examples:
   # Use a specific version and public hostname
   cobalt init root@server.blue.cc --version v1.0.0 --public-host cobalt.blue.cc
 
+  # Local dev install against an IP (self-signed Caddy cert; no GitHub App webhooks)
+  cobalt init root@192.168.1.100 --insecure-tls
+
   # Use a custom compose file for air-gapped deployments
   cobalt init user@192.168.1.100 --compose-file ./my-compose.yml
 
@@ -91,6 +96,21 @@ Examples:
 
 			if publicHost == "" {
 				publicHost = host
+			}
+
+			// GitHub App webhook callbacks need an HTTPS URL with a
+			// publicly-trusted certificate; an IP literal can't get one
+			// from Let's Encrypt. Refuse by default and force the operator
+			// to opt into the self-signed (tls internal) Caddyfile via
+			// --insecure-tls. Custom-compose installs are exempt — the
+			// operator presumably knows what they're configuring.
+			if !insecureTLS && composeFile == "" && isIPOrLocalhost(publicHost) {
+				return fmt.Errorf(
+					"public host %q is not a domain name; GitHub App webhooks require a real hostname with public TLS.\n"+
+						"  • Use --public-host <domain> if your SSH host is internal,\n"+
+						"  • or pass --insecure-tls to install with a self-signed cert (dev only)",
+					publicHost,
+				)
 			}
 
 		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
@@ -196,7 +216,7 @@ Examples:
 					return fmt.Errorf("write .env: %w", err)
 				}
 			} else {
-				caddyfile := caddyfileFor(publicHost)
+				caddyfile := caddyfileFor(publicHost, insecureTLS)
 				tlsKind := "auto-HTTPS"
 				if caddyfile == initCaddyfileInternal {
 					tlsKind = "self-signed (tls internal)"
@@ -270,6 +290,7 @@ Examples:
 	cmd.Flags().StringVar(&keyPassphrase, "key-passphrase", "", "passphrase for SSH private key (if encrypted)")
 	cmd.Flags().StringVar(&password, "password", "", "SSH password (use interactively or via SSH agent for better security)")
 	cmd.Flags().StringVar(&localImage, "local-image", "", "upload a local docker image (docker save piped to ssh docker load) and use it instead of pulling --version from the registry")
+	cmd.Flags().BoolVar(&insecureTLS, "insecure-tls", false, "allow installing against an IP / localhost with a self-signed Caddy cert (dev only; GitHub App webhooks won't work)")
 
 	return cmd
 }

@@ -280,22 +280,29 @@ func TestEmbeddedInitAssets(t *testing.T) {
 }
 
 func TestCaddyfileFor(t *testing.T) {
-	cases := map[string]string{
-		"":                "internal",
-		"localhost":       "internal",
-		"127.0.0.1":       "internal",
-		"168.119.100.190": "internal",
-		"::1":             "internal",
-		"cobalt.blue.cc":  "auto-https",
-		"e2e.example.com": "auto-https",
+	type tc struct {
+		host        string
+		insecureTLS bool
+		want        string
 	}
-	for host, want := range cases {
+	cases := []tc{
+		{"", false, "internal"},
+		{"localhost", false, "internal"},
+		{"127.0.0.1", false, "internal"},
+		{"168.119.100.190", false, "internal"},
+		{"::1", false, "internal"},
+		{"cobalt.blue.cc", false, "auto-https"},
+		{"e2e.example.com", false, "auto-https"},
+		// --insecure-tls forces the internal variant even on a real domain.
+		{"cobalt.blue.cc", true, "internal"},
+	}
+	for _, c := range cases {
 		got := "auto-https"
-		if caddyfileFor(host) == initCaddyfileInternal {
+		if caddyfileFor(c.host, c.insecureTLS) == initCaddyfileInternal {
 			got = "internal"
 		}
-		if got != want {
-			t.Errorf("caddyfileFor(%q): got %s, want %s", host, got, want)
+		if got != c.want {
+			t.Errorf("caddyfileFor(%q, insecure=%v): got %s, want %s", c.host, c.insecureTLS, got, c.want)
 		}
 	}
 }
