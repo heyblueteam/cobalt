@@ -214,11 +214,11 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 	_ = stdinR.Close()
 	outWG.Wait()
 
-	exitCode := 0
+	exitCode := docker.ExitCode(runErr)
 	if runErr != nil {
-		exitCode = 1
 		h.Log.Info("run: container exited non-zero",
-			"project", req.project.Name, "service", req.serviceName, "error", runErr)
+			"project", req.project.Name, "service", req.serviceName,
+			"exit_code", exitCode, "error", runErr)
 	}
 	exitFrame, _ := json.Marshal(cobaltapi.RunFrame{
 		Type: cobaltapi.RunFrameExit,

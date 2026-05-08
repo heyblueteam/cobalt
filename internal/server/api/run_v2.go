@@ -140,11 +140,11 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 	carriers.closeForPumpDrain()
 	pumpWG.Wait()
 
-	exitCode := 0
+	exitCode := docker.ExitCode(runErr)
 	if runErr != nil {
-		exitCode = 1
 		h.Log.Info("run: container exited non-zero",
-			"project", req.project.Name, "service", req.serviceName, "error", runErr)
+			"project", req.project.Name, "service", req.serviceName,
+			"exit_code", exitCode, "error", runErr)
 	}
 	exitPayload, _ := json.Marshal(cobaltapi.RunExitPayload{Code: exitCode})
 	select {

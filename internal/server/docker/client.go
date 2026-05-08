@@ -11,6 +11,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,7 +23,28 @@ type Runner interface {
 	// Run invokes the docker CLI with args, optionally feeding stdin and
 	// capturing stdout/stderr to the provided writers. If a writer is nil
 	// the corresponding stream is discarded.
+	//
+	// On a non-zero exit, Run returns an error. If the underlying error
+	// is a *exec.ExitError, the wrapper preserves that via errors.Is /
+	// errors.As so callers can recover the real exit code; see
+	// docker.ExitCode.
 	Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error
+}
+
+// ExitCode unwraps err and returns the exit status of the last docker
+// invocation. Returns -1 if the error doesn't carry an exit code (e.g.
+// "docker not found", context canceled before exec, fake runner returning
+// an arbitrary error). Used by `cobalt run` to plumb the container's
+// real exit status back to the CLI shell.
+func ExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }
 
 // ExecRunner is the production Runner: shells out to /usr/bin/docker.

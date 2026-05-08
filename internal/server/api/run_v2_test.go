@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/url"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -228,7 +230,7 @@ func TestRunV2_ResizeFramesAcceptedInTTYMode(t *testing.T) {
 	}
 }
 
-func TestRunV2_ExitCodeOneOnRunError(t *testing.T) {
+func TestRunV2_NonExitErrorReportsMinusOne(t *testing.T) {
 	t.Parallel()
 	e := newRunEnv(t)
 	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
@@ -245,8 +247,38 @@ func TestRunV2_ExitCodeOneOnRunError(t *testing.T) {
 		if f.Channel == cobaltapi.RunChannelExit {
 			var p cobaltapi.RunExitPayload
 			_ = json.Unmarshal(f.Data, &p)
-			if p.Code != 1 {
-				t.Errorf("exit code: got %d want 1", p.Code)
+			if p.Code != -1 {
+				t.Errorf("exit code: got %d want -1 for non-ExitError", p.Code)
+			}
+			return
+		}
+	}
+	t.Error("no exit frame")
+}
+
+func TestRunV2_RealExitCodePropagated(t *testing.T) {
+	t.Parallel()
+	e := newRunEnv(t)
+	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
+
+	// Simulate the production runner: a wrapped *exec.ExitError.
+	e.docker.onRun = func(_ io.Reader, _, _ io.Writer) error {
+		realErr := exec.Command("sh", "-c", "exit 42").Run()
+		return fmt.Errorf("docker run: %w: simulated", realErr)
+	}
+
+	conn := e.dialV2(t, "api", "command="+url.QueryEscape("false"))
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	frames := readV2Frames(t, conn, ctx)
+
+	for _, f := range frames {
+		if f.Channel == cobaltapi.RunChannelExit {
+			var p cobaltapi.RunExitPayload
+			_ = json.Unmarshal(f.Data, &p)
+			if p.Code != 42 {
+				t.Errorf("exit code: got %d want 42", p.Code)
 			}
 			return
 		}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -244,13 +246,16 @@ func TestRun_StderrFramesArriveAtClient(t *testing.T) {
 	}
 }
 
-func TestRun_NonZeroExitCodeSurfacedAsOne(t *testing.T) {
+func TestRun_NonExitErrorReportsMinusOne(t *testing.T) {
 	t.Parallel()
 	e := newRunEnv(t)
 	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
 
+	// Generic error (not a *exec.ExitError) means we couldn't determine
+	// a real exit code; we report -1 so callers can distinguish from a
+	// container that genuinely returned 0.
 	e.docker.onRun = func(_ io.Reader, _ io.Writer, _ io.Writer) error {
-		return errors.New("container exited with non-zero status")
+		return errors.New("docker socket unreachable")
 	}
 
 	conn := e.dial(t, "api", "command=false")
@@ -266,8 +271,33 @@ func TestRun_NonZeroExitCodeSurfacedAsOne(t *testing.T) {
 	if last.Type != cobaltapi.RunFrameExit {
 		t.Errorf("last frame: %+v", last)
 	}
-	if last.Code != 1 {
-		t.Errorf("exit code: %d, want 1", last.Code)
+	if last.Code != -1 {
+		t.Errorf("exit code: %d, want -1 for non-ExitError", last.Code)
+	}
+}
+
+func TestRun_RealExitCodePropagated(t *testing.T) {
+	t.Parallel()
+	e := newRunEnv(t)
+	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
+
+	// Simulate the real ExecRunner path: an *exec.ExitError carrying
+	// a specific exit code (here 42), wrapped the same way the runner
+	// wraps it in production.
+	e.docker.onRun = func(_ io.Reader, _ io.Writer, _ io.Writer) error {
+		realErr := exec.Command("sh", "-c", "exit 42").Run()
+		return fmt.Errorf("docker run: %w: simulated", realErr)
+	}
+
+	conn := e.dial(t, "api", "command=false")
+	defer conn.CloseNow()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	frames := readFrames(t, conn, ctx)
+	last := frames[len(frames)-1]
+	if last.Code != 42 {
+		t.Errorf("exit code: %d, want 42", last.Code)
 	}
 }
 
