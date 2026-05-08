@@ -162,6 +162,42 @@ func (c *Conn) Run(ctx context.Context, cmd string) *Result {
 	return &Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: 0}
 }
 
+// Pipe streams stdin into a remote command and forwards its stdout / stderr
+// to the supplied writers. Used for "docker save … | ssh docker load" style
+// transfers where buffering the payload in memory would be a problem.
+//
+// Pass nil for stdoutW or stderrW to discard.
+func (c *Conn) Pipe(ctx context.Context, cmd string, stdin io.Reader, stdoutW, stderrW io.Writer) error {
+	session, err := c.client.NewSession()
+	if err != nil {
+		return fmt.Errorf("new session: %w", err)
+	}
+	defer session.Close()
+
+	session.Stdin = stdin
+	if stdoutW == nil {
+		stdoutW = io.Discard
+	}
+	if stderrW == nil {
+		stderrW = io.Discard
+	}
+	session.Stdout = stdoutW
+	session.Stderr = stderrW
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = session.Signal(ssh.SIGTERM)
+		case <-done:
+		}
+	}()
+
+	err = session.Run(cmd)
+	close(done)
+	return err
+}
+
 // ScpTo uploads localPath to remotePath by streaming the file contents into
 // a remote `cat > path` shell redirect. Not the SCP wire protocol — just a
 // trivial pipe-into-file that works whether or not scp(1) is installed on

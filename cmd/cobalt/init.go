@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -31,6 +32,7 @@ func newInitCmd() *cobra.Command {
 		keyPath       string
 		keyPassphrase string
 		password      string
+		localImage    string
 	)
 
 		cmd := &cobra.Command{
@@ -138,6 +140,14 @@ Examples:
 				fmt.Fprintf(output.Stderr, "[3/8] Docker Swarm active.\n")
 			}
 
+			if localImage != "" {
+				fmt.Fprintf(output.Stderr, "[3c/8] Uploading local image %s...\n", localImage)
+				if err := uploadLocalImage(ctx, conn, localImage); err != nil {
+					return fmt.Errorf("upload local image: %w", err)
+				}
+				fmt.Fprintf(output.Stderr, "[3c/8] Image loaded on remote.\n")
+			}
+
 			fmt.Fprintf(output.Stderr, "[4/8] Creating /opt/cobalt directory...\n")
 			if r := conn.Run(ctx, "mkdir -p /opt/cobalt"); r.Err != nil {
 				return fmt.Errorf("create /opt/cobalt: %w", r.Err)
@@ -151,6 +161,9 @@ Examples:
 			// custom compose is supplied. Variables a custom compose doesn't
 			// reference are harmless.
 			image := fmt.Sprintf("ghcr.io/heyblueteam/cobalt:%s", cobaltVersion)
+			if localImage != "" {
+				image = localImage
+			}
 			envContent := fmt.Sprintf("COBALT_IMAGE=%s\nCOBALT_PUBLIC_HOST=%s\nCOBALT_DATA_DIR=%s\n",
 				image, publicHost, dataDir)
 
@@ -231,6 +244,7 @@ Examples:
 	cmd.Flags().StringVar(&keyPath, "key", "", "path to SSH private key")
 	cmd.Flags().StringVar(&keyPassphrase, "key-passphrase", "", "passphrase for SSH private key (if encrypted)")
 	cmd.Flags().StringVar(&password, "password", "", "SSH password (use interactively or via SSH agent for better security)")
+	cmd.Flags().StringVar(&localImage, "local-image", "", "upload a local docker image (docker save piped to ssh docker load) and use it instead of pulling --version from the registry")
 
 	return cmd
 }
@@ -249,6 +263,33 @@ func writeRemoteFile(conn *ssh.Conn, path, content string) error {
 	defer os.Remove(tmp.Name())
 
 	return conn.ScpTo(tmp.Name(), path)
+}
+
+// uploadLocalImage runs `docker save <ref>` locally and pipes the tar stream
+// over SSH into `docker load` on the remote. The image must already be
+// present in the local docker daemon. Used by --local-image to side-load a
+// freshly-built image without going through a registry.
+func uploadLocalImage(ctx context.Context, conn *ssh.Conn, ref string) error {
+	save := exec.CommandContext(ctx, "docker", "save", ref)
+	save.Stderr = output.Stderr
+	stdout, err := save.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("docker save stdout pipe: %w", err)
+	}
+	if err := save.Start(); err != nil {
+		return fmt.Errorf("docker save start: %w", err)
+	}
+
+	pipeErr := conn.Pipe(ctx, "docker load", stdout, output.Stderr, output.Stderr)
+	waitErr := save.Wait()
+
+	if pipeErr != nil {
+		return fmt.Errorf("remote docker load: %w", pipeErr)
+	}
+	if waitErr != nil {
+		return fmt.Errorf("local docker save: %w", waitErr)
+	}
+	return nil
 }
 
 func waitForHealthy(ctx context.Context, url string, timeout time.Duration) error {
