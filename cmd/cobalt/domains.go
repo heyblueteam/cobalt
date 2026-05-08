@@ -88,10 +88,15 @@ the apex) or --with-apex (when adding the www host) to install a
 this automatically — you opt in per-domain so daemons handling
 upstream redirects (e.g. Cloudflare) aren't surprised.
 
+For renames or rebrands where you want a one-off 301 between two
+arbitrary hosts the project owns, pass --redirect-to <target>. The
+target must already be a primary on the same project.
+
 Examples:
   cobalt domains add api.blue.cc --project api
   cobalt domains add blue.cc --project api --with-www
-  cobalt domains add www.blue.cc --project api --with-apex`,
+  cobalt domains add www.blue.cc --project api --with-apex
+  cobalt domains add old-name.com --project api --redirect-to new-name.com`,
 		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			pc, err := newProjectClient(cmd)
@@ -100,8 +105,11 @@ Examples:
 			}
 			withWWW, _ := cmd.Flags().GetBool("with-www")
 			withApex, _ := cmd.Flags().GetBool("with-apex")
-			if withWWW && withApex {
-				return fmt.Errorf("--with-www and --with-apex are mutually exclusive")
+			redirectTo, _ := cmd.Flags().GetString("redirect-to")
+			if (withWWW && withApex) ||
+				(withWWW && redirectTo != "") ||
+				(withApex && redirectTo != "") {
+				return fmt.Errorf("--with-www, --with-apex, and --redirect-to are mutually exclusive")
 			}
 			name := args[0]
 			pair, kind := apexWWWPair(name)
@@ -116,6 +124,20 @@ Examples:
 				}
 			}
 
+			// Arbitrary redirect form. Single API call; the target
+			// existence check is enforced server-side.
+			if redirectTo != "" {
+				redirect, err := pc.AddDomain(cmd.Context(), pc.WrapProject(), cobaltapi.DomainAddRequest{
+					Name:       name,
+					RedirectTo: redirectTo,
+				})
+				if err != nil {
+					return err
+				}
+				output.PrintLines("Redirect " + redirect.Name + " → " + redirectTo + " added.")
+				return nil
+			}
+
 			// Primary insert.
 			primary, err := pc.AddDomain(cmd.Context(), pc.WrapProject(), cobaltapi.DomainAddRequest{
 				Name: name,
@@ -125,7 +147,7 @@ Examples:
 			}
 			output.PrintLines("Domain " + primary.Name + " added.")
 
-			// Optional redirect insert.
+			// Optional apex/www redirect insert.
 			if withWWW || withApex {
 				redirect, err := pc.AddDomain(cmd.Context(), pc.WrapProject(), cobaltapi.DomainAddRequest{
 					Name:       pair,
@@ -162,6 +184,7 @@ Examples:
 	}
 	cmd.Flags().Bool("with-www", false, "also install a 301 redirect from www.<domain>")
 	cmd.Flags().Bool("with-apex", false, "also install a 301 redirect from the apex (for www.X domains)")
+	cmd.Flags().String("redirect-to", "", "register this domain as a 301 redirect to <target> instead of a primary")
 	return cmd
 }
 
