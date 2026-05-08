@@ -26,15 +26,20 @@ func newEnvCmd() *cobra.Command {
 }
 
 func newEnvListCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List environment variables",
 		Long: `Lists all environment variables for a project.
 
+Values are redacted by default to avoid accidental shoulder-surfing
+in screen-shares; pass --show-values (or --json) to print plaintext.
+
 Examples:
   cobalt env list --project api
+  cobalt env list --project api --show-values
   cobalt env list --project api --json`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
+			showValues, _ := cmd.Flags().GetBool("show-values")
 			pc, err := newProjectClient(cmd)
 			if err != nil {
 				return err
@@ -44,6 +49,8 @@ Examples:
 				return err
 			}
 			if output.IsJSON() {
+				// JSON output is structured / scriptable; if the
+				// caller is piping through jq they want real values.
 				output.PrintJSON(vars)
 				return nil
 			}
@@ -54,12 +61,49 @@ Examples:
 			headers := []string{"KEY", "VALUE"}
 			var rows [][]string
 			for _, v := range vars {
-				rows = append(rows, []string{v.Key, v.Value})
+				val := v.Value
+				if !showValues {
+					val = redactEnvValue(v.Value)
+				}
+				rows = append(rows, []string{v.Key, val})
 			}
 			output.PrintTable(headers, rows)
 			return nil
 		}),
 	}
+	cmd.Flags().Bool("show-values", false, "print env values instead of redacting them")
+	return cmd
+}
+
+// redactEnvValue obscures a value for table rendering. Empty stays
+// empty (an unset value is meaningful); short values get a fixed
+// mask so length isn't leaked for things like 4-char tokens; longer
+// values show a length hint.
+func redactEnvValue(v string) string {
+	switch {
+	case v == "":
+		return ""
+	case len(v) <= 8:
+		return "***"
+	default:
+		return "*** (" + itoa(len(v)) + " chars)"
+	}
+}
+
+func itoa(n int) string {
+	// Tiny inline to avoid pulling strconv just for the redaction
+	// width hint; keep this file's import set short.
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
 }
 
 func newEnvGetCmd() *cobra.Command {

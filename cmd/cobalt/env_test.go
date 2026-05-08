@@ -28,13 +28,44 @@ func TestEnvList(t *testing.T) {
 	defer func() { output.Stdout = oldStdout }()
 
 	root := newRootCmd()
-	root.SetArgs([]string{"env", "list", "--project", "api"})
+	// Default redacts values; --show-values opts into plaintext.
+	root.SetArgs([]string{"env", "list", "--project", "api", "--show-values"})
 	if err := root.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	got := buf.String()
 	if !contains(got, "FOO") || !contains(got, "bar") {
 		t.Errorf("missing FOO=bar: %s", got)
+	}
+}
+
+func TestEnvListRedactsByDefault(t *testing.T) {
+	api := newMockAPI()
+	defer api.close()
+
+	api.respond([]cobaltapi.EnvVar{
+		{Key: "API_KEY", Value: "supersecretvalue123"},
+	})
+	if err := api.configPath(t); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	oldStdout := output.Stdout
+	output.Stdout = &buf
+	defer func() { output.Stdout = oldStdout }()
+
+	root := newRootCmd()
+	root.SetArgs([]string{"env", "list", "--project", "api"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	got := buf.String()
+	if contains(got, "supersecretvalue123") {
+		t.Errorf("plaintext leaked without --show-values: %s", got)
+	}
+	if !contains(got, "***") {
+		t.Errorf("expected redaction marker (***) in: %s", got)
 	}
 }
 
