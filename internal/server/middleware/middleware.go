@@ -83,8 +83,14 @@ func BearerAuth(db *rqlitehttp.Client, log *slog.Logger) func(http.Handler) http
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
+			// Update last_used_at fire-and-forget. Detach from the request
+			// context (which is canceled the moment the response flushes) so
+			// the UPDATE actually completes; cap with a short deadline so a
+			// slow DB doesn't pile up goroutines.
 			go func(id int64) {
-				_, err := db.ExecuteSingle(r.Context(), `UPDATE apikeys SET last_used_at = strftime('%s', 'now') WHERE id = ?`, id)
+				ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+				defer cancel()
+				_, err := db.ExecuteSingle(ctx, `UPDATE apikeys SET last_used_at = strftime('%s', 'now') WHERE id = ?`, id)
 				if err != nil {
 					log.Warn("update last_used_at", "id", id, "error", err)
 				}

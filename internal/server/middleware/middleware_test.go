@@ -135,6 +135,44 @@ func TestBearerAuth_UpdatesLastUsedAt(t *testing.T) {
 	t.Error("last_used_at never updated")
 }
 
+// TestBearerAuth_UpdatesLastUsedAt_RequestCtxCanceled simulates what
+// net/http.Server does in production: the request context is canceled
+// the moment the response flushes. The goroutine that writes
+// last_used_at must outlive that cancellation, otherwise the UPDATE is
+// silently dropped on every authenticated request.
+func TestBearerAuth_UpdatesLastUsedAt_RequestCtxCanceled(t *testing.T) {
+	t.Parallel()
+	db := newTestDB(t)
+	id := insertAPIKey(t, db, "k", "test")
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := BearerAuth(db.Client, log)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	req.Header.Set("Authorization", "Bearer k")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	// Cancel before the goroutine has a chance to issue its UPDATE.
+	cancel()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := db.Client.QuerySingle(context.Background(),
+			`SELECT last_used_at FROM apikeys WHERE id=?`, id)
+		if err != nil {
+			t.Fatalf("query: %v", err)
+		}
+		results := resp.GetQueryResults()
+		if len(results) > 0 && len(results[0].Values) > 0 && results[0].Values[0][0] != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Error("last_used_at never updated after request ctx canceled")
+}
+
 func TestLogger_RecordsStatus(t *testing.T) {
 	t.Parallel()
 	var sb strings.Builder
