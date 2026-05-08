@@ -222,14 +222,34 @@ func TestEnvCRUD(t *testing.T) {
 		t.Errorf("env: %v", keys)
 	}
 
-	// Update one + add another.
+	// Update one + add another. Response should be the rows we just
+	// upserted (not the project's whole env state) so a partial set
+	// doesn't echo unrelated keys back to the operator.
 	resp = e.do(http.MethodPost, "/api/projects/api/env", cobaltapi.EnvSetRequest{
 		Vars: map[string]string{"FOO": "999", "BAZ": "3"},
 	})
 	mustStatus(t, resp, http.StatusOK)
 	got = decode[[]cobaltapi.EnvVar](t, resp)
+	if len(got) != 2 {
+		t.Errorf("set response: got %d rows, want 2 (only the upserted keys)", len(got))
+	}
+	gotMap := map[string]string{}
+	for _, v := range got {
+		gotMap[v.Key] = v.Value
+	}
+	if gotMap["FOO"] != "999" || gotMap["BAZ"] != "3" {
+		t.Errorf("set response keys: %v, want FOO=999 BAZ=3", gotMap)
+	}
+	if _, untouched := gotMap["BAR"]; untouched {
+		t.Errorf("set response leaked untouched key BAR: %v", gotMap)
+	}
+
+	// Confirm the project's full env still includes the untouched BAR.
+	resp = e.do(http.MethodGet, "/api/projects/api/env", nil)
+	mustStatus(t, resp, http.StatusOK)
+	got = decode[[]cobaltapi.EnvVar](t, resp)
 	if len(got) != 3 {
-		t.Errorf("after upsert: %d, want 3", len(got))
+		t.Errorf("after upsert: list len %d, want 3", len(got))
 	}
 
 	// Delete.

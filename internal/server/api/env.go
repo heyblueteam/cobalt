@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"sort"
 
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/store"
@@ -56,8 +57,11 @@ func (h *Handler) GetEnv(w http.ResponseWriter, r *http.Request) {
 // SetEnv implements POST /api/projects/{name}/env. Idempotent bulk
 // upsert. Optionally enqueues a redeploy when req.Redeploy is true.
 //
-// Returns the resulting full env list so callers don't need a second
-// GET.
+// Returns the rows that were just upserted (not the project's whole
+// env list), sorted by key. Callers that want the full state issue a
+// follow-up GET; mixing the two would mislead operators after a
+// partial update — `cobalt env set FOO=bar` would echo every other
+// var on the project too.
 func (h *Handler) SetEnv(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.projectFromPath(w, r)
 	if !ok {
@@ -85,14 +89,14 @@ func (h *Handler) SetEnv(w http.ResponseWriter, r *http.Request) {
 			h.Dispatcher.Notify()
 		}
 	}
-	vars, err := h.DB.ListEnvVars(r.Context(), p.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+	keys := make([]string, 0, len(req.Vars))
+	for k := range req.Vars {
+		keys = append(keys, k)
 	}
-	out := make([]cobaltapi.EnvVar, 0, len(vars))
-	for _, v := range vars {
-		out = append(out, cobaltapi.EnvVar{Key: v.Key, Value: v.Value})
+	sort.Strings(keys)
+	out := make([]cobaltapi.EnvVar, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, cobaltapi.EnvVar{Key: k, Value: req.Vars[k]})
 	}
 	writeJSON(w, out)
 }
