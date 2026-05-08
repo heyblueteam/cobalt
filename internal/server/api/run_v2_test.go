@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os/exec"
 	"strings"
@@ -284,6 +286,49 @@ func TestRunV2_RealExitCodePropagated(t *testing.T) {
 		}
 	}
 	t.Error("no exit frame")
+}
+
+func TestNewRunLifecycle_CapCancelsContext(t *testing.T) {
+	t.Parallel()
+	// Override the package cap for the duration of this test. Save and
+	// restore so siblings see the production value.
+	original := runMaxLifetime
+	runMaxLifetime = 100 * time.Millisecond
+	defer func() { runMaxLifetime = original }()
+
+	// We don't actually need a real WebSocket — newRunLifecycle only
+	// calls conn.Ping at the heartbeat cadence. A WS that hasn't been
+	// pinged yet (because we tear down before the first 30 s tick) is
+	// fine.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := newRunLifecycle(r.Context(), conn)
+		defer cancel()
+
+		select {
+		case <-ctx.Done():
+			// good
+		case <-time.After(2 * time.Second):
+			t.Error("ctx not cancelled within 2s of cap")
+		}
+	}))
+	defer srv.Close()
+
+	u := strings.Replace(srv.URL, "http://", "ws://", 1)
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dialCtx, u, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	// Wait for the server's lifecycle goroutine to fire the cap and
+	// return. 1 s is generous given the 100 ms cap.
+	time.Sleep(1 * time.Second)
 }
 
 func TestRunV2_FallsBackToV1WhenOnlyV1Offered(t *testing.T) {

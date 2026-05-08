@@ -23,6 +23,59 @@ import (
 // We don't want a slow client to indefinitely back up our docker copy.
 const runWriteTimeout = 10 * time.Second
 
+// runMaxLifetime hard-caps any single cobalt run session. Forgotten
+// interactive shells, runaway loops, etc. — none of them get to hold a
+// container open indefinitely. 1 h matches the rough upper bound of
+// "interactive ad-hoc usage"; longer-running workloads belong in a
+// project service, not in cobalt run.
+//
+// Declared as a var so tests can shorten it to verify cap behavior
+// without sleeping for hours.
+var runMaxLifetime = 1 * time.Hour
+
+// runHeartbeatInterval is the cadence of WS-protocol ping frames the
+// daemon sends each cobalt-run client. Two purposes:
+//
+//   - Defeats idle-stream timeouts in any reverse proxy in front of the
+//     daemon (Caddy's HTTP/2 server, Cloudflare, ALB, etc.) that close
+//     "no traffic in either direction" connections.
+//   - Detects a half-open peer (laptop closed mid-session, NAT eviction)
+//     within ~30 s instead of waiting for the OS to notice on a write
+//     attempt that may never come.
+const runHeartbeatInterval = 30 * time.Second
+
+// newRunLifecycle wraps the request context with the cobalt run
+// session lifecycle: a 1 h hard cap (runMaxLifetime) and a 30 s WS
+// heartbeat goroutine (runHeartbeatInterval). The returned cancel
+// tears everything down — calling it stops the heartbeat goroutine,
+// cancels in-flight docker work, and lets the handler exit cleanly.
+//
+// On heartbeat failure (peer gone, broken pipe), runCtx cancels
+// automatically; the handler then sees its docker.Run returning
+// because exec.Cmd cancellation kills the process.
+func newRunLifecycle(parent context.Context, conn *websocket.Conn) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithTimeout(parent, runMaxLifetime)
+	go func() {
+		t := time.NewTicker(runHeartbeatInterval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				pingCtx, pingCancel := context.WithTimeout(ctx, runWriteTimeout)
+				err := conn.Ping(pingCtx)
+				pingCancel()
+				if err != nil {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, cancel
+}
+
 // runRequest carries the resolved-once request fields shared by every
 // protocol version of the run handler.
 type runRequest struct {
@@ -170,7 +223,7 @@ func (h *Handler) finalizeCommandRun(runID int64, exitCode int) {
 // reaches the child as a real *os.File and exec.Cmd skips its internal
 // io.Copy goroutine.
 func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runRequest) int {
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := newRunLifecycle(ctx, conn)
 	defer cancel()
 
 	stdinR, stdinW, err := os.Pipe()

@@ -30,7 +30,7 @@ import (
 // dup2's it directly into the child instead of spawning an internal
 // io.Copy goroutine that gates Wait() on stdin draining.
 func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runRequest, tty bool) int {
-	runCtx, cancel := context.WithCancel(ctx)
+	runCtx, cancel := newRunLifecycle(ctx, conn)
 	defer cancel()
 
 	carriers, err := newRunV2Carriers(tty)
