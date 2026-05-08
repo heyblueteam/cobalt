@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -103,6 +104,10 @@ func Run(ctx context.Context, cfg Config) error {
 
 	if err := db.InitSchema(ctx); err != nil {
 		return err
+	}
+
+	if err := ensureBootstrapKey(ctx, db, cfg.DataDir, log); err != nil {
+		return fmt.Errorf("bootstrap key: %w", err)
 	}
 
 	if err := deploy.RecoverOnBoot(ctx, db, log); err != nil {
