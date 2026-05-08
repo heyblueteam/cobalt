@@ -232,3 +232,28 @@ func TestProjectLogs_NotDeployedYetReturns404(t *testing.T) {
 		t.Errorf("status: %d, want 404", resp.StatusCode)
 	}
 }
+
+// TestProjectLogs_UnknownService404 asserts that ?service=<typo> against
+// a deployed project errors at the API layer instead of streaming
+// docker's "no such task or service" line and exiting 0.
+func TestProjectLogs_UnknownService404(t *testing.T) {
+	t.Parallel()
+	e := newStreamEnv(t)
+	pid, depID, _ := e.seedDeploy("", cobaltapi.StateSuccess)
+	_ = e.db.SetResolvedCobaltfile(context.Background(), depID,
+		`{"version":"1.0","services":{"web":{"type":"container","image":"default","port":3000}}}`)
+	_ = pid
+
+	resp, err := http.Get(e.srv.URL + "/api/projects/api/logs?service=bogus")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: %d, want 404", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "bogus") {
+		t.Errorf("body %q does not name the bad service", string(body))
+	}
+}

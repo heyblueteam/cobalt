@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
@@ -163,13 +164,29 @@ func (h *Handler) ProjectLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	if h.Docker == nil {
-		writeError(w, http.StatusInternalServerError, "daemon Docker client not configured")
-		return
-	}
 	serviceName := r.URL.Query().Get("service")
 	if serviceName == "" {
 		serviceName = "web"
+	}
+	// Reject unknown services upfront. Without this, the daemon
+	// shells out to `docker service logs <full-name>`, docker emits
+	// "no such task or service" into the SSE stream, and the CLI
+	// thinks the stream succeeded — exit 0 hides a typo. Runs before
+	// the Docker-client guard so "service typo" wins over "daemon
+	// misconfigured" when both apply.
+	if live.ResolvedCobaltfile != nil {
+		if cf, err := cobaltfile.Parse([]byte(*live.ResolvedCobaltfile)); err == nil {
+			if _, ok := cf.Services[serviceName]; !ok {
+				writeError(w, http.StatusNotFound,
+					"service "+serviceName+" not found in deployment #"+
+						strconv.Itoa(live.Number)+" of project "+project.Name)
+				return
+			}
+		}
+	}
+	if h.Docker == nil {
+		writeError(w, http.StatusInternalServerError, "daemon Docker client not configured")
+		return
 	}
 	fullName := docker.ServiceName(project.Name, live.Number, serviceName)
 
