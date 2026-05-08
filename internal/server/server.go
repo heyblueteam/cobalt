@@ -179,6 +179,7 @@ func Run(ctx context.Context, cfg Config) error {
 		Log:        log,
 		DataDir:    cfg.DataDir,
 		PublicHost: cfg.PublicHost,
+		Version:    cfg.Version,
 	})
 	apiHandler.Register(apiMux)
 
