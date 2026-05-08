@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -313,6 +314,33 @@ func TestOrchestrator_PrepareErrorReturns(t *testing.T) {
 	err := o.Run(context.Background(), dep)
 	if err == nil || !strings.Contains(err.Error(), "prepare") {
 		t.Errorf("expected prepare error, got %v", err)
+	}
+}
+
+// TestOrchestrator_FailureWritesErrorToDeployLog asserts that when a
+// deploy fails, the cause shows up in the deploy log so operators can
+// see it via `cobalt deployments output` without shell access to the
+// daemon host.
+func TestOrchestrator_FailureWritesErrorToDeployLog(t *testing.T) {
+	t.Parallel()
+	o, _, _, db, project := setupOrchestrator(t)
+	var buf bytes.Buffer
+	o.LogWriter = &buf
+	o.Preparer = &fakePrep{err: errors.New("clone: exit status 128: could not read Username")}
+	dep := enqueueAndFetch(t, db, project.ID)
+
+	if err := o.Run(context.Background(), dep); err == nil {
+		t.Fatal("expected error")
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "ERROR:") {
+		t.Errorf("deploy log missing ERROR prefix: %q", logged)
+	}
+	if !strings.Contains(logged, "could not read Username") {
+		t.Errorf("deploy log missing root-cause text: %q", logged)
+	}
+	if !strings.Contains(logged, "started") || !strings.Contains(logged, "ended") {
+		t.Errorf("deploy log missing start/end markers: %q", logged)
 	}
 }
 

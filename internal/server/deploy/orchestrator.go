@@ -33,7 +33,7 @@ type Orchestrator struct {
 // already in StateFetching (the dispatcher transitions queued → fetching
 // before calling). The dispatcher writes the terminal status (success /
 // failed / canceled) based on this method's return value.
-func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
+func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error) {
 	log := o.Log.With("deployment_id", dep.ID, "project_id", dep.ProjectID, "number", dep.Number)
 
 	project, err := o.getProject(ctx, dep.ProjectID)
@@ -45,18 +45,26 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
 	// Open the deploy log file. If the caller (tests) supplied a writer
 	// directly, honor that; otherwise stream to disk under DataDir so
 	// /api/deployments/{id}/logs (lands in §9) can read it back later.
-	out, closeOut, err := o.openLog(*project, dep)
-	if err != nil {
-		log.Warn("could not open deploy log; falling back to discard", "error", err)
+	out, closeOut, openErr := o.openLog(*project, dep)
+	if openErr != nil {
+		log.Warn("could not open deploy log; falling back to discard", "error", openErr)
 		out = io.Discard
 		closeOut = func() {}
 	}
 	defer closeOut()
 
 	// Header so even a no-build deploy (all services declare an explicit
-	// image, no Dockerfile) leaves a useful trace in the log file.
+	// image, no Dockerfile) leaves a useful trace in the log file. The
+	// deferred trailer surfaces any returned error in the deploy log so
+	// `cobalt deployments output` can show operators why a deploy failed
+	// without them needing shell access to the daemon host.
 	fmt.Fprintf(out, "==> deploy #%d for project %q started\n", dep.Number, project.Name)
-	defer fmt.Fprintf(out, "==> deploy #%d ended\n", dep.Number)
+	defer func() {
+		if err != nil {
+			fmt.Fprintf(out, "ERROR: %s\n", err)
+		}
+		fmt.Fprintf(out, "==> deploy #%d ended\n", dep.Number)
+	}()
 
 	envVars, err := o.DB.EnvVarMap(ctx, project.ID)
 	if err != nil {
