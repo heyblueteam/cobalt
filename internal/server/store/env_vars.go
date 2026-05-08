@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"github.com/heyblueteam/cobalt/internal/server/encryption"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
@@ -11,6 +13,31 @@ import (
 type EnvVar struct {
 	Key   string
 	Value string
+}
+
+// decryptValue is the read-side of the cipher contract: when a cipher
+// is configured AND the stored bytes look like a v1 frame, decrypt.
+// Otherwise return the bytes as-is (plaintext rows pre-migration, or
+// when no cipher is wired e.g. in tests). Fail-closed on a decrypt
+// error so callers don't silently inject zero into deploys.
+func (db *DB) decryptValue(stored string) (string, error) {
+	if db.cipher == nil || !encryption.IsCiphertext(stored) {
+		return stored, nil
+	}
+	pt, err := db.cipher.Decrypt(stored)
+	if err != nil {
+		return "", fmt.Errorf("env decrypt: %w", err)
+	}
+	return string(pt), nil
+}
+
+// encryptValue is the write-side. With no cipher wired, store
+// plaintext (tests, unencrypted dev installs).
+func (db *DB) encryptValue(plaintext string) (string, error) {
+	if db.cipher == nil {
+		return plaintext, nil
+	}
+	return db.cipher.Encrypt([]byte(plaintext))
 }
 
 func (db *DB) ListEnvVars(ctx context.Context, projectID int64) ([]EnvVar, error) {
@@ -33,10 +60,12 @@ func (db *DB) ListEnvVars(ctx context.Context, projectID int64) ([]EnvVar, error
 	}
 	out := make([]EnvVar, 0, len(results[0].Values))
 	for _, row := range results[0].Values {
-		var e EnvVar
-		e.Key = toString(row[0])
-		e.Value = blobToString(row[1])
-		out = append(out, e)
+		stored := blobToString(row[1])
+		val, err := db.decryptValue(stored)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, EnvVar{Key: toString(row[0]), Value: val})
 	}
 	return out, nil
 }
@@ -67,20 +96,28 @@ func (db *DB) GetEnvVar(ctx context.Context, projectID int64, key string) (*EnvV
 	if len(results) == 0 || len(results[0].Values) == 0 {
 		return nil, ErrNotFound
 	}
-	return &EnvVar{Key: key, Value: blobToString(results[0].Values[0][0])}, nil
+	val, err := db.decryptValue(blobToString(results[0].Values[0][0]))
+	if err != nil {
+		return nil, err
+	}
+	return &EnvVar{Key: key, Value: val}, nil
 }
 
 func (db *DB) SetEnvVar(ctx context.Context, projectID int64, key, value string) error {
 	if err := validator.ValidateEnvKey(key); err != nil {
 		return err
 	}
-	_, err := db.ExecuteSingle(ctx, `
+	stored, err := db.encryptValue(value)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecuteSingle(ctx, `
 		INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
 		VALUES (?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
 		ON CONFLICT(project_id, key) DO UPDATE SET
 			value = excluded.value,
 			updated_at = strftime('%s', 'now')
-	`, projectID, key, value)
+	`, projectID, key, stored)
 	return err
 }
 
@@ -95,13 +132,17 @@ func (db *DB) SetEnvVars(ctx context.Context, projectID int64, vars map[string]s
 	}
 	stmts := make(rqlitehttp.SQLStatements, 0, len(vars))
 	for k, v := range vars {
+		stored, err := db.encryptValue(v)
+		if err != nil {
+			return err
+		}
 		stmt, err := rqlitehttp.NewSQLStatement(`
 			INSERT INTO env_vars (project_id, key, value, created_at, updated_at)
 			VALUES (?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
 			ON CONFLICT(project_id, key) DO UPDATE SET
 				value = excluded.value,
 				updated_at = strftime('%s', 'now')
-		`, projectID, k, v)
+		`, projectID, k, stored)
 		if err != nil {
 			return err
 		}
@@ -115,6 +156,55 @@ func (db *DB) SetEnvVars(ctx context.Context, projectID int64, vars map[string]s
 		return errors.New(errMsg)
 	}
 	return nil
+}
+
+// MigrateEnvVarsToEncrypted scans env_vars and rewrites any rows whose
+// value isn't already a v1 ciphertext frame. Idempotent: safe to call
+// on every daemon boot. Returns the number of rows it encrypted.
+//
+// Requires a configured cipher; with no cipher wired this is a no-op.
+func (db *DB) MigrateEnvVarsToEncrypted(ctx context.Context) (int, error) {
+	if db.cipher == nil {
+		return 0, nil
+	}
+	resp, err := db.QuerySingle(ctx,
+		`SELECT project_id, key, value FROM env_vars`)
+	if err != nil {
+		return 0, fmt.Errorf("env migration: select: %w", err)
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return 0, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return 0, nil
+	}
+	var stmts rqlitehttp.SQLStatements
+	for _, row := range results[0].Values {
+		stored := blobToString(row[2])
+		if encryption.IsCiphertext(stored) {
+			continue
+		}
+		ct, err := db.cipher.Encrypt([]byte(stored))
+		if err != nil {
+			return 0, fmt.Errorf("env migration: encrypt: %w", err)
+		}
+		stmt, err := rqlitehttp.NewSQLStatement(
+			`UPDATE env_vars SET value = ? WHERE project_id = ? AND key = ?`,
+			ct, toInt64(row[0]), toString(row[1]),
+		)
+		if err != nil {
+			return 0, err
+		}
+		stmts = append(stmts, stmt)
+	}
+	if len(stmts) == 0 {
+		return 0, nil
+	}
+	if _, err := db.Execute(ctx, stmts, &rqlitehttp.ExecuteOptions{Transaction: true}); err != nil {
+		return 0, fmt.Errorf("env migration: update: %w", err)
+	}
+	return len(stmts), nil
 }
 
 func (db *DB) DeleteEnvVar(ctx context.Context, projectID int64, key string) error {

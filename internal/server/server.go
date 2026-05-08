@@ -62,6 +62,14 @@ type Config struct {
 	// Version is the daemon's build-time version (e.g. "v1.2.3").
 	// Surfaced via GET /api/meta/info. Empty defaults to "dev".
 	Version string
+
+	// EncryptionKeyPath is where the daemon reads its 32-byte AES key
+	// for env-var encryption at rest. Empty defaults to
+	// encryption.DefaultKeyPath ("/run/secrets/cobalt_encryption_key"),
+	// which is what the embedded compose bind-mounts. Override for
+	// alternative deployments (manual installs, tests against a
+	// host-side path, etc.).
+	EncryptionKeyPath string
 }
 
 // Run starts every daemon subsystem (storage, scheduler, dispatcher, HTTP
@@ -103,6 +111,14 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	if err := db.InitSchema(ctx); err != nil {
+		return err
+	}
+
+	// Wire the env-var encryption cipher BEFORE any code path that
+	// touches env_vars. The key is bind-mounted into the daemon at
+	// /run/secrets/cobalt_encryption_key by the embedded compose;
+	// `cobalt init` generates and places the host-side file.
+	if err := configureEnvCipher(ctx, db, cfg.EncryptionKeyPath, log); err != nil {
 		return err
 	}
 
