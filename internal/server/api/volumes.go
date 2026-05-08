@@ -55,6 +55,21 @@ func (h *Handler) ExportVolume(w http.ResponseWriter, r *http.Request) {
 	}
 	full := docker.VolumeName(project.ID, volumeName)
 
+	// Docker's `--mount type=volume,source=X` silently creates an empty
+	// volume named X when one doesn't exist, which would otherwise let
+	// `cobalt volumes export --volume <typo>` ship back an empty tar
+	// that an operator might mistake for a real backup. Validate first.
+	exists, err := h.Docker.VolumeExists(r.Context(), full)
+	if err != nil {
+		h.Log.Error("api: export volume: probe", "volume", full, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "volume "+volumeName+" not found for project "+project.Name)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/x-tar")
 	w.Header().Set("Content-Disposition",
 		`attachment; filename="`+project.Name+`-`+volumeName+`.tar"`)
@@ -84,6 +99,21 @@ func (h *Handler) ImportVolume(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	full := docker.VolumeName(project.ID, volumeName)
+
+	// Same auto-create trap as ExportVolume — refuse to import into a
+	// volume the project doesn't already declare, since the deploy is
+	// the source of truth for what volumes a project should have.
+	exists, err := h.Docker.VolumeExists(r.Context(), full)
+	if err != nil {
+		h.Log.Error("api: import volume: probe", "volume", full, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	if !exists {
+		writeError(w, http.StatusNotFound, "volume "+volumeName+" not found for project "+project.Name)
+		return
+	}
+
 	if err := h.Docker.ImportVolume(r.Context(), full, r.Body); err != nil {
 		h.Log.Error("api: import volume", "volume", full, "error", err)
 		writeError(w, http.StatusInternalServerError, "import failed: "+err.Error())

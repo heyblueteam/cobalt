@@ -107,9 +107,12 @@ func TestVolumes_List(t *testing.T) {
 func TestVolumes_Export_StreamsTar(t *testing.T) {
 	t.Parallel()
 	e, fdocker := newVolumesEnv(t)
-	_, _ = e.db.CreateProject(context.Background(), store.Project{
+	pid, _ := e.db.CreateProject(context.Background(), store.Project{
 		Name: "api", GithubRepo: "h/api", Branch: "main",
 	})
+
+	// Stub the existence-probe so the handler doesn't 404 the request.
+	fdocker.stdout["volume ls"] = docker.VolumeName(pid, "data") + "\n"
 
 	const tarBytes = "<<this-is-fake-tar-data>>"
 	fdocker.onRun = func(_ io.Reader, stdout io.Writer) error {
@@ -137,9 +140,12 @@ func TestVolumes_Export_StreamsTar(t *testing.T) {
 func TestVolumes_Import_ReadsBody(t *testing.T) {
 	t.Parallel()
 	e, fdocker := newVolumesEnv(t)
-	_, _ = e.db.CreateProject(context.Background(), store.Project{
+	pid, _ := e.db.CreateProject(context.Background(), store.Project{
 		Name: "api", GithubRepo: "h/api", Branch: "main",
 	})
+
+	// Stub the existence-probe.
+	fdocker.stdout["volume ls"] = docker.VolumeName(pid, "data") + "\n"
 
 	var received []byte
 	fdocker.onRun = func(stdin io.Reader, _ io.Writer) error {
@@ -160,6 +166,64 @@ func TestVolumes_Import_ReadsBody(t *testing.T) {
 	}
 	if !strings.Contains(string(received), "incoming-tar-payload") {
 		t.Errorf("docker stdin didn't see payload: %q", string(received))
+	}
+}
+
+func TestVolumes_Export_404OnUnknownVolume(t *testing.T) {
+	t.Parallel()
+	e, fdocker := newVolumesEnv(t)
+	_, _ = e.db.CreateProject(context.Background(), store.Project{
+		Name: "api", GithubRepo: "h/api", Branch: "main",
+	})
+
+	// `volume ls` returns nothing → handler must refuse rather than
+	// shell out to docker (which would auto-create the volume and
+	// return an empty tar).
+	fdocker.stdout["volume ls"] = ""
+
+	tarRan := false
+	fdocker.onRun = func(_ io.Reader, _ io.Writer) error {
+		tarRan = true
+		return nil
+	}
+
+	resp := e.do(http.MethodPost, "/api/projects/api/volumes/typo/export", nil)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404", resp.StatusCode)
+	}
+	if tarRan {
+		t.Error("docker tar ran for a nonexistent volume; auto-create trap reopened")
+	}
+}
+
+func TestVolumes_Import_404OnUnknownVolume(t *testing.T) {
+	t.Parallel()
+	e, fdocker := newVolumesEnv(t)
+	_, _ = e.db.CreateProject(context.Background(), store.Project{
+		Name: "api", GithubRepo: "h/api", Branch: "main",
+	})
+
+	fdocker.stdout["volume ls"] = ""
+
+	tarRan := false
+	fdocker.onRun = func(_ io.Reader, _ io.Writer) error {
+		tarRan = true
+		return nil
+	}
+
+	body := bytes.NewBufferString("<<payload>>")
+	req, _ := http.NewRequest(http.MethodPost, e.srv.URL+"/api/projects/api/volumes/typo/import", body)
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status: got %d, want 404", resp.StatusCode)
+	}
+	if tarRan {
+		t.Error("docker tar ran for a nonexistent volume on import")
 	}
 }
 
