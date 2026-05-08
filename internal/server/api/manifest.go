@@ -67,7 +67,7 @@ func (h *Handler) ManifestForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	host := h.publicHost(r)
-	manifest := github.BuildManifest(host, "Cobalt", strconv.FormatInt(pending.ID, 10))
+	manifest := github.BuildManifest(host, github.NewAppName(), strconv.FormatInt(pending.ID, 10))
 	manifestJSON, err := jsonMarshal(manifest)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

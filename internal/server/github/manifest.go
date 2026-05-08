@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
+	"math/big"
 	"net/http"
 )
 
@@ -72,6 +74,46 @@ type Manifest struct {
 // ManifestHookAttrs is the webhook configuration GitHub will install.
 type ManifestHookAttrs struct {
 	URL string `json:"url"`
+}
+
+// AppNamePrefix is the leading word of every cobalt-managed GitHub App.
+// GitHub requires App names to be globally unique, and the bare "Cobalt"
+// is reserved by another account, so we always append a random
+// adjective + noun pair (~400 combinations) to dodge collisions.
+const AppNamePrefix = "Cobalt"
+
+// adj / noun are the candidate words for NewAppName. Kept short, neutral,
+// and safe-for-most-audiences. Lengthen the lists rather than reusing
+// words if you ever feel a collision is likely.
+var (
+	manifestAppAdjectives = []string{
+		"swift", "bright", "calm", "brave", "bold", "keen", "quiet", "sharp",
+		"steady", "nimble", "eager", "clever", "mellow", "lively", "gentle",
+		"deft", "agile", "hardy", "royal", "vivid",
+	}
+	manifestAppNouns = []string{
+		"bear", "fox", "owl", "hawk", "otter", "lynx", "heron", "falcon",
+		"badger", "beaver", "gull", "finch", "marlin", "tiger", "salmon",
+		"raven", "koi", "panda", "kestrel", "lemur",
+	}
+)
+
+// NewAppName returns a GitHub App name like "Cobalt swift kestrel". The
+// random pair is drawn from the system CSPRNG; on the (theoretically
+// impossible) failure path we fall back to a fixed pair so we still
+// return something usable rather than panicking inside an HTTP handler.
+func NewAppName() string {
+	a := pickWord(manifestAppAdjectives)
+	n := pickWord(manifestAppNouns)
+	return fmt.Sprintf("%s %s %s", AppNamePrefix, a, n)
+}
+
+func pickWord(pool []string) string {
+	idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool))))
+	if err != nil {
+		return pool[0]
+	}
+	return pool[idx.Int64()]
 }
 
 // BuildManifest returns the canonical cobalt manifest, parameterized only

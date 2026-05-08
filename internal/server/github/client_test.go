@@ -203,6 +203,64 @@ func TestInstallationsURL(t *testing.T) {
 	}
 }
 
+func TestNewAppName(t *testing.T) {
+	t.Parallel()
+	for i := 0; i < 100; i++ {
+		name := NewAppName()
+		// Must start with the canonical prefix.
+		if got := name[:len(AppNamePrefix)]; got != AppNamePrefix {
+			t.Errorf("missing prefix: %q", name)
+		}
+		// "Cobalt <adj> <noun>" — three space-separated tokens, all
+		// non-empty, drawn from the inline lists.
+		var parts [3]string
+		var n int
+		for _, tok := range splitFields(name) {
+			if n < len(parts) {
+				parts[n] = tok
+			}
+			n++
+		}
+		if n != 3 {
+			t.Fatalf("want 3 tokens, got %d in %q", n, name)
+		}
+		if !inSlice(manifestAppAdjectives, parts[1]) {
+			t.Errorf("unknown adjective %q in %q", parts[1], name)
+		}
+		if !inSlice(manifestAppNouns, parts[2]) {
+			t.Errorf("unknown noun %q in %q", parts[2], name)
+		}
+	}
+}
+
+func splitFields(s string) []string {
+	var out []string
+	cur := ""
+	for _, r := range s {
+		if r == ' ' {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+			continue
+		}
+		cur += string(r)
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func inSlice(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
 func TestBuildManifest(t *testing.T) {
 	t.Parallel()
 	m := BuildManifest("cobalt.example.com", "Cobalt", "abc-pending")
