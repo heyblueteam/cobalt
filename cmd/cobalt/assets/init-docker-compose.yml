@@ -15,6 +15,20 @@
 services:
   rqlite:
     image: rqlite/rqlite:8.43.4
+    # Stable container hostname — rqlite stamps it into the raft
+    # state on first boot, so a `docker service update` (e.g. to
+    # change args or bump the image tag) that gives the new container
+    # a different docker-assigned hostname leaves raft unable to
+    # identify itself and the cluster wedged. Pin the hostname so
+    # in-place updates work.
+    hostname: rqlite
+    # -fk turns on SQLite foreign-key enforcement so every
+    # `ON DELETE CASCADE` in our schema actually fires. Without this
+    # flag, deleting a project leaks its env_vars, domains,
+    # deployments and command_runs rows. PRAGMA at runtime would not
+    # survive rqlite's WAL replay, so the startup flag is the
+    # documented fix.
+    command: ["-fk=true"]
     volumes:
       - rqlite-data:/rqlite/file
     healthcheck:
