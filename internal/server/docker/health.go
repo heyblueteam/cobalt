@@ -78,13 +78,20 @@ type taskStatus struct {
 	Health string // "healthy", "unhealthy", "starting", or "" if no healthcheck
 }
 
-// taskStatuses reads docker service ps and parses out each task's current
-// state. Health is left empty here — every task falls through to the
-// task-state fallback in WaitForServiceHealthy. Reading the per-task
-// .Status.Health.Status requires a second call (docker inspect on each
-// task ID) and is tracked separately; the previous template approach
-// failed because `docker service ps --format`'s context type does not
-// expose .Status at all.
+// taskStatuses reads docker service ps to enumerate each task's current
+// state, then layers in HEALTHCHECK results from the live containers
+// behind the service via `docker ps --filter` + `docker inspect`.
+//
+// Two-step because `docker service ps --format`'s context type doesn't
+// expose .Status (so we can't pull health from the same call), and the
+// per-task object's Status.ContainerStatus only carries an exit code, not
+// the docker-engine-level health field. The container-side .State.Health
+// is the authoritative source.
+//
+// State and Health are not paired by index — Caddy-swap only needs aggregate
+// counts, and the order across `service ps` and `docker ps` isn't
+// guaranteed to match anyway. Health is assigned to Running entries in
+// arrival order so the WaitForServiceHealthy aggregates remain correct.
 func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskStatus, error) {
 	out, err := c.output(ctx,
 		"service", "ps", serviceName,
@@ -93,9 +100,6 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 	)
 	if err != nil {
 		return nil, err
-	}
-	if len(out) == 0 {
-		return nil, nil
 	}
 	var statuses []taskStatus
 	for _, line := range strings.Split(string(out), "\n") {
@@ -115,5 +119,55 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 		}
 		statuses = append(statuses, taskStatus{State: state})
 	}
+
+	// Layer in per-container health for Running tasks. Failures here are
+	// non-fatal: WaitForServiceHealthy already falls back to task-state
+	// readiness when no Health field is reported.
+	if healths := c.containerHealthForService(ctx, serviceName); len(healths) > 0 {
+		var idx int
+		for i := range statuses {
+			if statuses[i].State != "Running" {
+				continue
+			}
+			if idx >= len(healths) {
+				break
+			}
+			statuses[i].Health = healths[idx]
+			idx++
+		}
+	}
 	return statuses, nil
+}
+
+// containerHealthForService returns the .State.Health.Status of every
+// container backing the named swarm service. Empty string means the
+// container declared no HEALTHCHECK; missing entries (e.g. when the
+// inspect call fails) are simply skipped — the caller treats absence as
+// "no healthcheck declared" and falls back to task-state readiness.
+func (c *Client) containerHealthForService(ctx context.Context, serviceName string) []string {
+	out, err := c.output(ctx,
+		"ps",
+		"--filter", "label=com.docker.swarm.service.name="+serviceName,
+		"--format", "{{.ID}}",
+	)
+	if err != nil {
+		return nil
+	}
+	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return nil
+	}
+	args := append([]string{
+		"inspect",
+		"--format", `{{if .State.Health}}{{.State.Health.Status}}{{end}}`,
+	}, ids...)
+	out2, err := c.output(ctx, args...)
+	if err != nil {
+		return nil
+	}
+	var healths []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out2)), "\n") {
+		healths = append(healths, strings.TrimSpace(line))
+	}
+	return healths
 }
