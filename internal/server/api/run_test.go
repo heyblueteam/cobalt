@@ -43,7 +43,11 @@ type runFakeDocker struct {
 	onRun func(stdin io.Reader, stdout, stderr io.Writer) error
 }
 
-func (f *runFakeDocker) Run(_ context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+func (f *runFakeDocker) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return f.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
+}
+
+func (f *runFakeDocker) RunWithEnv(_ context.Context, _ map[string]string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	f.mu.Lock()
 	cb := f.onRun
 	f.mu.Unlock()

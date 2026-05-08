@@ -23,6 +23,7 @@ type fakeRunner struct {
 
 type recorded struct {
 	Args []string
+	Env  map[string]string
 }
 
 func newFakeRunner() *fakeRunner {
@@ -40,9 +41,20 @@ func (f *fakeRunner) answerErr(prefix string, err error) {
 	f.errs[prefix] = err
 }
 
-func (f *fakeRunner) Run(_ context.Context, args []string, stdin io.Reader, stdout, _ io.Writer) error {
+func (f *fakeRunner) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return f.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
+}
+
+func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, args []string, stdin io.Reader, stdout, _ io.Writer) error {
 	f.mu.Lock()
-	f.calls = append(f.calls, recorded{Args: append([]string(nil), args...)})
+	envCopy := make(map[string]string, len(env))
+	for k, v := range env {
+		envCopy[k] = v
+	}
+	f.calls = append(f.calls, recorded{
+		Args: append([]string(nil), args...),
+		Env:  envCopy,
+	})
 	f.mu.Unlock()
 
 	joined := strings.Join(args, " ")

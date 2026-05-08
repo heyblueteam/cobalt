@@ -35,7 +35,11 @@ func newOrchDocker() *orchestratorDocker {
 	return &orchestratorDocker{stdout: map[string]string{}, errs: map[string]error{}}
 }
 
-func (f *orchestratorDocker) Run(_ context.Context, args []string, _ io.Reader, stdout, _ io.Writer) error {
+func (f *orchestratorDocker) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return f.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
+}
+
+func (f *orchestratorDocker) RunWithEnv(_ context.Context, _ map[string]string, args []string, _ io.Reader, stdout, _ io.Writer) error {
 	joined := strings.Join(args, " ")
 	f.mu.Lock()
 	f.calls = append(f.calls, joined)

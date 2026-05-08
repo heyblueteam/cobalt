@@ -42,15 +42,23 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 		}
 	}
 
-	// Every secret should appear; their order is alphabetical so output is
-	// reproducible. AAA comes before API_KEY comes before DB_URL.
+	// Every secret should appear with the env=KEY form so buildkit
+	// resolves the value from the subprocess env (not as a filename).
+	// Order is alphabetical so output is reproducible: AAA, API_KEY,
+	// DB_URL.
 	wantSecrets := []string{
-		"--secret", "id=AAA",
-		"--secret", "id=API_KEY",
-		"--secret", "id=DB_URL",
+		"--secret", "id=AAA,env=AAA",
+		"--secret", "id=API_KEY,env=API_KEY",
+		"--secret", "id=DB_URL,env=DB_URL",
 	}
 	if !argSequence(args, wantSecrets...) {
-		t.Errorf("secrets not in deterministic order: %v", args)
+		t.Errorf("secrets not in expected env=KEY form: %v", args)
+	}
+
+	// And the value of each must be on the subprocess env.
+	env := r.lastCall().Env
+	if env["AAA"] != "a" || env["API_KEY"] != "k" || env["DB_URL"] != "u" {
+		t.Errorf("buildx subprocess env missing/wrong values: %v", env)
 	}
 
 	// Every label should be present.

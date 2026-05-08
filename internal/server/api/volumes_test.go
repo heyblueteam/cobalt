@@ -29,7 +29,11 @@ type volumesFakeDocker struct {
 	onRun func(stdin io.Reader, stdout io.Writer) error
 }
 
-func (f *volumesFakeDocker) Run(_ context.Context, args []string, stdin io.Reader, stdout, _ io.Writer) error {
+func (f *volumesFakeDocker) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return f.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
+}
+
+func (f *volumesFakeDocker) RunWithEnv(_ context.Context, _ map[string]string, args []string, stdin io.Reader, stdout, _ io.Writer) error {
 	joined := strings.Join(args, " ")
 	f.mu.Lock()
 	f.calls = append(f.calls, joined)

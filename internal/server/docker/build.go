@@ -34,10 +34,12 @@ type BuildOpts struct {
 
 // Build builds an image and tags it as InternalImageName(...).
 //
-// Each entry in EnvSecrets is exposed to the build via `--secret id=KEY`.
-// The Dockerfile must opt in with `RUN --mount=type=secret,id=KEY ...` to
-// access them. Secrets are NOT visible in image layers — this is the
-// point of using --secret over --build-arg.
+// Each entry in EnvSecrets is exposed to the build via
+// `--secret id=KEY,env=KEY`. The Dockerfile must opt in with
+// `RUN --mount=type=secret,id=KEY ...` to access them. Secrets are NOT
+// visible in image layers — this is the point of using --secret over
+// --build-arg. The values are passed to the buildx subprocess via its
+// environment so buildkit's `env=KEY` resolver finds them.
 func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	if opts.ProjectName == "" || opts.ImageName == "" {
 		return "", fmt.Errorf("docker.Build: ProjectName and ImageName required")
@@ -72,7 +74,12 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		args = append(args, "--secret", "id="+k)
+		// `env=KEY` tells buildkit to read the value from the build
+		// subprocess's env. Without it (`id=KEY` alone), buildkit
+		// falls back to treating KEY as a filename — past versions
+		// of cobalt hit "stat KEY: no such file or directory" exactly
+		// for this reason.
+		args = append(args, "--secret", "id="+k+",env="+k)
 	}
 
 	if opts.CacheDir != "" {
@@ -88,7 +95,11 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	}
 	args = append(args, contextDir)
 
-	if err := c.runner.Run(ctx, args, nil, opts.Output, opts.Output); err != nil {
+	// Thread the env values into the buildx subprocess so buildkit's
+	// `env=KEY` resolver finds them. EnvSecrets is the project's
+	// per-deploy env state; we don't leak it into the daemon's own
+	// environment.
+	if err := c.runner.RunWithEnv(ctx, opts.EnvSecrets, args, nil, opts.Output, opts.Output); err != nil {
 		return "", fmt.Errorf("docker.Build %s: %w", tag, err)
 	}
 	return tag, nil

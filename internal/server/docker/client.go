@@ -29,6 +29,12 @@ type Runner interface {
 	// errors.As so callers can recover the real exit code; see
 	// docker.ExitCode.
 	Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error
+	// RunWithEnv is like Run but adds the supplied key=value pairs to
+	// the docker CLI subprocess's environment. Used for `buildx build
+	// --secret id=KEY,env=KEY` so buildkit can resolve KEY against the
+	// subprocess env without the daemon's process inheriting per-build
+	// secrets.
+	RunWithEnv(ctx context.Context, env map[string]string, args []string, stdin io.Reader, stdout, stderr io.Writer) error
 }
 
 // ExitCode unwraps err and returns the exit status of the last docker
@@ -57,6 +63,13 @@ type ExecRunner struct {
 // command fails. stdout/stderr writers, when non-nil, receive the full
 // streams alongside our internal capture.
 func (r *ExecRunner) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return r.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
+}
+
+// RunWithEnv is like Run plus extra env vars merged into the docker CLI
+// subprocess environment. Used by Build() to pass each project env-var
+// secret value through to buildkit.
+func (r *ExecRunner) RunWithEnv(ctx context.Context, extraEnv map[string]string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	bin := r.Path
 	if bin == "" {
 		bin = "docker"
@@ -66,6 +79,9 @@ func (r *ExecRunner) Run(ctx context.Context, args []string, stdin io.Reader, st
 	// deprecated and doesn't support --secret (which we depend on for
 	// passing env vars into builds).
 	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
+	for k, v := range extraEnv {
+		cmd.Env = append(cmd.Env, k+"="+v)
+	}
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
