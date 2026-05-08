@@ -6,7 +6,6 @@ Planned features not yet implemented.
 
 - Managed Postgres addon — `cobalt postgres create`, auto-injected `DATABASE_URL`, attach/detach to projects, local tunnel for psql
 - Automated backups — project volumes + Postgres → S3/R2/B2 on a schedule, one-command restore
-- Rollback — `cobalt rollback <project>` to the previous deployment
 - Cron / scheduled jobs — `cron:` block in `cobaltfile`
 - Preview environments per PR — ephemeral deployments per GitHub PR, torn down on close
 - Redis addon — same pattern as Postgres
