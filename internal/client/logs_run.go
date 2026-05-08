@@ -18,10 +18,21 @@ func (c *Client) LogsSSE(ctx context.Context, project string, service string) (*
 	return c.StreamGet(ctx, path)
 }
 
-func (c *Client) RunWS(ctx context.Context, project, command, service string) (*websocket.Conn, error) {
+// RunWS opens the cobalt-run WebSocket. Subprotocol negotiation:
+// the daemon advertises both v2 and v1; we offer v2 first, falling
+// back to v1 only if a (very) old server doesn't speak v2. The
+// returned subprotocol tells the caller which framer to use.
+//
+// tty controls whether ?tty=1 is added to the URL — the daemon then
+// allocates a real PTY for the container and bridges its master end.
+// Only meaningful in v2; v1 servers ignore the flag.
+func (c *Client) RunWS(ctx context.Context, project, command, service string, tty bool) (*websocket.Conn, string, error) {
 	url := c.baseURL() + fmt.Sprintf("/api/projects/%s/run?command=%s", project, percentEncode(command))
 	if service != "" {
 		url += "&service=" + percentEncode(service)
+	}
+	if tty {
+		url += "&tty=1"
 	}
 	wsurl := "ws" + url[4:]
 	opts := &websocket.DialOptions{
@@ -38,13 +49,16 @@ func (c *Client) RunWS(ctx context.Context, project, command, service string) (*
 		HTTPHeader: http.Header{
 			"Authorization": {"Bearer " + c.server.APIKey},
 		},
-		Subprotocols: []string{cobaltapi.RunSubprotocol},
+		Subprotocols: []string{
+			cobaltapi.RunSubprotocolV2,
+			cobaltapi.RunSubprotocolV1,
+		},
 	}
 	conn, _, err := websocket.Dial(ctx, wsurl, opts)
 	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
+		return nil, "", fmt.Errorf("dial: %w", err)
 	}
-	return conn, nil
+	return conn, conn.Subprotocol(), nil
 }
 
 func percentEncode(s string) string {

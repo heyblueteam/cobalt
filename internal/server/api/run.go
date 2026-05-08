@@ -6,7 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
+	"os"
 	"sync"
 	"time"
 
@@ -22,6 +22,18 @@ import (
 // We don't want a slow client to indefinitely back up our docker copy.
 const runWriteTimeout = 10 * time.Second
 
+// runRequest carries the resolved-once request fields shared by every
+// protocol version of the run handler.
+type runRequest struct {
+	project           *store.Project
+	live              *store.Deployment
+	command           string
+	serviceName       string
+	imageTag          string
+	deploymentNetwork string
+	extraParams       []string
+}
+
 // Run implements GET /api/projects/{name}/run as a WebSocket endpoint.
 // The CLI connects, the daemon starts a one-shot container against the
 // last successful deployment's image, pipes stdin/stdout/stderr through
@@ -32,12 +44,18 @@ const runWriteTimeout = 10 * time.Second
 //     container. Wrapped in `sh -c "..."` so users can compose pipes.
 //   - service  (optional) — which service's image to use; defaults to
 //     "web". The service must exist in the live deployment's cobaltfile.
+//   - tty      (optional, v2 only) — when "1", the daemon allocates a
+//     PTY for the container so interactive programs (vim, top, color
+//     output) work. Defaults to off.
 //
 // The container is attached to the live deployment's network plus
 // cobalt-main, mirroring the hook flow. extraRunParams from the
-// cobaltfile (PR #92 from upstream) are honored for `--add-host`-style
-// flags so commands like `npx prisma migrate deploy` can reach
-// host.docker.internal.
+// cobaltfile are honored for `--add-host`-style flags.
+//
+// Subprotocol negotiation: the handler advertises both
+// cobalt-run.v2 (kubectl-style, binary multiplexed) and cobalt-run.v1
+// (legacy JSON). The client's first preference wins; we dispatch
+// based on conn.Subprotocol().
 func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	project, ok := h.projectFromPath(w, r)
 	if !ok {
@@ -72,11 +90,13 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	// deployment's cobaltfile. Falls back to "default" image if the
 	// service isn't found or the cobaltfile is missing.
 	imageName, extraParams := resolveRunImage(live, serviceName)
-	imageTag := docker.InternalImageName(project.Name, imageName, live.Number)
-	deploymentNetwork := docker.NetworkName(project.Name, live.Number)
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		Subprotocols: []string{cobaltapi.RunSubprotocol},
+		// v2 first so a client that speaks both wins v2.
+		Subprotocols: []string{
+			cobaltapi.RunSubprotocolV2,
+			cobaltapi.RunSubprotocolV1,
+		},
 		// Don't enforce origin — this is an API endpoint consumed by
 		// the cobalt CLI, not a browser. The bearer auth on the
 		// upgrade request is the access control.
@@ -88,26 +108,69 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 
-	// runCtx is the scope of this run; canceling tears down docker +
-	// goroutines. Either WS disconnect or container exit triggers it.
-	runCtx, cancel := context.WithCancel(r.Context())
+	req := runRequest{
+		project:           project,
+		live:              live,
+		command:           cmd,
+		serviceName:       serviceName,
+		imageTag:          docker.InternalImageName(project.Name, imageName, live.Number),
+		deploymentNetwork: docker.NetworkName(project.Name, live.Number),
+		extraParams:       extraParams,
+	}
+
+	switch conn.Subprotocol() {
+	case cobaltapi.RunSubprotocolV2:
+		tty := r.URL.Query().Get("tty") == "1"
+		h.Log.Info("run: v2 session", "project", project.Name, "service", serviceName, "tty", tty)
+		h.runV2(r.Context(), conn, req, tty)
+	default:
+		h.Log.Info("run: v1 session (deprecated)", "project", project.Name, "service", serviceName)
+		h.runV1(r.Context(), conn, req)
+	}
+}
+
+// runV1 is the legacy JSON-text-frame protocol kept on the server side
+// for old CLIs. New work goes into runV2; v1 will be removed one
+// release after v2 ships in a stable CLI.
+//
+// The original handler used io.Pipe() for stdin, which deadlocked
+// exec.Cmd.Wait — see plans/cobalt/cobalt-run-v2.md "deadlock disguised
+// as a 60 s upper bound". We use os.Pipe() here so the file descriptor
+// reaches the child as a real *os.File and exec.Cmd skips its internal
+// io.Copy goroutine.
+func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runRequest) {
+	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	stdinR, stdinW := io.Pipe()
-	stdoutR, stdoutW := io.Pipe()
-	stderrR, stderrW := io.Pipe()
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		h.Log.Error("run: stdin pipe", "error", err)
+		return
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		h.Log.Error("run: stdout pipe", "error", err)
+		return
+	}
+	stderrR, stderrW, err := os.Pipe()
+	if err != nil {
+		_ = stdinR.Close()
+		_ = stdinW.Close()
+		_ = stdoutR.Close()
+		_ = stdoutW.Close()
+		h.Log.Error("run: stderr pipe", "error", err)
+		return
+	}
 
-	// outWG covers ONLY the output pumps (stdout/stderr → WS). The
-	// stdin pump (WS → stdin pipe) blocks on conn.Read indefinitely
-	// and would deadlock the handler if we waited on it; we let it
-	// leak briefly until our final Close terminates the WS.
 	var outWG sync.WaitGroup
 	outWG.Add(2)
 	go pumpToWS(&outWG, runCtx, conn, stdoutR, cobaltapi.RunFrameStdout)
 	go pumpToWS(&outWG, runCtx, conn, stderrR, cobaltapi.RunFrameStderr)
 
-	// Stdin pump (fire-and-forget). When runCtx is canceled at the end
-	// of the handler, conn.Read returns and the goroutine exits.
+	// Stdin pump — reads JSON frames off the WS, writes the bytes to
+	// the os.Pipe writer. Closes the writer on WS error.
 	go func() {
 		defer stdinW.Close()
 		for {
@@ -127,18 +190,16 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Run the container. docker.Run blocks until the container exits
-	// or ctx is canceled.
 	runOpts := docker.RunOpts{
-		ProjectID:        project.ID,
-		ProjectName:      project.Name,
-		ServiceName:      serviceName,
-		DeploymentNumber: live.Number,
-		ContainerName:    docker.RunContainerName(project.Name, time.Now().UnixNano()),
-		Image:            imageTag,
-		Command:          []string{"sh", "-c", cmd},
-		Networks:         []string{deploymentNetwork, deploy.MainNetworkName},
-		ExtraParams:      extraParams,
+		ProjectID:        req.project.ID,
+		ProjectName:      req.project.Name,
+		ServiceName:      req.serviceName,
+		DeploymentNumber: req.live.Number,
+		ContainerName:    docker.RunContainerName(req.project.Name, time.Now().UnixNano()),
+		Image:            req.imageTag,
+		Command:          []string{"sh", "-c", req.command},
+		Networks:         []string{req.deploymentNetwork, deploy.MainNetworkName},
+		ExtraParams:      req.extraParams,
 		Stdin:            stdinR,
 		Stdout:           stdoutW,
 		Stderr:           stderrW,
@@ -146,6 +207,8 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	runErr := h.Docker.Run(runCtx, runOpts)
 
 	// Closing the write halves makes the pumps see EOF and drain.
+	// Closing stdinR releases the kernel handle the child held; with
+	// os.Pipe() the child's fd is dup2'd, so this just frees ours.
 	_ = stdoutW.Close()
 	_ = stderrW.Close()
 	_ = stdinR.Close()
@@ -155,7 +218,7 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	if runErr != nil {
 		exitCode = 1
 		h.Log.Info("run: container exited non-zero",
-			"project", project.Name, "service", serviceName, "error", runErr)
+			"project", req.project.Name, "service", req.serviceName, "error", runErr)
 	}
 	exitFrame, _ := json.Marshal(cobaltapi.RunFrame{
 		Type: cobaltapi.RunFrameExit,
@@ -165,12 +228,13 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	_ = conn.Write(writeCtx, websocket.MessageText, exitFrame)
 	writeCancel()
 
-	// Now close the WS — this will also unblock the leaking stdin pump.
+	// Closing the WS unblocks the leaking stdin pump.
 	_ = conn.Close(websocket.StatusNormalClosure, "")
 }
 
-// pumpToWS reads bytes from r and writes them as RunFrames of the given
-// type. Returns when r is closed (typical) or the context is canceled.
+// pumpToWS reads bytes from r and writes them as v1 RunFrames of the
+// given type. Returns when r is closed (typical) or the context is
+// canceled.
 func pumpToWS(wg *sync.WaitGroup, ctx context.Context, conn *websocket.Conn, r io.Reader, frameType string) {
 	defer wg.Done()
 	buf := make([]byte, 4<<10)
@@ -219,7 +283,3 @@ func resolveRunImage(live *store.Deployment, serviceName string) (image string, 
 	extraParams = docker.SplitParams(svc.ExtraRunParams)
 	return image, extraParams
 }
-
-// We use a strconv reference here so static analyzers don't drop the
-// import after future refactors strip the only call site. (cheap.)
-var _ = strconv.Itoa
