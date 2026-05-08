@@ -211,8 +211,12 @@ func setupOrchestrator(t *testing.T) (*Orchestrator, *orchestratorDocker, *orche
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Default workspace has a `web` service, which the orchestrator
+	// preflight requires at least one domain for.
+	if err := db.AddDomain(context.Background(), pid, "api.example.com"); err != nil {
+		t.Fatal(err)
+	}
 	project, _ := db.GetProjectByName(context.Background(), "api")
-	_ = pid
 
 	fdocker := newOrchDocker()
 	fdocker.stdout["service ps"] =
@@ -314,6 +318,30 @@ func TestOrchestrator_PrepareErrorReturns(t *testing.T) {
 	err := o.Run(context.Background(), dep)
 	if err == nil || !strings.Contains(err.Error(), "prepare") {
 		t.Errorf("expected prepare error, got %v", err)
+	}
+}
+
+// TestOrchestrator_RejectsWebDeployWithNoDomains asserts that a web
+// project missing domains errors before the build runs (instead of
+// dying confusingly mid-Caddy-swap).
+func TestOrchestrator_RejectsWebDeployWithNoDomains(t *testing.T) {
+	t.Parallel()
+	o, fdocker, _, db, _ := setupOrchestrator(t)
+	// Strip the domain seeded by setupOrchestrator.
+	if err := db.RemoveDomain(context.Background(), 1, "api.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	dep := enqueueAndFetch(t, db, 1)
+
+	err := o.Run(context.Background(), dep)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "no domains attached") {
+		t.Errorf("error %q does not mention domains", err)
+	}
+	if fdocker.hasCall("service create") {
+		t.Error("preflight did not run before service create")
 	}
 }
 
@@ -524,10 +552,13 @@ func TestOrchestrator_CaddyFailsAfterServicesRunning_VerifiesServiceRmCall(t *te
 
 	db := openTestDB(t)
 
-	_, err := db.CreateProject(context.Background(), store.Project{
+	pid, err := db.CreateProject(context.Background(), store.Project{
 		Name: "api", GithubRepo: "h/api", Branch: "main",
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AddDomain(context.Background(), pid, "api.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	project, _ := db.GetProjectByName(context.Background(), "api")

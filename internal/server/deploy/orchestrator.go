@@ -89,6 +89,21 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 		}
 	}
 
+	// Preflight: a `web` service needs at least one domain attached so
+	// commitCaddySwap has somewhere to point traffic. Without this
+	// check the deploy builds the image, starts services, then dies at
+	// the swap step with a confusing `unknown object ID
+	// cobalt-project-handler-N`. Fail early with an actionable error.
+	if _, hasWeb := ws.Cobaltfile.Services["web"]; hasWeb {
+		domains, err := o.DB.ListDomainsForProject(ctx, project.ID)
+		if err != nil {
+			return fmt.Errorf("deploy: list domains: %w", err)
+		}
+		if len(domains) == 0 {
+			return fmt.Errorf("deploy: project %q has a web service but no domains attached; add one with `cobalt domains add <name>` and redeploy", project.Name)
+		}
+	}
+
 	if err := o.DB.SetDeploymentStatus(ctx, dep.ID, cobaltapi.StateBuilding); err != nil {
 		log.Warn("set status building", "error", err)
 	}
