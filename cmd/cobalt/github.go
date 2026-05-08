@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/heyblueteam/cobalt/internal/client"
@@ -140,8 +141,7 @@ Examples:
 				return err
 			}
 			if app.HTMLURL == "" {
-				output.Errf("no htmlUrl for app %d", app.ID)
-				return nil
+				return fmt.Errorf("no settings URL for app %d (was it registered via the manifest flow?)", app.ID)
 			}
 			output.PrintLines(app.HTMLURL)
 			if err := client.OpenBrowser(app.HTMLURL); err != nil {
