@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 
 	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
@@ -11,26 +12,13 @@ import (
 type DB struct {
 	*rqlitehttp.Client
 
-	// cipher, when set, is used to encrypt/decrypt env_vars.value at
-	// rest. server.Run loads it from the host-mounted key file before
-	// any env-using code path runs. Tests usually leave it nil and
-	// store/read plaintext (interface preserved for ergonomics).
-	cipher EnvVarCipher
+	// cipher protects every encrypted-at-rest column. RWMutex-guarded
+	// so admin rotate-key can swap it atomically while concurrent
+	// reads finish on the old cipher. Definition + helpers live in
+	// cipher.go.
+	cipherMu sync.RWMutex
+	cipher   EnvVarCipher
 }
-
-// EnvVarCipher is the subset of internal/server/encryption.Cipher the
-// store needs. Defined as an interface so the encryption package can
-// satisfy it without importing the store and so tests can swap in a
-// passthrough.
-type EnvVarCipher interface {
-	Encrypt(plaintext []byte) (string, error)
-	Decrypt(s string) ([]byte, error)
-}
-
-// SetCipher wires an encryption cipher into the store. Must be called
-// before any env-var read or write that should round-trip plaintext.
-// Calling with nil reverts to plaintext storage (used in tests).
-func (db *DB) SetCipher(c EnvVarCipher) { db.cipher = c }
 
 var ErrProjectNameTaken = errors.New("store: project name already in use")
 

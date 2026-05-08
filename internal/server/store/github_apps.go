@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
+	"github.com/heyblueteam/cobalt/internal/server/encryption"
 	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
@@ -32,26 +34,23 @@ type GithubAppInstallation struct {
 	CreatedAt            int64
 }
 
-func (db *DB) GetGithubApp(ctx context.Context, id int64) (*GithubApp, error) {
-	resp, err := db.QuerySingle(ctx, `
-        SELECT id, app_id, slug, owner, private_key, webhook_secret,
-               client_id, client_secret, name, html_url, created_at
-        FROM github_apps WHERE id = ?
-    `, id)
+// scanGithubApp builds a GithubApp from a result row, decrypting
+// private_key and webhook_secret on the way out.
+func (db *DB) scanGithubApp(row []any) (GithubApp, error) {
+	pem, err := db.decryptValue(toString(row[4]))
 	if err != nil {
-		return nil, err
+		return GithubApp{}, fmt.Errorf("github_apps.private_key decrypt: %w", err)
 	}
-	results := resp.GetQueryResults()
-	if len(results) == 0 || len(results[0].Values) == 0 {
-		return nil, ErrNotFound
+	whSecret, err := db.decryptValue(toString(row[5]))
+	if err != nil {
+		return GithubApp{}, fmt.Errorf("github_apps.webhook_secret decrypt: %w", err)
 	}
-	row := results[0].Values[0]
 	a := GithubApp{
 		ID:            toInt64(row[0]),
 		AppID:         toInt64(row[1]),
 		Owner:         toString(row[3]),
-		PrivateKey:    toString(row[4]),
-		WebhookSecret: toString(row[5]),
+		PrivateKey:    pem,
+		WebhookSecret: whSecret,
 		CreatedAt:     toInt64(row[10]),
 	}
 	if row[2] != nil {
@@ -68,6 +67,26 @@ func (db *DB) GetGithubApp(ctx context.Context, id int64) (*GithubApp, error) {
 	}
 	if row[9] != nil {
 		a.HTMLURL = sql.NullString{String: toString(row[9]), Valid: true}
+	}
+	return a, nil
+}
+
+func (db *DB) GetGithubApp(ctx context.Context, id int64) (*GithubApp, error) {
+	resp, err := db.QuerySingle(ctx, `
+        SELECT id, app_id, slug, owner, private_key, webhook_secret,
+               client_id, client_secret, name, html_url, created_at
+        FROM github_apps WHERE id = ?
+    `, id)
+	if err != nil {
+		return nil, err
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	a, err := db.scanGithubApp(results[0].Values[0])
+	if err != nil {
+		return nil, err
 	}
 	return &a, nil
 }
@@ -118,12 +137,20 @@ func (db *DB) SetInstallationToken(ctx context.Context, id int64, token string, 
 }
 
 func (db *DB) CreateGithubApp(ctx context.Context, a GithubApp) (int64, error) {
+	pem, err := db.encryptValue(a.PrivateKey)
+	if err != nil {
+		return 0, fmt.Errorf("github_apps.private_key encrypt: %w", err)
+	}
+	whSecret, err := db.encryptValue(a.WebhookSecret)
+	if err != nil {
+		return 0, fmt.Errorf("github_apps.webhook_secret encrypt: %w", err)
+	}
 	resp, err := db.ExecuteSingle(ctx, `
         INSERT INTO github_apps (
             app_id, slug, owner, private_key, webhook_secret,
             client_id, client_secret, name, html_url, created_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-    `, a.AppID, nullStringArg(a.Slug), a.Owner, a.PrivateKey, a.WebhookSecret,
+    `, a.AppID, nullStringArg(a.Slug), a.Owner, pem, whSecret,
 		nullStringArg(a.ClientID), nullStringArg(a.ClientSecret),
 		nullStringArg(a.Name), nullStringArg(a.HTMLURL))
 	if err != nil {
@@ -191,29 +218,9 @@ func (db *DB) GetGithubAppByAppID(ctx context.Context, appID int64) (*GithubApp,
 	if len(results) == 0 || len(results[0].Values) == 0 {
 		return nil, ErrNotFound
 	}
-	row := results[0].Values[0]
-	a := GithubApp{
-		ID:            toInt64(row[0]),
-		AppID:         toInt64(row[1]),
-		Owner:         toString(row[3]),
-		PrivateKey:    toString(row[4]),
-		WebhookSecret: toString(row[5]),
-		CreatedAt:     toInt64(row[10]),
-	}
-	if row[2] != nil {
-		a.Slug = sql.NullString{String: toString(row[2]), Valid: true}
-	}
-	if row[6] != nil {
-		a.ClientID = sql.NullString{String: toString(row[6]), Valid: true}
-	}
-	if row[7] != nil {
-		a.ClientSecret = sql.NullString{String: toString(row[7]), Valid: true}
-	}
-	if row[8] != nil {
-		a.Name = sql.NullString{String: toString(row[8]), Valid: true}
-	}
-	if row[9] != nil {
-		a.HTMLURL = sql.NullString{String: toString(row[9]), Valid: true}
+	a, err := db.scanGithubApp(results[0].Values[0])
+	if err != nil {
+		return nil, err
 	}
 	return &a, nil
 }
@@ -270,6 +277,70 @@ func (db *DB) DeleteGithubApp(ctx context.Context, id int64) error {
 	return nil
 }
 
+// MigrateGithubAppsToEncrypted scans github_apps and rewrites any
+// rows whose private_key or webhook_secret isn't already a v1
+// ciphertext frame. Idempotent: safe to call on every daemon boot.
+// Returns the number of rows it touched (each row counts once even
+// if both columns needed encrypting).
+func (db *DB) MigrateGithubAppsToEncrypted(ctx context.Context) (int, error) {
+	c := db.cipherSnapshot()
+	if c == nil {
+		return 0, nil
+	}
+	resp, err := db.QuerySingle(ctx,
+		`SELECT id, private_key, webhook_secret FROM github_apps`)
+	if err != nil {
+		return 0, fmt.Errorf("github_apps migration: select: %w", err)
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return 0, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return 0, nil
+	}
+	var stmts rqlitehttp.SQLStatements
+	for _, row := range results[0].Values {
+		id := toInt64(row[0])
+		pem := toString(row[1])
+		whSecret := toString(row[2])
+		needsPEM := !encryption.IsCiphertext(pem)
+		needsSecret := !encryption.IsCiphertext(whSecret)
+		if !needsPEM && !needsSecret {
+			continue
+		}
+		if needsPEM {
+			ct, err := c.Encrypt([]byte(pem))
+			if err != nil {
+				return 0, fmt.Errorf("github_apps migration: encrypt pem: %w", err)
+			}
+			pem = ct
+		}
+		if needsSecret {
+			ct, err := c.Encrypt([]byte(whSecret))
+			if err != nil {
+				return 0, fmt.Errorf("github_apps migration: encrypt webhook_secret: %w", err)
+			}
+			whSecret = ct
+		}
+		stmt, err := rqlitehttp.NewSQLStatement(
+			`UPDATE github_apps SET private_key = ?, webhook_secret = ? WHERE id = ?`,
+			pem, whSecret, id,
+		)
+		if err != nil {
+			return 0, err
+		}
+		stmts = append(stmts, stmt)
+	}
+	if len(stmts) == 0 {
+		return 0, nil
+	}
+	if _, err := db.Execute(ctx, stmts, &rqlitehttp.ExecuteOptions{Transaction: true}); err != nil {
+		return 0, fmt.Errorf("github_apps migration: update: %w", err)
+	}
+	return len(stmts), nil
+}
+
 func (db *DB) ListGithubApps(ctx context.Context) ([]GithubApp, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(`
         SELECT id, app_id, slug, owner, private_key, webhook_secret,
@@ -289,28 +360,9 @@ func (db *DB) ListGithubApps(ctx context.Context) ([]GithubApp, error) {
 	}
 	var out []GithubApp
 	for _, row := range results[0].Values {
-		a := GithubApp{
-			ID:            toInt64(row[0]),
-			AppID:         toInt64(row[1]),
-			Owner:         toString(row[3]),
-			PrivateKey:    toString(row[4]),
-			WebhookSecret: toString(row[5]),
-			CreatedAt:     toInt64(row[10]),
-		}
-		if row[2] != nil {
-			a.Slug = sql.NullString{String: toString(row[2]), Valid: true}
-		}
-		if row[6] != nil {
-			a.ClientID = sql.NullString{String: toString(row[6]), Valid: true}
-		}
-		if row[7] != nil {
-			a.ClientSecret = sql.NullString{String: toString(row[7]), Valid: true}
-		}
-		if row[8] != nil {
-			a.Name = sql.NullString{String: toString(row[8]), Valid: true}
-		}
-		if row[9] != nil {
-			a.HTMLURL = sql.NullString{String: toString(row[9]), Valid: true}
+		a, err := db.scanGithubApp(row)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, a)
 	}

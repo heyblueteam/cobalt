@@ -57,12 +57,20 @@ func configureEnvCipher(ctx context.Context, db *store.DB, keyPath string, log *
 	db.SetCipher(cipher)
 	log.Info("env cipher: ready", "path", keyPath)
 
-	migrated, err := db.MigrateEnvVarsToEncrypted(ctx)
+	envMigrated, err := db.MigrateEnvVarsToEncrypted(ctx)
 	if err != nil {
-		return fmt.Errorf("env cipher: migrate: %w", err)
+		return fmt.Errorf("env cipher: migrate env_vars: %w", err)
 	}
-	if migrated > 0 {
-		log.Info("env cipher: migrated plaintext rows to ciphertext", "count", migrated)
+	if envMigrated > 0 {
+		log.Info("env cipher: migrated env_vars rows", "count", envMigrated)
+	}
+
+	appsMigrated, err := db.MigrateGithubAppsToEncrypted(ctx)
+	if err != nil {
+		return fmt.Errorf("env cipher: migrate github_apps: %w", err)
+	}
+	if appsMigrated > 0 {
+		log.Info("env cipher: migrated github_apps rows", "count", appsMigrated)
 	}
 	return nil
 }

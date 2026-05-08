@@ -15,31 +15,6 @@ type EnvVar struct {
 	Value string
 }
 
-// decryptValue is the read-side of the cipher contract: when a cipher
-// is configured AND the stored bytes look like a v1 frame, decrypt.
-// Otherwise return the bytes as-is (plaintext rows pre-migration, or
-// when no cipher is wired e.g. in tests). Fail-closed on a decrypt
-// error so callers don't silently inject zero into deploys.
-func (db *DB) decryptValue(stored string) (string, error) {
-	if db.cipher == nil || !encryption.IsCiphertext(stored) {
-		return stored, nil
-	}
-	pt, err := db.cipher.Decrypt(stored)
-	if err != nil {
-		return "", fmt.Errorf("env decrypt: %w", err)
-	}
-	return string(pt), nil
-}
-
-// encryptValue is the write-side. With no cipher wired, store
-// plaintext (tests, unencrypted dev installs).
-func (db *DB) encryptValue(plaintext string) (string, error) {
-	if db.cipher == nil {
-		return plaintext, nil
-	}
-	return db.cipher.Encrypt([]byte(plaintext))
-}
-
 func (db *DB) ListEnvVars(ctx context.Context, projectID int64) ([]EnvVar, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(`
 		SELECT key, value FROM env_vars WHERE project_id = ? ORDER BY key
