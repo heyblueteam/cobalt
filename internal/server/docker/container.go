@@ -26,6 +26,11 @@ type RunOpts struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// TTY allocates a pseudo-TTY in the container (`docker run -t`).
+	// Callers wiring a PTY-backed stdio carrier from the host side
+	// (cobalt run --tty) should also set this so isatty()-style checks
+	// inside the container behave as users expect.
+	TTY bool
 }
 
 // Run runs a one-shot container synchronously and removes it on exit
@@ -56,6 +61,9 @@ func (c *Client) Run(ctx context.Context, opts RunOpts) error {
 	}
 	if opts.Stdin != nil {
 		args = append(args, "-i")
+	}
+	if opts.TTY {
+		args = append(args, "-t")
 	}
 	args = append(args, opts.ExtraParams...)
 	args = append(args, opts.Image)
