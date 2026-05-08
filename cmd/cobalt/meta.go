@@ -92,9 +92,10 @@ Examples:
 			}
 			image, _ := cmd.Flags().GetString("image")
 			if image == "" {
-				output.PrintLines("Self-upgrade not implemented. To upgrade, run:")
-				output.PrintLines("  docker service update --image <image> cobalt")
-				return nil
+				// Stub command: exit non-zero so scripts treat "nothing
+				// happened" as an error and don't silently move on
+				// thinking the daemon was upgraded.
+				return fmt.Errorf("self-upgrade not implemented; run `docker service update --image <image> cobalt` on the daemon host")
 			}
 			err = c.UpgradeDaemon(cmd.Context(), client.UpgradeDaemonRequest{Image: image})
 			if err != nil {

@@ -66,6 +66,27 @@ func TestMetaInfoJSON(t *testing.T) {
 	}
 }
 
+func TestMetaUpgrade_NoImage_ExitsNonZero(t *testing.T) {
+	// `cobalt meta upgrade` without --image is currently a stub. It
+	// must return an error so scripts can tell "the daemon was NOT
+	// upgraded" — the previous exit-0-with-advisory contract was
+	// indistinguishable from success.
+	api := newMockAPI()
+	defer api.close()
+
+	if err := api.configPath(t); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newRootCmd()
+	root.SetArgs([]string{"meta", "upgrade"})
+	root.SilenceErrors = true
+	root.SilenceUsage = true
+	if err := root.ExecuteContext(context.Background()); err == nil {
+		t.Error("expected non-nil error from `cobalt meta upgrade`")
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
 		secs int64
