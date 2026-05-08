@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -8,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -177,6 +179,19 @@ func (w *statusWriter) Flush() {
 	if f, ok := w.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Hijack forwards to the underlying http.ResponseWriter when it supports
+// http.Hijacker. Required because WebSocket handlers (coder/websocket's
+// Accept) take over the raw TCP connection for the upgrade; without this
+// the Logger middleware's wrapping shadows Hijacker and every WS endpoint
+// returns 501 Not Implemented.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return h.Hijack()
 }
 
 func toInt64(v any) int64 {
