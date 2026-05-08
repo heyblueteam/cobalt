@@ -54,10 +54,17 @@ func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
 }
 
 // ListVolumesForProject returns every cobalt-managed volume for a project.
+//
+// We filter by name prefix (cobalt-volume-{id}-) rather than by the
+// `cobalt.project.id` label because volumes created via the docker
+// auto-create-on-mount path (pre-P0-#1) carry no labels but do carry
+// the right name. The name format is canonical (see VolumeName) and
+// the trailing dash + service name segment guarantees no collisions
+// between project ids that share a numeric prefix
+// (`cobalt-volume-1-` does not match `cobalt-volume-10-data`).
 func (c *Client) ListVolumesForProject(ctx context.Context, projectID int64) ([]string, error) {
-	args := []string{"volume", "ls"}
-	args = withFilterFlags(args, FilterByProjectID(projectID))
-	args = append(args, "--format", "{{.Name}}")
+	prefix := VolumeName(projectID, "")
+	args := []string{"volume", "ls", "--filter", "name=" + prefix, "--format", "{{.Name}}"}
 	out, err := c.output(ctx, args...)
 	if err != nil {
 		return nil, err

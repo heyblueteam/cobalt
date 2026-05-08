@@ -57,7 +57,10 @@ func TestListVolumesForProject(t *testing.T) {
 		t.Errorf("got %v", vols)
 	}
 	args := r.lastCall().Args
-	if !argSequence(args, "--filter", "label=cobalt.project.id=7") {
+	// Filter by name prefix (canonical) rather than label — see
+	// ListVolumesForProject's docstring for why labels are
+	// unreliable for this query.
+	if !argSequence(args, "--filter", "name=cobalt-volume-7-") {
 		t.Errorf("filter args: %v", args)
 	}
 }
