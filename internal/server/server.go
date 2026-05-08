@@ -154,14 +154,19 @@ func Run(ctx context.Context, cfg Config) error {
 	tokens := deploy.NewDBTokenProvider(db, githubCli, time.Now)
 	preparer := deploy.NewPreparer(cfg.DataDir, tokens, deploy.ExecGit{})
 	builder := deploy.NewBuilder(dockerCli, db, cfg.DataDir)
+
+	sched := worker.NewScheduler(log)
+	cronMgr := worker.NewCronManager(sched, dockerCli, db, log)
+
 	orchestrator := &deploy.Orchestrator{
-		DB:       db,
-		Docker:   dockerCli,
-		Caddy:    caddyCli,
-		Preparer: preparer,
-		Builder:  builder,
-		DataDir:  cfg.DataDir,
-		Log:      log,
+		DB:          db,
+		Docker:      dockerCli,
+		Caddy:       caddyCli,
+		Preparer:    preparer,
+		Builder:     builder,
+		DataDir:     cfg.DataDir,
+		Log:         log,
+		CronManager: cronMgr,
 	}
 
 	queue := deploy.NewQueue(db)
@@ -169,23 +174,24 @@ func Run(ctx context.Context, cfg Config) error {
 	dispatcher.Start(ctx)
 	defer dispatcher.Stop()
 
-	sched := worker.NewScheduler(log)
 	registerScheduledJobs(sched, log, db, dockerCli, caddyCli, cfg.DataDir, cfg.ImageRetention)
 	sched.Start(ctx)
 	defer sched.Stop()
+	cronMgr.ReconcileAll(ctx, db, db)
 
 	apiMux := http.NewServeMux()
 	apiHandler := api.NewHandler(api.HandlerOpts{
-		DB:         db,
-		Caddy:      caddyCli,
-		Docker:     dockerCli,
-		GitHub:     githubCli,
-		Queue:      queue,
-		Dispatcher: dispatcher,
-		Log:        log,
-		DataDir:    cfg.DataDir,
-		PublicHost: cfg.PublicHost,
-		Version:    cfg.Version,
+		DB:          db,
+		Caddy:       caddyCli,
+		Docker:      dockerCli,
+		GitHub:      githubCli,
+		Queue:       queue,
+		Dispatcher:  dispatcher,
+		Log:         log,
+		DataDir:     cfg.DataDir,
+		PublicHost:  cfg.PublicHost,
+		Version:     cfg.Version,
+		CronManager: cronManagerAdapter{cronMgr},
 	})
 	apiHandler.Register(apiMux)
 
@@ -396,5 +402,29 @@ func splitHostPort(urlStr string) (host, port string, err error) {
 		return "localhost", "4001", nil
 	}
 	return host, port, nil
+}
+
+// cronManagerAdapter adapts *worker.CronManager to the
+// api.CronManager interface so the api package doesn't need to
+// import worker (which would risk a cycle).
+type cronManagerAdapter struct{ inner *worker.CronManager }
+
+func (a cronManagerAdapter) ListForProject(projectName string) []api.CronView {
+	views := a.inner.ListForProject(projectName)
+	out := make([]api.CronView, 0, len(views))
+	for _, v := range views {
+		out = append(out, api.CronView{
+			ServiceName:      v.ServiceName,
+			Schedule:         v.Schedule,
+			Command:          v.Command,
+			DeploymentNumber: v.DeploymentNumber,
+			NextFireAt:       v.NextFireAt,
+		})
+	}
+	return out
+}
+
+func (a cronManagerAdapter) RemoveAllForProject(projectName string) error {
+	return a.inner.RemoveAllForProject(projectName)
 }
 

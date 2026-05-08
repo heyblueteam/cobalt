@@ -31,6 +31,7 @@ func newRootCmd() *cobra.Command {
 		newDeployCmd(),
 		newDeploymentsCmd(),
 		newRollbackCmd(),
+		newCronsCmd(),
 		newGithubCmd(),
 		newApikeysCmd(),
 		newMetaCmd(),

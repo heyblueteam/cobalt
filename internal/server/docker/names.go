@@ -29,6 +29,14 @@ func HookContainerName(projectName, hook string, deploymentNumber int) string {
 	return fmt.Sprintf("%s-%s.%d", projectName, flat, deploymentNumber)
 }
 
+// CronContainerName is the per-fire one-shot container name for a
+// cron service. The epoch suffix prevents collisions when a slow
+// run overlaps the next fire's start.
+func CronContainerName(projectName, serviceName string, epochNanos int64) string {
+	flat := strings.ReplaceAll(serviceName, ":", "-")
+	return fmt.Sprintf("cobalt-cron-%s-%s-%d", projectName, flat, epochNanos)
+}
+
 // RunContainerName is the container name for a `cobalt run` invocation.
 // runNumber is monotonic per project (sourced from the command_runs table).
 func RunContainerName(projectName string, runNumber int64) string {

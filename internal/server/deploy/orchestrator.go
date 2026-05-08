@@ -28,6 +28,17 @@ type Orchestrator struct {
 	DataDir   string
 	Log       *slog.Logger
 	LogWriter io.Writer // where build / hook stdout flows; usually a per-deploy log file
+	// CronManager, when non-nil, is reconciled after every successful
+	// cutover so the just-deployed cobaltfile's `type: cron` services
+	// get registered with the scheduler. nil in unit tests that don't
+	// exercise the cron path.
+	CronManager CronReconciler
+}
+
+// CronReconciler is the cron-side surface the orchestrator calls
+// after a successful cutover. *worker.CronManager satisfies this.
+type CronReconciler interface {
+	Reconcile(ctx context.Context, project store.Project, dep store.Deployment, cf *cobaltfile.Cobaltfile) error
 }
 
 // Run satisfies the deploy.Runner interface. It receives a Deployment row
@@ -218,6 +229,16 @@ func (o *Orchestrator) cutover(
 
 	// POST-SUCCESS — clean up old services. Best effort.
 	cleanupOldServices(context.Background(), log, o.Docker, *project, dep)
+
+	// Cron reconciliation: register / update / remove project crons
+	// declared in the just-cut-over cobaltfile. Best effort; failure
+	// here is logged but doesn't fail the deploy (the live web/worker
+	// services are already serving traffic).
+	if o.CronManager != nil {
+		if err := o.CronManager.Reconcile(ctx, *project, dep, cf); err != nil {
+			log.Warn("cron reconcile after deploy failed", "error", err)
+		}
+	}
 
 	log.Info("deploy complete")
 	return nil

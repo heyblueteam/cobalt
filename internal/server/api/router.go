@@ -33,6 +33,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{name}/deployments", h.ListDeployments)
 	mux.HandleFunc("POST /api/projects/{name}/deployments", h.CreateDeployment)
 	mux.HandleFunc("POST /api/projects/{name}/rollback", h.CreateRollback)
+	mux.HandleFunc("GET /api/projects/{name}/crons", h.ListProjectCrons)
 	mux.HandleFunc("GET /api/deployments/{id}", h.GetDeployment)
 	mux.HandleFunc("POST /api/deployments/{id}/cancel", h.CancelDeployment)
 

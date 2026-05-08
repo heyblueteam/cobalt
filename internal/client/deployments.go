@@ -17,6 +17,16 @@ func (c *Client) CreateDeployment(ctx context.Context, project string, req cobal
 	return &d, nil
 }
 
+// ListProjectCrons returns the cron services currently registered
+// for a project, with each one's next-fire time.
+func (c *Client) ListProjectCrons(ctx context.Context, project string) ([]cobaltapi.ProjectCron, error) {
+	var out []cobaltapi.ProjectCron
+	if err := c.get(ctx, fmt.Sprintf("/api/projects/%s/crons", project), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CreateRollback enqueues a rollback to the previous successful
 // deployment (req.To = 0) or to a specific deployment number
 // (req.To > 0). Returns the new queued deployment row.

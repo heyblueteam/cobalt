@@ -93,6 +93,19 @@ type DeploymentCreateRequest struct {
 	CobaltfileOverride string `json:"cobaltfileOverride,omitempty"`
 }
 
+// ProjectCron is the wire shape of one project-cron entry returned
+// by GET /api/projects/{name}/crons.
+type ProjectCron struct {
+	Service          string `json:"service"`
+	Schedule         string `json:"schedule"`
+	Command          string `json:"command"`
+	DeploymentNumber int    `json:"deploymentNumber"`
+	// NextFireAt is the unix-second timestamp of the next scheduled
+	// run, or zero if the scheduler hasn't yet computed one (e.g.
+	// the daemon just restarted and reconcile hasn't completed).
+	NextFireAt int64 `json:"nextFireAt,omitempty"`
+}
+
 // RollbackRequest is the body of POST /api/projects/{name}/rollback.
 // To omitted/zero means "the most recent successful deployment that
 // isn't the current live one."

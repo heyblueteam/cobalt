@@ -146,6 +146,11 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Unregister project crons BEFORE the DB delete so a fire that
+	// races the delete doesn't see a half-gone project.
+	if h.CronManager != nil {
+		_ = h.CronManager.RemoveAllForProject(p.Name)
+	}
 	if err := h.DB.DeleteProject(r.Context(), p.ID); err != nil {
 		h.Log.Error("api: delete project", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")

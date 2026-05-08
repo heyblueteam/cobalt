@@ -10,7 +10,9 @@ import (
 	"context"
 	"log/slog"
 	"runtime/debug"
+	"sort"
 	"sync"
+	"time"
 
 	"github.com/robfig/cron/v3"
 )
@@ -68,6 +70,38 @@ func (s *Scheduler) Schedule(name, spec string, job Job) error {
 	s.entries[name] = id
 	s.log.Info("scheduler: job registered", "name", name, "spec", spec)
 	return nil
+}
+
+// Entry is a registered job's name + the next time it will fire.
+// Returned by Entries for read-only inspection.
+type Entry struct {
+	Name string
+	Next time.Time
+}
+
+// Entries returns every registered job's name and next fire time,
+// sorted by name. Used by the cron-services API to surface
+// project-cron schedules to operators.
+func (s *Scheduler) Entries() []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	idToName := make(map[cron.EntryID]string, len(s.entries))
+	for name, id := range s.entries {
+		idToName[id] = name
+	}
+
+	cronEntries := s.cron.Entries()
+	out := make([]Entry, 0, len(cronEntries))
+	for _, e := range cronEntries {
+		name, ok := idToName[e.ID]
+		if !ok {
+			continue
+		}
+		out = append(out, Entry{Name: name, Next: e.Next})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // Remove unregisters a previously-Scheduled job. No-op if name is unknown.

@@ -47,6 +47,29 @@ type Handler struct {
 	// StartedAt is when the daemon process began. Used to compute
 	// uptime in GET /api/meta/info. Set by NewHandler.
 	StartedAt time.Time
+	// CronManager surfaces project-cron registration to the API
+	// handlers (`crons list`, project-delete cleanup). nil disables
+	// cron-related endpoints, which return empty lists.
+	CronManager CronManager
+}
+
+// CronManager is the subset of *worker.CronManager the API needs.
+// Defined here so we don't import the worker package directly and
+// avoid a cycle if cron ever needs to call into the API surface.
+type CronManager interface {
+	ListForProject(projectName string) []CronView
+	RemoveAllForProject(projectName string) error
+}
+
+// CronView is the read-only shape returned by CronManager.ListForProject
+// for serialization. Mirrors worker.ProjectCronView; declared here to
+// keep the api package independent.
+type CronView struct {
+	ServiceName      string
+	Schedule         string
+	Command          string
+	DeploymentNumber int
+	NextFireAt       time.Time
 }
 
 // HandlerOpts is the constructor input for NewHandler.
@@ -58,9 +81,10 @@ type HandlerOpts struct {
 	Queue      *deploy.Queue
 	Dispatcher *deploy.Dispatcher
 	Log        *slog.Logger
-	DataDir    string
-	PublicHost string
-	Version    string
+	DataDir     string
+	PublicHost  string
+	Version     string
+	CronManager CronManager
 
 	// WebhookDedupTTL controls the in-memory dedup window for
 	// X-GitHub-Delivery. Zero means "use the package default" (10m).
@@ -80,18 +104,19 @@ func NewHandler(opts HandlerOpts) *Handler {
 		ttl = DefaultWebhookDedupTTL
 	}
 	return &Handler{
-		DB:         opts.DB,
-		Caddy:      opts.Caddy,
-		Docker:     opts.Docker,
-		GitHub:     opts.GitHub,
-		Queue:      opts.Queue,
-		Dispatcher: opts.Dispatcher,
-		Dedup:      newWebhookDedup(ttl),
-		Log:        opts.Log,
-		DataDir:    opts.DataDir,
-		PublicHost: opts.PublicHost,
-		Version:    opts.Version,
-		StartedAt:  time.Now(),
+		DB:          opts.DB,
+		Caddy:       opts.Caddy,
+		Docker:      opts.Docker,
+		GitHub:      opts.GitHub,
+		Queue:       opts.Queue,
+		Dispatcher:  opts.Dispatcher,
+		Dedup:       newWebhookDedup(ttl),
+		Log:         opts.Log,
+		DataDir:     opts.DataDir,
+		PublicHost:  opts.PublicHost,
+		Version:     opts.Version,
+		StartedAt:   time.Now(),
+		CronManager: opts.CronManager,
 	}
 }
 

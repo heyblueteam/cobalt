@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
+	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
@@ -236,6 +238,27 @@ func (db *DB) SetResolvedCobaltfile(ctx context.Context, deploymentID int64, raw
 		raw, deploymentID,
 	)
 	return err
+}
+
+// LastSuccessfulCobaltfile returns the most recent successful
+// deployment for a project alongside the parsed cobaltfile that
+// produced it. Returns ErrNotFound when the project has no
+// successful deployment yet, and a parse error when the stored
+// cobaltfile JSON is unreadable. Used by the cron manager at
+// boot to rebuild scheduler state from rqlite.
+func (db *DB) LastSuccessfulCobaltfile(ctx context.Context, projectID int64) (*Deployment, *cobaltfile.Cobaltfile, error) {
+	dep, err := db.GetLastSuccessfulDeployment(ctx, projectID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if dep.ResolvedCobaltfile == nil {
+		return dep, nil, nil
+	}
+	cf, err := cobaltfile.Parse([]byte(*dep.ResolvedCobaltfile))
+	if err != nil {
+		return dep, nil, fmt.Errorf("store: parse resolved cobaltfile (deployment %d): %w", dep.ID, err)
+	}
+	return dep, cf, nil
 }
 
 // RecentSuccessfulDeploymentNumbers returns the per-project deployment
