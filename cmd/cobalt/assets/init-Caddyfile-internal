@@ -1,5 +1,7 @@
 {
-  admin unix//cobalt/caddy-socket/caddy.sock
+  admin unix//cobalt/caddy-socket/caddy.sock {
+    origins cobalt-caddy
+  }
 }
 
 :80 {

@@ -3,7 +3,12 @@
 # docker compose from .env) and provisions a Let's Encrypt certificate
 # automatically. Plain :80 gets redirected to :443 by Caddy's auto-HTTPS.
 {
-  admin unix//cobalt/caddy-socket/caddy.sock
+  admin unix//cobalt/caddy-socket/caddy.sock {
+    origins cobalt-caddy
+  }
+  servers :443 {
+    name cobalt
+  }
 }
 
 {$COBALT_PUBLIC_HOST} {

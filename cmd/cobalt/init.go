@@ -180,6 +180,16 @@ Examples:
 				fmt.Fprintf(output.Stderr, "[3/8] Docker Swarm active.\n")
 			}
 
+			// cobalt-main is the shared overlay network every project service
+			// gets attached to. Caddy joins it via the compose stack so it can
+			// resolve service hostnames; deploy hooks run one-shot containers
+			// here too. Must exist before `docker compose up` so the compose
+			// file's `external: true` reference resolves.
+			netCheck := conn.Run(ctx, "docker network inspect cobalt-main >/dev/null 2>&1 && echo present || docker network create --driver overlay --attachable cobalt-main")
+			if netCheck.Err != nil {
+				return fmt.Errorf("ensure cobalt-main network: %w", netCheck.Err)
+			}
+
 			if localImage != "" {
 				fmt.Fprintf(output.Stderr, "[3c/8] Uploading local image %s...\n", localImage)
 				if err := uploadLocalImage(ctx, conn, localImage); err != nil {

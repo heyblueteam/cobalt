@@ -52,6 +52,12 @@ services:
     restart: unless-stopped
     depends_on:
       - rqlite
+    # Caddy joins cobalt-main so it can resolve swarm service hostnames
+    # (e.g. e2e-6-web) for reverse_proxy upstreams. The network is
+    # pre-created by `cobalt init` before this stack starts.
+    networks:
+      - default
+      - cobalt-main
 
   cobalt:
     <<: *cobalt-base
@@ -61,6 +67,9 @@ services:
 networks:
   default:
     driver: bridge
+  cobalt-main:
+    external: true
+    name: cobalt-main
 
 volumes:
   cobalt-data:
