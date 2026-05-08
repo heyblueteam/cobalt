@@ -147,10 +147,20 @@ Examples:
 			caddyfilePath := "/opt/cobalt/Caddyfile"
 			envPath := "/opt/cobalt/.env"
 
+			// .env is always written so substitutions resolve even when a
+			// custom compose is supplied. Variables a custom compose doesn't
+			// reference are harmless.
+			image := fmt.Sprintf("ghcr.io/heyblueteam/cobalt:%s", cobaltVersion)
+			envContent := fmt.Sprintf("COBALT_IMAGE=%s\nCOBALT_PUBLIC_HOST=%s\nCOBALT_DATA_DIR=%s\n",
+				image, publicHost, dataDir)
+
 			if composeFile != "" {
-				fmt.Fprintf(output.Stderr, "[5/8] Uploading custom compose file: %s\n", composeFile)
+				fmt.Fprintf(output.Stderr, "[5/8] Uploading custom compose file + .env: %s\n", composeFile)
 				if err := conn.ScpTo(composeFile, composePath); err != nil {
 					return fmt.Errorf("upload compose file: %w", err)
+				}
+				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
+					return fmt.Errorf("write .env: %w", err)
 				}
 			} else {
 				fmt.Fprintf(output.Stderr, "[5/8] Writing docker-compose.yml, Caddyfile, .env...\n")
@@ -160,9 +170,6 @@ Examples:
 				if err := writeRemoteFile(conn, caddyfilePath, initCaddyfile); err != nil {
 					return fmt.Errorf("write Caddyfile: %w", err)
 				}
-				image := fmt.Sprintf("ghcr.io/heyblueteam/cobalt:%s", cobaltVersion)
-				envContent := fmt.Sprintf("COBALT_IMAGE=%s\nCOBALT_PUBLIC_HOST=%s\nCOBALT_DATA_DIR=%s\n",
-					image, publicHost, dataDir)
 				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
 					return fmt.Errorf("write .env: %w", err)
 				}
