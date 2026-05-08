@@ -33,9 +33,13 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 	}
 	args := r.lastCall().Args
 
-	// argv must start with `build -t <tag>`.
-	if args[0] != "build" || args[1] != "-t" || args[2] != tag {
-		t.Errorf("prefix: %v", args[:3])
+	// argv must start with `buildx build --builder cobalt-builder --load -t <tag>`.
+	wantPrefix := []string{"buildx", "build", "--builder", BuildxBuilderName, "--load", "-t", tag}
+	for i, w := range wantPrefix {
+		if i >= len(args) || args[i] != w {
+			t.Errorf("argv[%d]: got %v, want %v", i, args[:min(len(wantPrefix), len(args))], wantPrefix)
+			break
+		}
 	}
 
 	// Every secret should appear; their order is alphabetical so output is
@@ -95,10 +99,7 @@ func TestBuild_DefaultContextDot(t *testing.T) {
 	}
 }
 
-// TestBuild_CacheDirIsNoOp asserts the buildx-only cache flags stay out
-// of argv until the daemon image installs the buildx plugin. CacheDir is
-// preserved on BuildOpts for forward compatibility.
-func TestBuild_CacheDirIsNoOp(t *testing.T) {
+func TestBuild_CacheDirAddsBothFlags(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
 	c := NewWithRunner(r)
@@ -111,10 +112,11 @@ func TestBuild_CacheDirIsNoOp(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	args := r.lastCall().Args
-	for _, w := range []string{"--cache-from", "--cache-to"} {
-		if argHas(args, w) {
-			t.Errorf("buildx-only %q should not appear with classic builder: %v", w, args)
-		}
+	if !argSequence(args, "--cache-from", "type=local,src=/cobalt/data/buildkit-cache/7") {
+		t.Errorf("--cache-from missing or wrong: %v", args)
+	}
+	if !argSequence(args, "--cache-to", "type=local,dest=/cobalt/data/buildkit-cache/7,mode=max") {
+		t.Errorf("--cache-to missing or wrong: %v", args)
 	}
 }
 
@@ -133,10 +135,41 @@ func TestBuild_NoCacheDirOmitsFlags(t *testing.T) {
 	}
 }
 
+func TestEnsureBuildxBuilder_NoOpWhenInspectSucceeds(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if err := c.EnsureBuildxBuilder(context.Background()); err != nil {
+		t.Fatalf("EnsureBuildxBuilder: %v", err)
+	}
+	// Inspect succeeded (fake returns nil error by default), so create
+	// must not have been called.
+	if r.callCount() != 1 {
+		t.Errorf("expected only inspect, got %d calls", r.callCount())
+	}
+	if r.lastCall().Args[1] != "inspect" {
+		t.Errorf("expected `buildx inspect`, got %v", r.lastCall().Args)
+	}
+}
+
+func TestEnsureBuildxBuilder_CreatesWhenInspectFails(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerErr("buildx inspect", staticErr("not found"))
+	c := NewWithRunner(r)
+	if err := c.EnsureBuildxBuilder(context.Background()); err != nil {
+		t.Fatalf("EnsureBuildxBuilder: %v", err)
+	}
+	last := r.lastCall().Args
+	if !argSequence(last, "buildx", "create", "--name", BuildxBuilderName, "--driver", "docker-container", "--bootstrap") {
+		t.Errorf("expected buildx create with docker-container driver, got %v", last)
+	}
+}
+
 func TestBuild_ErrorPropagates(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerErr("build", staticErr("boom"))
+	r.answerErr("buildx build", staticErr("boom"))
 	c := NewWithRunner(r)
 
 	_, err := c.Build(context.Background(), BuildOpts{

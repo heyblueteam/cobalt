@@ -120,6 +120,15 @@ func Run(ctx context.Context, cfg Config) error {
 	caddyCli := newCaddyClient(cfg)
 	githubCli := github.NewClient(nil)
 
+	// Bootstrap the buildx builder we use for every deploy. Failure here
+	// is non-fatal: the daemon can still serve API traffic without it,
+	// only deploys will fail clearly at build time.
+	if err := dockerCli.EnsureBuildxBuilder(ctx); err != nil {
+		log.Warn("ensure buildx builder failed", "name", docker.BuildxBuilderName, "error", err)
+	} else {
+		log.Info("buildx builder ready", "name", docker.BuildxBuilderName)
+	}
+
 	tokens := deploy.NewDBTokenProvider(db, githubCli, time.Now)
 	preparer := deploy.NewPreparer(cfg.DataDir, tokens, deploy.ExecGit{})
 	builder := deploy.NewBuilder(dockerCli, db, cfg.DataDir)

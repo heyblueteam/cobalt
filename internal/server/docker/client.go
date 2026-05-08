@@ -71,6 +71,12 @@ func (r *ExecRunner) Run(ctx context.Context, args []string, stdin io.Reader, st
 	return nil
 }
 
+// BuildxBuilderName is the buildx instance the daemon creates and uses
+// for every project build. We need a docker-container driver (not the
+// default docker driver) so --cache-to type=local works for per-project
+// BuildKit cache isolation.
+const BuildxBuilderName = "cobalt-builder"
+
 // Client is the user-facing handle for everything in this package.
 type Client struct {
 	runner Runner
@@ -91,6 +97,23 @@ func NewWithRunner(r Runner) *Client {
 // the only thing the caller cares about is success/failure.
 func (c *Client) run(ctx context.Context, args ...string) error {
 	return c.runner.Run(ctx, args, nil, nil, nil)
+}
+
+// EnsureBuildxBuilder makes sure the docker-container builder named by
+// BuildxBuilderName exists, creating it if needed. Idempotent — safe to
+// call on every daemon boot.
+//
+// The docker-container driver is required so that --cache-to type=local
+// works for per-project cache isolation (improvement E in §8b).
+func (c *Client) EnsureBuildxBuilder(ctx context.Context) error {
+	if err := c.run(ctx, "buildx", "inspect", BuildxBuilderName); err == nil {
+		return nil
+	}
+	return c.run(ctx, "buildx", "create",
+		"--name", BuildxBuilderName,
+		"--driver", "docker-container",
+		"--bootstrap",
+	)
 }
 
 // output captures stdout into a buffer and returns it, trimmed.
