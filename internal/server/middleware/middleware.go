@@ -169,6 +169,16 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
+// Flush forwards to the underlying http.ResponseWriter when it supports
+// http.Flusher. Required because SSE handlers type-assert their writer for
+// Flusher; without this, the Logger middleware's statusWriter masks it and
+// every streaming endpoint returns 500 "streaming unsupported".
+func (w *statusWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 func toInt64(v any) int64 {
 	if v == nil {
 		return 0
