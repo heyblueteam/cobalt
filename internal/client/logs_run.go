@@ -3,7 +3,10 @@ package client
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/coder/websocket"
@@ -54,11 +57,44 @@ func (c *Client) RunWS(ctx context.Context, project, command, service string, tt
 			cobaltapi.RunSubprotocolV1,
 		},
 	}
-	conn, _, err := websocket.Dial(ctx, wsurl, opts)
+	conn, resp, err := websocket.Dial(ctx, wsurl, opts)
 	if err != nil {
+		// On a failed upgrade the daemon's HTTP error body is the
+		// useful signal — `project has no successful deployment`,
+		// `unauthorized`, etc. Surface that instead of the bare
+		// transport error so operators don't see a confusing
+		// "expected handshake response status code 101 but got 404"
+		// when the real cause is plain.
+		if msg := readUpgradeErrorBody(resp); msg != "" {
+			return nil, "", errors.New(msg)
+		}
 		return nil, "", fmt.Errorf("dial: %w", err)
 	}
 	return conn, conn.Subprotocol(), nil
+}
+
+// readUpgradeErrorBody extracts a friendly error message from a
+// failed WebSocket upgrade response. Returns "" if the response is
+// nil or carries no useful body — caller should fall back to the raw
+// dial error in that case.
+func readUpgradeErrorBody(resp *http.Response) string {
+	if resp == nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if len(body) == 0 {
+		return fmt.Sprintf("%s", resp.Status)
+	}
+	// Daemon wraps errors in {"error": "..."}. Decode + return the
+	// inner string when present; fall back to the raw body otherwise.
+	var env struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &env); err == nil && env.Error != "" {
+		return env.Error
+	}
+	return string(body)
 }
 
 func percentEncode(s string) string {

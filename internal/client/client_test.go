@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/heyblueteam/cobalt/internal/cliconfig"
@@ -184,5 +185,46 @@ func TestClientPatch(t *testing.T) {
 	body := map[string]string{"name": "renamed"}
 	if err := c.patch(context.Background(), "/api/projects/test", body, &resp); err != nil {
 		t.Fatalf("patch: %v", err)
+	}
+}
+
+func TestRunWS_SurfacesDaemonErrorBodyOn404(t *testing.T) {
+	t.Parallel()
+	// Daemon-side stand-in: returns 404 + the same JSON body shape
+	// the real daemon uses for "no successful deployment". We are
+	// testing only the failed-upgrade path, so we never actually
+	// upgrade — we want to confirm the CLI returns the inner
+	// "error" field, not the bare transport error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"project has no successful deployment"}`))
+	}))
+	defer srv.Close()
+
+	c := New(cliconfig.Server{Host: srv.URL, APIKey: "test-key"})
+	_, _, err := c.RunWS(context.Background(), "api", "echo hi", "web", false)
+	if err == nil {
+		t.Fatal("expected error from RunWS")
+	}
+	if got := err.Error(); got != "project has no successful deployment" {
+		t.Errorf("error: got %q, want %q", got, "project has no successful deployment")
+	}
+}
+
+func TestRunWS_FallsBackToStatusOnEmptyBody(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	c := New(cliconfig.Server{Host: srv.URL, APIKey: "bad"})
+	_, _, err := c.RunWS(context.Background(), "api", "echo hi", "web", false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); !strings.Contains(got, "401") {
+		t.Errorf("error %q does not contain 401", got)
 	}
 }
