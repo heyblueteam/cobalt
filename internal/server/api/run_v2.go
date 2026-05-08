@@ -29,7 +29,7 @@ import (
 // protocol deadlock-free: exec.Cmd.Stdin sees a real *os.File and
 // dup2's it directly into the child instead of spawning an internal
 // io.Copy goroutine that gates Wait() on stdin draining.
-func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runRequest, tty bool) {
+func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runRequest, tty bool) int {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -37,7 +37,7 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 	if err != nil {
 		h.Log.Error("run: open carriers", "error", err)
 		sendV2Error(runCtx, conn, "open stdio: "+err.Error())
-		return
+		return -1
 	}
 	// Best-effort cleanup. Most fds get closed earlier in the happy
 	// path; this catches the panic / early-return cases.
@@ -124,6 +124,7 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 		Image:            req.imageTag,
 		Command:          []string{"sh", "-c", req.command},
 		Networks:         []string{req.deploymentNetwork, deploy.MainNetworkName},
+		Volumes:          req.volumes,
 		ExtraParams:      req.extraParams,
 		Stdin:            carriers.childStdin,
 		Stdout:           carriers.childStdout,
@@ -155,6 +156,7 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 	<-writerDone
 
 	_ = conn.Close(websocket.StatusNormalClosure, "")
+	return exitCode
 }
 
 // runV2Carriers groups the stdio file descriptors used by a v2 run

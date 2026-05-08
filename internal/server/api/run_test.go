@@ -341,6 +341,7 @@ func TestRun_ResolveImage_Defaults(t *testing.T) {
 		serviceName    string
 		wantImage      string
 		wantExtraParam bool
+		wantVolumes    int
 	}{
 		{
 			name:        "no resolved cobaltfile uses default",
@@ -367,10 +368,17 @@ func TestRun_ResolveImage_Defaults(t *testing.T) {
 			wantImage:      "default",
 			wantExtraParam: true,
 		},
+		{
+			name:        "service volumes returned",
+			resolved:    ptr(`{"version":"1.0","services":{"web":{"volumes":[{"name":"data","destinationPath":"/var/lib/data"},{"name":"uploads","destinationPath":"/srv/uploads"}]}}}`),
+			serviceName: "web",
+			wantImage:   "default",
+			wantVolumes: 2,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			image, extra := resolveRunImage(&store.Deployment{ResolvedCobaltfile: c.resolved}, c.serviceName)
+			image, extra, vols := resolveRunImage(&store.Deployment{ResolvedCobaltfile: c.resolved}, 7, c.serviceName)
 			if image != c.wantImage {
 				t.Errorf("image: got %q, want %q", image, c.wantImage)
 			}
@@ -379,6 +387,17 @@ func TestRun_ResolveImage_Defaults(t *testing.T) {
 			}
 			if !c.wantExtraParam && len(extra) > 0 {
 				t.Errorf("unexpected extra params: %v", extra)
+			}
+			if got, want := len(vols), c.wantVolumes; got != want {
+				t.Errorf("volumes: got %d, want %d", got, want)
+			}
+			// Volume names get the per-project prefix from
+			// docker.VolumeName so two projects can declare a volume
+			// called "data" without colliding.
+			for _, v := range vols {
+				if v.VolumeName == "" || v.DestinationPath == "" {
+					t.Errorf("malformed volume: %+v", v)
+				}
 			}
 		})
 	}

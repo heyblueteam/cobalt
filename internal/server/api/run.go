@@ -33,6 +33,7 @@ type runRequest struct {
 	imageTag          string
 	deploymentNetwork string
 	extraParams       []string
+	volumes           []docker.ServiceVolume
 }
 
 // Run implements GET /api/projects/{name}/run as a WebSocket endpoint.
@@ -87,10 +88,10 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve the service's image + extra run params from the live
-	// deployment's cobaltfile. Falls back to "default" image if the
-	// service isn't found or the cobaltfile is missing.
-	imageName, extraParams := resolveRunImage(live, serviceName)
+	// Resolve the service's image + extra run params + volumes from
+	// the live deployment's cobaltfile. Falls back to "default" image
+	// if the service isn't found or the cobaltfile is missing.
+	imageName, extraParams, volumes := resolveRunImage(live, project.ID, serviceName)
 
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// v2 first so a client that speaks both wins v2.
@@ -117,6 +118,7 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 		imageTag:          docker.InternalImageName(project.Name, imageName, live.Number),
 		deploymentNetwork: docker.NetworkName(project.Name, live.Number),
 		extraParams:       extraParams,
+		volumes:           volumes,
 	}
 
 	// Audit row at handler entry. The exit code goes in once the
@@ -228,6 +230,7 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 		Image:            req.imageTag,
 		Command:          []string{"sh", "-c", req.command},
 		Networks:         []string{req.deploymentNetwork, deploy.MainNetworkName},
+		Volumes:          req.volumes,
 		ExtraParams:      req.extraParams,
 		Stdin:            stdinR,
 		Stdout:           stdoutW,
@@ -292,24 +295,36 @@ func pumpToWS(wg *sync.WaitGroup, ctx context.Context, conn *websocket.Conn, r i
 }
 
 // resolveRunImage looks up the service in the live deployment's stored
-// cobaltfile and returns its image name + extra run params. Falls back
-// to "default" / no params if the cobaltfile isn't usable.
-func resolveRunImage(live *store.Deployment, serviceName string) (image string, extraParams []string) {
+// cobaltfile and returns its image name + extra run params + the named
+// docker volumes the live service has mounted. Falls back to "default" /
+// no params / no volumes if the cobaltfile isn't usable.
+//
+// Mounting the same volumes the live service uses is what makes
+// `cobalt run` actually behave like an exec into the project's
+// environment — `ls /var/lib/postgres` sees the database files,
+// inspecting upload dirs sees real uploads, etc.
+func resolveRunImage(live *store.Deployment, projectID int64, serviceName string) (image string, extraParams []string, volumes []docker.ServiceVolume) {
 	image = "default"
 	if live.ResolvedCobaltfile == nil {
-		return image, nil
+		return image, nil, nil
 	}
 	cf, err := cobaltfile.Parse([]byte(*live.ResolvedCobaltfile))
 	if err != nil {
-		return image, nil
+		return image, nil, nil
 	}
 	svc, ok := cf.Services[serviceName]
 	if !ok {
-		return image, nil
+		return image, nil, nil
 	}
 	if svc.Image != "" {
 		image = svc.Image
 	}
 	extraParams = docker.SplitParams(svc.ExtraRunParams)
-	return image, extraParams
+	for _, v := range svc.Volumes {
+		volumes = append(volumes, docker.ServiceVolume{
+			VolumeName:      docker.VolumeName(projectID, v.Name),
+			DestinationPath: v.DestinationPath,
+		})
+	}
+	return image, extraParams, volumes
 }
