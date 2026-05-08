@@ -19,6 +19,10 @@ type ProjectLister interface {
 // running / serving). store.DB.ActiveDeploymentNumbers satisfies this.
 type DeploymentNumberLister interface {
 	ActiveDeploymentNumbers(ctx context.Context, projectID int64) ([]int, error)
+	// RecentSuccessfulDeploymentNumbers returns the latest `limit`
+	// successful deployment numbers for rollback retention. limit <= 0
+	// disables the rollback window.
+	RecentSuccessfulDeploymentNumbers(ctx context.Context, projectID int64, limit int) ([]int, error)
 }
 
 // ImageRemover is the docker operation the cleanup job uses. We define
@@ -29,8 +33,13 @@ type ImageRemover interface {
 }
 
 // CleanupImages prunes internal images whose deployment number is no
-// longer active for any project. Failures on individual images are logged
-// and skipped — one stuck image must not stop the whole sweep.
+// longer active for any project AND falls outside the rollback
+// retention window. Failures on individual images are logged and
+// skipped — one stuck image must not stop the whole sweep.
+//
+// rollbackRetention is the number of recent successful deployments
+// per project whose images we keep on disk so `cobalt rollback`
+// can target them. Pass 0 to keep only active deploys.
 //
 // Returns the count of images successfully removed.
 func CleanupImages(
@@ -39,6 +48,7 @@ func CleanupImages(
 	projects ProjectLister,
 	deploys DeploymentNumberLister,
 	docker ImageRemover,
+	rollbackRetention int,
 ) (int, error) {
 	allProjects, err := projects.ListProjects(ctx)
 	if err != nil {
@@ -53,8 +63,17 @@ func CleanupImages(
 				"project_id", p.ID, "project", p.Name, "error", err)
 			continue
 		}
-		activeSet := make(map[int]struct{}, len(active))
+		recent, err := deploys.RecentSuccessfulDeploymentNumbers(ctx, p.ID, rollbackRetention)
+		if err != nil {
+			log.Error("imagecleanup: recent successful",
+				"project_id", p.ID, "project", p.Name, "error", err)
+			continue
+		}
+		activeSet := make(map[int]struct{}, len(active)+len(recent))
 		for _, n := range active {
+			activeSet[n] = struct{}{}
+		}
+		for _, n := range recent {
 			activeSet[n] = struct{}{}
 		}
 

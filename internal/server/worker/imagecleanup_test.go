@@ -21,8 +21,9 @@ func (f *fakeProjectLister) ListProjects(_ context.Context) ([]store.Project, er
 }
 
 type fakeDeployLister struct {
-	byProject map[int64][]int
-	err       error
+	byProject       map[int64][]int
+	successByProject map[int64][]int
+	err             error
 }
 
 func (f *fakeDeployLister) ActiveDeploymentNumbers(_ context.Context, projectID int64) ([]int, error) {
@@ -30,6 +31,17 @@ func (f *fakeDeployLister) ActiveDeploymentNumbers(_ context.Context, projectID 
 		return nil, f.err
 	}
 	return f.byProject[projectID], nil
+}
+
+func (f *fakeDeployLister) RecentSuccessfulDeploymentNumbers(_ context.Context, projectID int64, limit int) ([]int, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	all := f.successByProject[projectID]
+	if limit <= 0 || len(all) <= limit {
+		return all, nil
+	}
+	return all[:limit], nil
 }
 
 type fakeImageOps struct {
@@ -77,7 +89,7 @@ func TestCleanupImages_RemovesNonActiveTags(t *testing.T) {
 		},
 	}
 
-	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images)
+	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images, 0)
 	if err != nil {
 		t.Fatalf("CleanupImages: %v", err)
 	}
@@ -112,7 +124,7 @@ func TestCleanupImages_NoActiveKeepsNothing(t *testing.T) {
 			},
 		},
 	}
-	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images)
+	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images, 0)
 	if err != nil {
 		t.Fatalf("CleanupImages: %v", err)
 	}
@@ -145,7 +157,7 @@ func TestCleanupImages_PerProjectFailureSkipsNotHalts(t *testing.T) {
 		},
 	}
 
-	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploysWithError, images)
+	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploysWithError, images, 0)
 	if err != nil {
 		t.Fatalf("CleanupImages should not fail: %v", err)
 	}
@@ -172,6 +184,13 @@ func (e *errOnFirstDeployLister) ActiveDeploymentNumbers(ctx context.Context, pr
 	return e.fallthrough_.ActiveDeploymentNumbers(ctx, projectID)
 }
 
+func (e *errOnFirstDeployLister) RecentSuccessfulDeploymentNumbers(ctx context.Context, projectID int64, limit int) ([]int, error) {
+	if projectID == e.first {
+		return nil, e.err
+	}
+	return e.fallthrough_.RecentSuccessfulDeploymentNumbers(ctx, projectID, limit)
+}
+
 func TestCleanupImages_RemoveErrorContinues(t *testing.T) {
 	t.Parallel()
 
@@ -186,7 +205,7 @@ func TestCleanupImages_RemoveErrorContinues(t *testing.T) {
 		removeErr: errors.New("image in use"),
 	}
 
-	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images)
+	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images, 0)
 	if err != nil {
 		t.Errorf("err: %v", err)
 	}
@@ -195,11 +214,52 @@ func TestCleanupImages_RemoveErrorContinues(t *testing.T) {
 	}
 }
 
+// TestCleanupImages_KeepsRollbackRetentionWindow asserts that images
+// belonging to the last K successful (but no-longer-active)
+// deployments are preserved for `cobalt rollback`.
+func TestCleanupImages_KeepsRollbackRetentionWindow(t *testing.T) {
+	t.Parallel()
+	projects := &fakeProjectLister{
+		projects: []store.Project{{ID: 1, Name: "api"}},
+	}
+	deploys := &fakeDeployLister{
+		// Only #10 is active (current live).
+		byProject: map[int64][]int{1: {10}},
+		// Successful history: 10, 9, 8, 7, 6 — rollback retention=3
+		// keeps the top 3: 10, 9, 8.
+		successByProject: map[int64][]int{1: {10, 9, 8, 7, 6}},
+	}
+	images := &fakeImageOps{
+		byProject: map[string][]docker.ImageInfo{
+			"api": {
+				{Tag: "cobalt/project-api-default:10", DeploymentNumber: 10},
+				{Tag: "cobalt/project-api-default:9", DeploymentNumber: 9},
+				{Tag: "cobalt/project-api-default:8", DeploymentNumber: 8},
+				{Tag: "cobalt/project-api-default:7", DeploymentNumber: 7},
+				{Tag: "cobalt/project-api-default:6", DeploymentNumber: 6},
+			},
+		},
+	}
+
+	n, err := CleanupImages(context.Background(), quietLogger(), projects, deploys, images, 3)
+	if err != nil {
+		t.Fatalf("CleanupImages: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("removed: got %d, want 2 (only 7, 6)", n)
+	}
+	sort.Strings(images.removed)
+	want := []string{"cobalt/project-api-default:6", "cobalt/project-api-default:7"}
+	if len(images.removed) != 2 || images.removed[0] != want[0] || images.removed[1] != want[1] {
+		t.Errorf("removed tags: got %v, want %v", images.removed, want)
+	}
+}
+
 func TestCleanupImages_ProjectListErrorBubbles(t *testing.T) {
 	t.Parallel()
 	projects := &fakeProjectLister{err: errors.New("db down")}
 	if _, err := CleanupImages(context.Background(), quietLogger(),
-		projects, &fakeDeployLister{}, &fakeImageOps{}); err == nil {
+		projects, &fakeDeployLister{}, &fakeImageOps{}, 0); err == nil {
 		t.Error("expected error when project list fails")
 	}
 }

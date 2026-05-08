@@ -17,6 +17,17 @@ func (c *Client) CreateDeployment(ctx context.Context, project string, req cobal
 	return &d, nil
 }
 
+// CreateRollback enqueues a rollback to the previous successful
+// deployment (req.To = 0) or to a specific deployment number
+// (req.To > 0). Returns the new queued deployment row.
+func (c *Client) CreateRollback(ctx context.Context, project string, req cobaltapi.RollbackRequest) (*cobaltapi.Deployment, error) {
+	var d cobaltapi.Deployment
+	if err := c.post(ctx, fmt.Sprintf("/api/projects/%s/rollback", project), req, &d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 func (c *Client) ListDeployments(ctx context.Context, project string, limit int) ([]cobaltapi.Deployment, error) {
 	path := fmt.Sprintf("/api/projects/%s/deployments", project)
 	if limit > 0 {

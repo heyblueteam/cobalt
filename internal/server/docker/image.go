@@ -72,3 +72,19 @@ func (c *Client) RemoveImage(ctx context.Context, tag string) error {
 	}
 	return nil
 }
+
+// ImageExists returns true iff the given tag is present locally.
+// Used by the rollback flow to refuse pre-flight when the cached
+// image for a target deployment has been pruned.
+func (c *Client) ImageExists(ctx context.Context, tag string) (bool, error) {
+	out, err := c.output(ctx, "image", "ls", "--format", "{{.Repository}}:{{.Tag}}", tag)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == tag {
+			return true, nil
+		}
+	}
+	return false, nil
+}

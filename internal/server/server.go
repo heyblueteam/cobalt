@@ -70,6 +70,12 @@ type Config struct {
 	// alternative deployments (manual installs, tests against a
 	// host-side path, etc.).
 	EncryptionKeyPath string
+
+	// ImageRetention is the number of recent successful deployments per
+	// project whose container images we keep on disk past the active
+	// window so `cobalt rollback` can target them. 0 = match the
+	// historical behavior (keep only active deploys).
+	ImageRetention int
 }
 
 // Run starts every daemon subsystem (storage, scheduler, dispatcher, HTTP
@@ -164,7 +170,7 @@ func Run(ctx context.Context, cfg Config) error {
 	defer dispatcher.Stop()
 
 	sched := worker.NewScheduler(log)
-	registerScheduledJobs(sched, log, db, dockerCli, caddyCli, cfg.DataDir)
+	registerScheduledJobs(sched, log, db, dockerCli, caddyCli, cfg.DataDir, cfg.ImageRetention)
 	sched.Start(ctx)
 	defer sched.Stop()
 
@@ -248,9 +254,10 @@ func registerScheduledJobs(
 	dockerCli *docker.Client,
 	caddyCli *caddy.Client,
 	dataDir string,
+	imageRetention int,
 ) {
 	_ = sched.Schedule("image-cleanup", "@hourly", func(ctx context.Context) {
-		if _, err := worker.CleanupImages(ctx, log, db, db, dockerCli); err != nil {
+		if _, err := worker.CleanupImages(ctx, log, db, db, dockerCli, imageRetention); err != nil {
 			log.Warn("image cleanup failed", "error", err)
 		}
 	})

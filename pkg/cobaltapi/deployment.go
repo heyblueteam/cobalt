@@ -79,6 +79,7 @@ type Deployment struct {
 	Status     State  `json:"status"`
 	CommitSHA  string `json:"commitSha,omitempty"`
 	NoCache    bool   `json:"noCache,omitempty"`
+	RollbackOf int64  `json:"rollbackOf,omitempty"`
 	CreatedAt  int64  `json:"createdAt"`
 	StartedAt  int64  `json:"startedAt,omitempty"`
 	FinishedAt int64  `json:"finishedAt,omitempty"`
@@ -90,4 +91,11 @@ type DeploymentCreateRequest struct {
 	Commit             string `json:"commit,omitempty"`
 	NoCache            bool   `json:"noCache,omitempty"`
 	CobaltfileOverride string `json:"cobaltfileOverride,omitempty"`
+}
+
+// RollbackRequest is the body of POST /api/projects/{name}/rollback.
+// To omitted/zero means "the most recent successful deployment that
+// isn't the current live one."
+type RollbackRequest struct {
+	To int `json:"to,omitempty"`
 }

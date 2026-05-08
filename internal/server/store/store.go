@@ -62,6 +62,7 @@ func (db *DB) InitSchema(ctx context.Context) error {
 			no_cache      INTEGER NOT NULL DEFAULT 0,
 			cobaltfile_override TEXT,
 			resolved_cobaltfile TEXT,
+			rollback_of   INTEGER REFERENCES deployments(id),
 			created_at    INTEGER NOT NULL,
 			started_at    INTEGER,
 			finished_at   INTEGER,
@@ -162,6 +163,7 @@ func (db *DB) InitSchema(ctx context.Context) error {
 	for _, alter := range []string{
 		`ALTER TABLE command_runs ADD COLUMN apikey_id INTEGER`,
 		`ALTER TABLE command_runs ADD COLUMN tty INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE deployments ADD COLUMN rollback_of INTEGER REFERENCES deployments(id)`,
 	} {
 		_, _ = db.Execute(ctx, rqlitehttp.NewSQLStatementsFromStrings([]string{alter}), nil)
 	}

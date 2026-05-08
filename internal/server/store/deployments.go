@@ -9,6 +9,13 @@ import (
 	rqlitehttp "github.com/rqlite/rqlite-go-http"
 )
 
+// deploymentSelectCols is the column list every deployments SELECT
+// reads, in the order scanDeploymentRow expects. Centralized so that
+// adding a column (rollback_of, etc.) is one edit instead of seven.
+const deploymentSelectCols = `id, project_id, number, status, commit_sha, no_cache,
+	cobaltfile_override, resolved_cobaltfile, rollback_of,
+	created_at, started_at, finished_at`
+
 type Deployment struct {
 	ID                 int64
 	ProjectID          int64
@@ -18,9 +25,12 @@ type Deployment struct {
 	NoCache            bool
 	CobaltfileOverride *string
 	ResolvedCobaltfile *string
-	CreatedAt          int64
-	StartedAt          *int64
-	FinishedAt         *int64
+	// RollbackOf, when set, identifies the deployment this row is a
+	// rollback of. nil for ordinary deploys.
+	RollbackOf *int64
+	CreatedAt  int64
+	StartedAt  *int64
+	FinishedAt *int64
 }
 
 var activeKeepImageStatuses = []cobaltapi.State{
@@ -73,10 +83,14 @@ func (db *DB) CreateDeployment(ctx context.Context, d Deployment) (int64, error)
 	if d.CommitSHA != nil {
 		commitSHA = *d.CommitSHA
 	}
+	var rollbackOf any = nil
+	if d.RollbackOf != nil {
+		rollbackOf = *d.RollbackOf
+	}
 	resp, err := db.ExecuteSingle(ctx, `
-        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, created_at)
-        VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))
-    `, d.ProjectID, d.Number, string(d.Status), commitSHA, boolToInt(d.NoCache))
+        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, rollback_of, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+    `, d.ProjectID, d.Number, string(d.Status), commitSHA, boolToInt(d.NoCache), rollbackOf)
 	if err != nil {
 		return 0, err
 	}
@@ -131,11 +145,9 @@ func (db *DB) SetDeploymentStatus(ctx context.Context, id int64, status cobaltap
 }
 
 func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) {
-	resp, err := db.QuerySingle(ctx, `
-        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               resolved_cobaltfile, created_at, started_at, finished_at
-        FROM deployments WHERE id = ?
-    `, id)
+	resp, err := db.QuerySingle(ctx,
+		`SELECT `+deploymentSelectCols+` FROM deployments WHERE id = ?`,
+		id)
 	if err != nil {
 		return nil, err
 	}
@@ -151,14 +163,10 @@ func (db *DB) GetDeployment(ctx context.Context, id int64) (*Deployment, error) 
 
 func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, limit int) ([]Deployment, error) {
 	if limit > 0 {
-		stmt, err := rqlitehttp.NewSQLStatement(`
-            SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-                   resolved_cobaltfile, created_at, started_at, finished_at
-            FROM deployments
-            WHERE project_id = ?
-            ORDER BY number DESC
-            LIMIT ?
-        `, projectID, limit)
+		stmt, err := rqlitehttp.NewSQLStatement(
+			`SELECT `+deploymentSelectCols+` FROM deployments
+			 WHERE project_id = ? ORDER BY number DESC LIMIT ?`,
+			projectID, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -177,13 +185,10 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 		return deps, nil
 	}
 
-	stmt, err := rqlitehttp.NewSQLStatement(`
-        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               resolved_cobaltfile, created_at, started_at, finished_at
-        FROM deployments
-        WHERE project_id = ?
-        ORDER BY number DESC
-    `, projectID)
+	stmt, err := rqlitehttp.NewSQLStatement(
+		`SELECT `+deploymentSelectCols+` FROM deployments
+		 WHERE project_id = ? ORDER BY number DESC`,
+		projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -203,13 +208,10 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 }
 
 func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
-	stmt, err := rqlitehttp.NewSQLStatement(`
-        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               resolved_cobaltfile, created_at, started_at, finished_at
-        FROM deployments
-        WHERE status = ?
-        ORDER BY project_id, number
-    `, string(cobaltapi.StateQueued))
+	stmt, err := rqlitehttp.NewSQLStatement(
+		`SELECT `+deploymentSelectCols+` FROM deployments
+		 WHERE status = ? ORDER BY project_id, number`,
+		string(cobaltapi.StateQueued))
 	if err != nil {
 		return nil, err
 	}
@@ -236,15 +238,87 @@ func (db *DB) SetResolvedCobaltfile(ctx context.Context, deploymentID int64, raw
 	return err
 }
 
+// RecentSuccessfulDeploymentNumbers returns the per-project deployment
+// numbers of the most recent N successful deployments. Used by the
+// image-cleanup job to keep rollback targets cached even after their
+// services are gone. limit <= 0 disables the rollback retention
+// window (image cleanup only keeps active deploys).
+func (db *DB) RecentSuccessfulDeploymentNumbers(ctx context.Context, projectID int64, limit int) ([]int, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	resp, err := db.QuerySingle(ctx,
+		`SELECT number FROM deployments
+		 WHERE project_id = ? AND status = ?
+		 ORDER BY number DESC LIMIT ?`,
+		projectID, string(cobaltapi.StateSuccess), limit)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 {
+		return nil, nil
+	}
+	out := make([]int, 0, len(results[0].Values))
+	for _, row := range results[0].Values {
+		out = append(out, int(toInt64(row[0])))
+	}
+	return out, nil
+}
+
+// GetDeploymentByNumber resolves a project + per-project deployment
+// number to a deployment row. Used by the rollback API handler
+// to convert the operator's `--to N` into a row id.
+func (db *DB) GetDeploymentByNumber(ctx context.Context, projectID int64, number int) (*Deployment, error) {
+	resp, err := db.QuerySingle(ctx,
+		`SELECT `+deploymentSelectCols+` FROM deployments
+		 WHERE project_id = ? AND number = ?`,
+		projectID, number)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	return scanDeploymentRow(results[0].Values[0]), nil
+}
+
+// PreviousSuccessfulDeployment returns the most recent successful
+// deployment for a project that is NOT the deployment with the given
+// id. Used by `cobalt rollback <project>` (no --to) to pick the
+// rollback target. Returns ErrNotFound if no such deployment exists.
+func (db *DB) PreviousSuccessfulDeployment(ctx context.Context, projectID, excludeID int64) (*Deployment, error) {
+	resp, err := db.QuerySingle(ctx,
+		`SELECT `+deploymentSelectCols+` FROM deployments
+		 WHERE project_id = ? AND status = ? AND id != ?
+		 ORDER BY number DESC LIMIT 1`,
+		projectID, string(cobaltapi.StateSuccess), excludeID)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	return scanDeploymentRow(results[0].Values[0]), nil
+}
+
 func (db *DB) GetLastSuccessfulDeployment(ctx context.Context, projectID int64) (*Deployment, error) {
-	resp, err := db.QuerySingle(ctx, `
-        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               resolved_cobaltfile, created_at, started_at, finished_at
-        FROM deployments
-        WHERE project_id = ? AND status = ?
-        ORDER BY number DESC
-        LIMIT 1
-    `, projectID, string(cobaltapi.StateSuccess))
+	resp, err := db.QuerySingle(ctx,
+		`SELECT `+deploymentSelectCols+` FROM deployments
+		 WHERE project_id = ? AND status = ?
+		 ORDER BY number DESC LIMIT 1`,
+		projectID, string(cobaltapi.StateSuccess))
 	if err != nil {
 		return nil, err
 	}
@@ -267,12 +341,9 @@ func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {
 	}
 
 	inClause := placeholders(len(active))
-	q := `
-        SELECT id, project_id, number, status, commit_sha, no_cache, cobaltfile_override,
-               resolved_cobaltfile, created_at, started_at, finished_at
-        FROM deployments WHERE status IN (` + inClause + `)
-        ORDER BY project_id, number
-    `
+	q := `SELECT ` + deploymentSelectCols + ` FROM deployments
+		WHERE status IN (` + inClause + `)
+		ORDER BY project_id, number`
 
 	args := make([]any, 0, len(active))
 	for _, s := range activeStrings {
@@ -325,13 +396,17 @@ func scanDeploymentRow(row []any) *Deployment {
 		s := toString(row[7])
 		d.ResolvedCobaltfile = &s
 	}
-	d.CreatedAt = toInt64(row[8])
-	if row[9] != nil {
-		v := toInt64(row[9])
-		d.StartedAt = &v
+	if row[8] != nil {
+		v := toInt64(row[8])
+		d.RollbackOf = &v
 	}
+	d.CreatedAt = toInt64(row[9])
 	if row[10] != nil {
 		v := toInt64(row[10])
+		d.StartedAt = &v
+	}
+	if row[11] != nil {
+		v := toInt64(row[11])
 		d.FinishedAt = &v
 	}
 	return &d

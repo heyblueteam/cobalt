@@ -54,6 +54,40 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (id int64, numb
 	return id, number, nil
 }
 
+// EnqueueRollback inserts a queued deployment row pointing at a target
+// deployment id (RollbackOf), to be picked up by the dispatcher and
+// dispatched to Orchestrator.rollbackRun. The CommitSHA is copied from
+// the target so audit logs show the SHA the rollback restores; the
+// resolved_cobaltfile is populated by the runner once the cutover
+// starts.
+func (q *Queue) EnqueueRollback(ctx context.Context, projectID, targetID int64) (id int64, number int, err error) {
+	target, err := q.db.GetDeployment(ctx, targetID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("rollback enqueue: load target: %w", err)
+	}
+	if target.ProjectID != projectID {
+		return 0, 0, fmt.Errorf("rollback enqueue: target deployment belongs to a different project")
+	}
+
+	number, err = q.db.NextDeploymentNumber(ctx, projectID)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	dep := store.Deployment{
+		ProjectID:  projectID,
+		Number:     number,
+		Status:     cobaltapi.StateQueued,
+		CommitSHA:  target.CommitSHA,
+		RollbackOf: &targetID,
+	}
+	id, err = q.db.CreateDeployment(ctx, dep)
+	if err != nil {
+		return 0, 0, fmt.Errorf("rollback enqueue: insert: %w", err)
+	}
+	return id, number, nil
+}
+
 func (q *Queue) Cancel(ctx context.Context, deploymentID int64) (cancelInFlight bool, err error) {
 	d, err := q.db.GetDeployment(ctx, deploymentID)
 	if err != nil {

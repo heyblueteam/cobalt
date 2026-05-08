@@ -30,6 +30,7 @@ func newRootCmd() *cobra.Command {
 		newScaleCmd(),
 		newDeployCmd(),
 		newDeploymentsCmd(),
+		newRollbackCmd(),
 		newGithubCmd(),
 		newApikeysCmd(),
 		newMetaCmd(),

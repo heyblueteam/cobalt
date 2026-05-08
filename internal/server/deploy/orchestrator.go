@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
+	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
@@ -58,17 +59,29 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 	// deferred trailer surfaces any returned error in the deploy log so
 	// `cobalt deployments output` can show operators why a deploy failed
 	// without them needing shell access to the daemon host.
-	fmt.Fprintf(out, "==> deploy #%d for project %q started\n", dep.Number, project.Name)
+	header := fmt.Sprintf("deploy #%d for project %q", dep.Number, project.Name)
+	if dep.RollbackOf != nil {
+		header = fmt.Sprintf("rollback #%d (target deployment id=%d) for project %q",
+			dep.Number, *dep.RollbackOf, project.Name)
+	}
+	fmt.Fprintf(out, "==> %s started\n", header)
 	defer func() {
 		if err != nil {
 			fmt.Fprintf(out, "ERROR: %s\n", err)
 		}
-		fmt.Fprintf(out, "==> deploy #%d ended\n", dep.Number)
+		fmt.Fprintf(out, "==> %s ended\n", header)
 	}()
 
 	envVars, err := o.DB.EnvVarMap(ctx, project.ID)
 	if err != nil {
 		return fmt.Errorf("deploy: env vars: %w", err)
+	}
+
+	// Rollback fork: skip prepare + build, reconstruct BuiltService
+	// list from the target deployment's stored cobaltfile + image
+	// tag pattern, and run the cutover phase only. See rollback.go.
+	if dep.RollbackOf != nil {
+		return o.rollbackRun(ctx, log, project, dep, envVars, out)
 	}
 
 	// PHASE 1 — prepare. Reversible, no Caddy touch.
@@ -114,6 +127,46 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 	}
 	log.Info("build complete", "services", len(built))
 
+	return o.cutover(ctx, log, project, dep, built, ws.Cobaltfile, envVars, out)
+}
+
+// Cutover runs the post-build phase of a deployment: ensure networks,
+// run generators + before-hook, start docker services, wait healthy,
+// swap Caddy, run the after-hook, clean up old services. This is the
+// shared path between a fresh deploy (called internally from Run) and
+// a rollback (which calls Cutover directly with services reconstructed
+// from a prior deployment's cached image).
+//
+// envVars is the project's CURRENT env-var state, not a per-deploy
+// snapshot. Rollback uses today's env, not the env that existed when
+// the target was originally built.
+func (o *Orchestrator) Cutover(
+	ctx context.Context,
+	project *store.Project,
+	dep store.Deployment,
+	built []BuiltService,
+	cf *cobaltfile.Cobaltfile,
+	envVars map[string]string,
+	out io.Writer,
+) error {
+	log := o.Log.With("deployment_id", dep.ID, "project_id", dep.ProjectID,
+		"number", dep.Number, "project", project.Name)
+	if dep.RollbackOf != nil {
+		log = log.With("rollback_of", *dep.RollbackOf)
+	}
+	return o.cutover(ctx, log, project, dep, built, cf, envVars, out)
+}
+
+func (o *Orchestrator) cutover(
+	ctx context.Context,
+	log *slog.Logger,
+	project *store.Project,
+	dep store.Deployment,
+	built []BuiltService,
+	cf *cobaltfile.Cobaltfile,
+	envVars map[string]string,
+	out io.Writer,
+) error {
 	if err := EnsureMainNetwork(ctx, o.Docker); err != nil {
 		return fmt.Errorf("deploy: ensure main network: %w", err)
 	}
@@ -123,7 +176,7 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 		return fmt.Errorf("deploy: generators: %w", err)
 	}
 
-	if err := runBeforeHook(ctx, o.Docker, *project, dep, ws.Cobaltfile, envVars, out, out); err != nil {
+	if err := runBeforeHook(ctx, o.Docker, *project, dep, cf, envVars, out, out); err != nil {
 		return fmt.Errorf("deploy: before-hook: %w", err)
 	}
 
@@ -149,17 +202,17 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 
 	// PHASE 2 — commit. Caddy cutover, atomic from the public's POV.
 
-	if err := commitCaddySwap(ctx, o.Caddy, o.DB, *project, dep, ws.Cobaltfile); err != nil {
+	if err := commitCaddySwap(ctx, o.Caddy, o.DB, *project, dep, cf); err != nil {
 		// Try to revert; whether or not revert succeeds, kill the new
 		// services so they don't linger.
-		revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, ws.Cobaltfile)
+		revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return fmt.Errorf("deploy: commit caddy: %w", err)
 	}
 
 	// After-hook: best effort. If the deploy is live, a failed after-hook
 	// is a warning, not a rollback trigger.
-	if err := runAfterHook(ctx, o.Docker, *project, dep, ws.Cobaltfile, envVars, out, out); err != nil {
+	if err := runAfterHook(ctx, o.Docker, *project, dep, cf, envVars, out, out); err != nil {
 		log.Warn("after-hook failed (deployment is live)", "error", err)
 	}
 

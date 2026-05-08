@@ -119,6 +119,7 @@ services:
       --data-dir ${COBALT_DATA_DIR}
       --caddy-socket /cobalt/caddy-socket/caddy.sock
       --public-host ${COBALT_PUBLIC_HOST}
+      --image-retention 10
 
 networks:
   default:

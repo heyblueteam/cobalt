@@ -144,6 +144,9 @@ func deploymentToAPI(d store.Deployment) cobaltapi.Deployment {
 	if d.CommitSHA != nil {
 		out.CommitSHA = *d.CommitSHA
 	}
+	if d.RollbackOf != nil {
+		out.RollbackOf = *d.RollbackOf
+	}
 	if d.StartedAt != nil {
 		out.StartedAt = *d.StartedAt
 	}
