@@ -44,6 +44,10 @@ func (h *Handler) AddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.DB.AddDomain(r.Context(), p.ID, req.Name); err != nil {
+		if errors.Is(err, store.ErrDomainTaken) {
+			writeError(w, http.StatusConflict, "domain "+req.Name+" already configured")
+			return
+		}
 		h.Log.Error("api: add domain", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return

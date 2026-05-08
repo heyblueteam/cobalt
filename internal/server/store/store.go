@@ -22,6 +22,8 @@ type DB struct {
 
 var ErrProjectNameTaken = errors.New("store: project name already in use")
 
+var ErrDomainTaken = errors.New("store: domain already attached")
+
 var ErrNotFound = errors.New("store: not found")
 
 func Open(url string) (*DB, error) {

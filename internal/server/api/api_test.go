@@ -305,6 +305,13 @@ func TestDomainsCRUD(t *testing.T) {
 		t.Errorf("list: %d, want 2", len(doms))
 	}
 
+	// Re-adding a domain that's already attached must 409 — silently
+	// no-op'ing here would let the CLI claim "added" when nothing
+	// changed.
+	resp = e.do(http.MethodPost, "/api/projects/api/domains", cobaltapi.DomainAddRequest{Name: "alt.example.com"})
+	mustStatus(t, resp, http.StatusConflict)
+	resp.Body.Close()
+
 	resp = e.do(http.MethodDelete, "/api/projects/api/domains/api.example.com", nil)
 	mustStatus(t, resp, http.StatusNoContent)
 	resp.Body.Close()

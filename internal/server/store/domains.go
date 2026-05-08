@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 )
 
 func (db *DB) ListDomainsForProject(ctx context.Context, projectID int64) ([]string, error) {
@@ -26,8 +27,23 @@ func (db *DB) ListDomainsForProject(ctx context.Context, projectID int64) ([]str
 
 func (db *DB) AddDomain(ctx context.Context, projectID int64, name string) error {
 	sql := `INSERT INTO domains (project_id, name, created_at) VALUES (?, ?, strftime('%s', 'now'))`
-	_, err := db.ExecuteSingle(ctx, sql, projectID, name)
-	return err
+	resp, err := db.ExecuteSingle(ctx, sql, projectID, name)
+	if err != nil {
+		if isUniqueConstraintErr(err) {
+			return ErrDomainTaken
+		}
+		return err
+	}
+	// rqlite reports SQL constraint failures inside the result, not as
+	// a transport error; without this check, a duplicate-domain insert
+	// silently no-ops.
+	if len(resp.Results) > 0 && resp.Results[0].Error != "" {
+		if isUniqueConstraintErr(errors.New(resp.Results[0].Error)) {
+			return ErrDomainTaken
+		}
+		return errors.New(resp.Results[0].Error)
+	}
+	return nil
 }
 
 func (db *DB) RemoveDomain(ctx context.Context, projectID int64, name string) error {
