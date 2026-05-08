@@ -36,6 +36,7 @@ func newRootCmd() *cobra.Command {
 		newVolumesCmd(),
 		newLogsCmd(),
 		newRunCmd(),
+		newHistoryCmd(),
 		newLlmCmd(),
 	)
 

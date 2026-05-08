@@ -132,15 +132,28 @@ func (db *DB) InitSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS command_runs (
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+			apikey_id     INTEGER REFERENCES apikeys(id),
 			service       TEXT,
 			command       TEXT NOT NULL,
 			status        TEXT NOT NULL,
 			exit_code     INTEGER,
+			tty           INTEGER NOT NULL DEFAULT 0,
 			created_at    INTEGER NOT NULL,
 			finished_at   INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_runs_project ON command_runs(project_id, created_at)`,
 	})
-	_, err := db.Execute(ctx, stmts, nil)
-	return err
+	if _, err := db.Execute(ctx, stmts, nil); err != nil {
+		return err
+	}
+	// Idempotent column adds for boxes initialized before apikey_id /
+	// tty existed. SQLite errors on duplicate ADD COLUMN; we ignore
+	// those so the daemon can re-run InitSchema on every boot.
+	for _, alter := range []string{
+		`ALTER TABLE command_runs ADD COLUMN apikey_id INTEGER`,
+		`ALTER TABLE command_runs ADD COLUMN tty INTEGER NOT NULL DEFAULT 0`,
+	} {
+		_, _ = db.Execute(ctx, rqlitehttp.NewSQLStatementsFromStrings([]string{alter}), nil)
+	}
+	return nil
 }

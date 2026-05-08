@@ -14,6 +14,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/middleware"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -118,14 +119,42 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 		extraParams:       extraParams,
 	}
 
+	// Audit row at handler entry. The exit code goes in once the
+	// session ends. apikeyID is best-effort: 0 when the auth context
+	// hasn't propagated (tests, etc.).
+	tty := false
+	if conn.Subprotocol() == cobaltapi.RunSubprotocolV2 {
+		tty = r.URL.Query().Get("tty") == "1"
+	}
+	apikeyID := middleware.APIKeyIDFrom(r.Context())
+	runID, runIDErr := h.DB.CreateCommandRun(r.Context(), project.ID, apikeyID, serviceName, cmd, tty)
+	if runIDErr != nil {
+		h.Log.Warn("run: audit insert failed", "error", runIDErr)
+	}
+
 	switch conn.Subprotocol() {
 	case cobaltapi.RunSubprotocolV2:
-		tty := r.URL.Query().Get("tty") == "1"
-		h.Log.Info("run: v2 session", "project", project.Name, "service", serviceName, "tty", tty)
-		h.runV2(r.Context(), conn, req, tty)
+		h.Log.Info("run: v2 session", "project", project.Name, "service", serviceName, "tty", tty, "audit_id", runID)
+		exitCode := h.runV2(r.Context(), conn, req, tty)
+		h.finalizeCommandRun(runID, exitCode)
 	default:
-		h.Log.Info("run: v1 session (deprecated)", "project", project.Name, "service", serviceName)
-		h.runV1(r.Context(), conn, req)
+		h.Log.Info("run: v1 session (deprecated)", "project", project.Name, "service", serviceName, "audit_id", runID)
+		exitCode := h.runV1(r.Context(), conn, req)
+		h.finalizeCommandRun(runID, exitCode)
+	}
+}
+
+// finalizeCommandRun marks the audit row finished. Best-effort — log
+// and move on if rqlite is grumpy. Uses a fresh context with timeout
+// since the request context is typically already canceled by now.
+func (h *Handler) finalizeCommandRun(runID int64, exitCode int) {
+	if runID == 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := h.DB.FinishCommandRun(ctx, runID, exitCode); err != nil {
+		h.Log.Warn("run: audit finalize failed", "audit_id", runID, "error", err)
 	}
 }
 
@@ -138,21 +167,21 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 // as a 60 s upper bound". We use os.Pipe() here so the file descriptor
 // reaches the child as a real *os.File and exec.Cmd skips its internal
 // io.Copy goroutine.
-func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runRequest) {
+func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runRequest) int {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
 		h.Log.Error("run: stdin pipe", "error", err)
-		return
+		return -1
 	}
 	stdoutR, stdoutW, err := os.Pipe()
 	if err != nil {
 		_ = stdinR.Close()
 		_ = stdinW.Close()
 		h.Log.Error("run: stdout pipe", "error", err)
-		return
+		return -1
 	}
 	stderrR, stderrW, err := os.Pipe()
 	if err != nil {
@@ -161,7 +190,7 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 		_ = stdoutR.Close()
 		_ = stdoutW.Close()
 		h.Log.Error("run: stderr pipe", "error", err)
-		return
+		return -1
 	}
 
 	var outWG sync.WaitGroup
@@ -230,6 +259,7 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 
 	// Closing the WS unblocks the leaking stdin pump.
 	_ = conn.Close(websocket.StatusNormalClosure, "")
+	return exitCode
 }
 
 // pumpToWS reads bytes from r and writes them as v1 RunFrames of the

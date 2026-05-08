@@ -77,3 +77,19 @@ type RunResizePayload struct {
 	Rows uint16 `json:"rows"`
 	Cols uint16 `json:"cols"`
 }
+
+// CommandRun is one row from the project's `cobalt run` audit log,
+// surfaced via GET /api/projects/{name}/command-runs and rendered by
+// `cobalt history`.
+type CommandRun struct {
+	ID         int64  `json:"id"`
+	ProjectID  int64  `json:"projectId"`
+	APIKeyID   int64  `json:"apiKeyId,omitempty"`
+	Service    string `json:"service,omitempty"`
+	Command    string `json:"command"`
+	Status     string `json:"status"` // "running" | "finished"
+	ExitCode   int64  `json:"exitCode"`
+	TTY        bool   `json:"tty"`
+	CreatedAt  int64  `json:"createdAt"`
+	FinishedAt int64  `json:"finishedAt,omitempty"`
+}
