@@ -260,11 +260,43 @@ func TestEmbeddedInitAssets(t *testing.T) {
 	if !contains(initComposeTemplate, "unless-stopped") {
 		t.Errorf("compose template missing restart policy")
 	}
-	if !contains(initCaddyfile, "reverse_proxy cobalt:8080") {
-		t.Errorf("Caddyfile missing reverse_proxy to cobalt:8080")
+	for name, body := range map[string]string{
+		"auto-https": initCaddyfileAutoHTTPS,
+		"internal":   initCaddyfileInternal,
+	} {
+		if !contains(body, "reverse_proxy cobalt:8080") {
+			t.Errorf("%s Caddyfile missing reverse_proxy to cobalt:8080", name)
+		}
+		if !contains(body, "admin unix//cobalt/caddy-socket/caddy.sock") {
+			t.Errorf("%s Caddyfile missing admin unix socket", name)
+		}
 	}
-	if !contains(initCaddyfile, "admin unix//cobalt/caddy-socket/caddy.sock") {
-		t.Errorf("Caddyfile missing admin unix socket")
+	if !contains(initCaddyfileAutoHTTPS, "{$COBALT_PUBLIC_HOST}") {
+		t.Errorf("auto-https Caddyfile missing COBALT_PUBLIC_HOST placeholder")
+	}
+	if !contains(initCaddyfileInternal, "tls internal") {
+		t.Errorf("internal Caddyfile missing tls internal directive")
+	}
+}
+
+func TestCaddyfileFor(t *testing.T) {
+	cases := map[string]string{
+		"":                "internal",
+		"localhost":       "internal",
+		"127.0.0.1":       "internal",
+		"168.119.100.190": "internal",
+		"::1":             "internal",
+		"cobalt.blue.cc":  "auto-https",
+		"e2e.example.com": "auto-https",
+	}
+	for host, want := range cases {
+		got := "auto-https"
+		if caddyfileFor(host) == initCaddyfileInternal {
+			got = "internal"
+		}
+		if got != want {
+			t.Errorf("caddyfileFor(%q): got %s, want %s", host, got, want)
+		}
 	}
 }
 

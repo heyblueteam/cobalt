@@ -20,8 +20,28 @@ import (
 //go:embed assets/init-docker-compose.yml
 var initComposeTemplate string
 
-//go:embed assets/init-Caddyfile
-var initCaddyfile string
+//go:embed assets/init-Caddyfile-auto-https
+var initCaddyfileAutoHTTPS string
+
+//go:embed assets/init-Caddyfile-internal
+var initCaddyfileInternal string
+
+// caddyfileFor picks the Caddyfile shape that matches the public host:
+// auto-HTTPS via Let's Encrypt for a real domain, tls-internal (self-signed)
+// for an IP / localhost where Let's Encrypt can't issue.
+func caddyfileFor(publicHost string) string {
+	if isIPOrLocalhost(publicHost) {
+		return initCaddyfileInternal
+	}
+	return initCaddyfileAutoHTTPS
+}
+
+func isIPOrLocalhost(host string) bool {
+	if host == "" || host == "localhost" {
+		return true
+	}
+	return net.ParseIP(host) != nil
+}
 
 func newInitCmd() *cobra.Command {
 	var (
@@ -176,11 +196,16 @@ Examples:
 					return fmt.Errorf("write .env: %w", err)
 				}
 			} else {
-				fmt.Fprintf(output.Stderr, "[5/8] Writing docker-compose.yml, Caddyfile, .env...\n")
+				caddyfile := caddyfileFor(publicHost)
+				tlsKind := "auto-HTTPS"
+				if caddyfile == initCaddyfileInternal {
+					tlsKind = "self-signed (tls internal)"
+				}
+				fmt.Fprintf(output.Stderr, "[5/8] Writing docker-compose.yml, Caddyfile (%s), .env...\n", tlsKind)
 				if err := writeRemoteFile(conn, composePath, initComposeTemplate); err != nil {
 					return fmt.Errorf("write compose file: %w", err)
 				}
-				if err := writeRemoteFile(conn, caddyfilePath, initCaddyfile); err != nil {
+				if err := writeRemoteFile(conn, caddyfilePath, caddyfile); err != nil {
 					return fmt.Errorf("write Caddyfile: %w", err)
 				}
 				if err := writeRemoteFile(conn, envPath, envContent); err != nil {

@@ -1,0 +1,11 @@
+# Auto-HTTPS Caddyfile for cobalt installs against a real domain.
+# Caddy reads {$COBALT_PUBLIC_HOST} from its container env (provided by
+# docker compose from .env) and provisions a Let's Encrypt certificate
+# automatically. Plain :80 gets redirected to :443 by Caddy's auto-HTTPS.
+{
+  admin unix//cobalt/caddy-socket/caddy.sock
+}
+
+{$COBALT_PUBLIC_HOST} {
+  reverse_proxy cobalt:8080
+}
