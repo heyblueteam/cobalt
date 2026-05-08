@@ -282,6 +282,15 @@ Examples:
 				return fmt.Errorf("save config: %w", err)
 			}
 
+			// Now that the key is safely persisted locally, scrub it from
+			// the daemon's data volume. The daemon won't recreate the file
+			// (apikeys is no longer empty), so this turns the bootstrap
+			// key into a true single-use credential. Best-effort —
+			// failures here aren't fatal; the user already has the key.
+			if err := removeBootstrapKey(ctx, conn); err != nil {
+				fmt.Fprintf(output.Stderr, "  warning: could not scrub bootstrap key on remote: %v\n", err)
+			}
+
 			output.PrintLines(
 				fmt.Sprintf("✓ Cobalt initialized on %s", host),
 				fmt.Sprintf("  API key saved to %s", cfgPath),
@@ -393,4 +402,21 @@ func readBootstrapKey(ctx context.Context, conn *ssh.Conn) (string, error) {
 		return "", fmt.Errorf("bootstrap-api-key file is empty")
 	}
 	return key, nil
+}
+
+// removeBootstrapKey deletes the bootstrap-api-key file from the daemon's
+// data volume. Called after the local cliconfig has been saved so the
+// key only ever lives in two places: in our local config, and (hashed)
+// in the daemon's apikeys table. Once the apikeys row exists, the
+// daemon's first-boot path won't recreate the file.
+func removeBootstrapKey(ctx context.Context, conn *ssh.Conn) error {
+	const cmd = "cd /opt/cobalt && docker compose exec -T cobalt rm -f /cobalt/data/bootstrap-api-key"
+	r := conn.Run(ctx, cmd)
+	if r.Err != nil {
+		return fmt.Errorf("ssh exec: %w", r.Err)
+	}
+	if r.ExitCode != 0 {
+		return fmt.Errorf("rm bootstrap-api-key (exit %d): %s", r.ExitCode, strings.TrimSpace(r.Stderr))
+	}
+	return nil
 }
