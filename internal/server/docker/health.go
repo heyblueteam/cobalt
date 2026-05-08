@@ -78,13 +78,18 @@ type taskStatus struct {
 	Health string // "healthy", "unhealthy", "starting", or "" if no healthcheck
 }
 
-// taskStatuses reads docker service ps and parses out each task's state
-// and health. Format: JSON one-task-per-line. We tolerate extra fields.
+// taskStatuses reads docker service ps and parses out each task's current
+// state. Health is left empty here — every task falls through to the
+// task-state fallback in WaitForServiceHealthy. Reading the per-task
+// .Status.Health.Status requires a second call (docker inspect on each
+// task ID) and is tracked separately; the previous template approach
+// failed because `docker service ps --format`'s context type does not
+// expose .Status at all.
 func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskStatus, error) {
 	out, err := c.output(ctx,
 		"service", "ps", serviceName,
 		"--no-trunc",
-		"--format", `{"current_state":"{{.CurrentState}}","health":"{{ if .Status }}{{ .Status.Health }}{{ end }}"}`,
+		"--format", `{"current_state":"{{.CurrentState}}"}`,
 	)
 	if err != nil {
 		return nil, err
@@ -100,18 +105,15 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 		}
 		var raw struct {
 			CurrentState string `json:"current_state"`
-			Health       string `json:"health"`
 		}
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
-			// Newer / older docker formats differ; skip lines we can't
-			// parse rather than failing the whole probe.
 			continue
 		}
 		state := raw.CurrentState
 		if i := strings.IndexByte(state, ' '); i > 0 {
 			state = state[:i]
 		}
-		statuses = append(statuses, taskStatus{State: state, Health: raw.Health})
+		statuses = append(statuses, taskStatus{State: state})
 	}
 	return statuses, nil
 }

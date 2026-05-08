@@ -49,12 +49,14 @@ func TestWaitForServiceHealthy_FailFastOnShutdowns(t *testing.T) {
 	}
 }
 
-func TestWaitForServiceHealthy_TimeoutWhenNotHealthy(t *testing.T) {
+func TestWaitForServiceHealthy_TimeoutWhenNotRunning(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	// Has a healthcheck but only "starting", not yet "healthy".
+	// Task hasn't reached Running yet; no fallback path can succeed.
+	// (The healthcheck-aware path that distinguishes "starting" from
+	// "healthy" is currently disabled — see internal/server/docker/health.go.)
 	r.answerStdout("service ps api-7-web",
-		`{"current_state":"Running 1 minute ago","health":"starting"}`+"\n",
+		`{"current_state":"Pending 1 second ago"}`+"\n",
 	)
 	c := NewWithRunner(r)
 	err := c.WaitForServiceHealthy(context.Background(), "api-7-web", 1, 100*time.Millisecond)
@@ -66,8 +68,10 @@ func TestWaitForServiceHealthy_TimeoutWhenNotHealthy(t *testing.T) {
 func TestWaitForServiceHealthy_RespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
+	// Pending task — fallback path can't succeed, so we'll loop and
+	// hit the canceled context on the next sleep.
 	r.answerStdout("service ps api-7-web",
-		`{"current_state":"Running 1 minute ago","health":"starting"}`+"\n",
+		`{"current_state":"Pending 1 second ago"}`+"\n",
 	)
 	c := NewWithRunner(r)
 	ctx, cancel := context.WithCancel(context.Background())
