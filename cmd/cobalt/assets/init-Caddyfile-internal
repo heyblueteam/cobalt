@@ -1,6 +1,15 @@
+# Self-signed Caddyfile for dev / --insecure-tls installs. Caddy issues
+# its own internal cert for :443; GitHub App webhooks won't work against
+# this (they require a publicly-trusted certificate), but cobalt deploy
+# / domains / project routing all do.
 {
   admin unix//cobalt/caddy-socket/caddy.sock {
     origins cobalt-caddy
+  }
+  # Name the :443 server "cobalt" so the daemon's caddy admin client
+  # (which addresses /config/apps/http/servers/cobalt/...) finds it.
+  servers :443 {
+    name cobalt
   }
 }
 

@@ -270,6 +270,11 @@ func TestEmbeddedInitAssets(t *testing.T) {
 		if !contains(body, "admin unix//cobalt/caddy-socket/caddy.sock") {
 			t.Errorf("%s Caddyfile missing admin unix socket", name)
 		}
+		// Both variants must name the :443 server "cobalt"; the daemon's
+		// caddy admin client addresses /config/apps/http/servers/cobalt/.
+		if !contains(body, "name cobalt") {
+			t.Errorf("%s Caddyfile missing `servers :443 { name cobalt }`", name)
+		}
 	}
 	if !contains(initCaddyfileAutoHTTPS, "{$COBALT_PUBLIC_HOST}") {
 		t.Errorf("auto-https Caddyfile missing COBALT_PUBLIC_HOST placeholder")
