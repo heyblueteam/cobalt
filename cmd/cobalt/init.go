@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	_ "embed"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
@@ -16,6 +15,12 @@ import (
 	"github.com/heyblueteam/cobalt/internal/ssh"
 	"github.com/spf13/cobra"
 )
+
+//go:embed assets/init-docker-compose.yml
+var initComposeTemplate string
+
+//go:embed assets/init-Caddyfile
+var initCaddyfile string
 
 func newInitCmd() *cobra.Command {
 	var (
@@ -139,19 +144,27 @@ Examples:
 			}
 
 			composePath := "/opt/cobalt/docker-compose.yml"
+			caddyfilePath := "/opt/cobalt/Caddyfile"
+			envPath := "/opt/cobalt/.env"
+
 			if composeFile != "" {
 				fmt.Fprintf(output.Stderr, "[5/8] Uploading custom compose file: %s\n", composeFile)
 				if err := conn.ScpTo(composeFile, composePath); err != nil {
 					return fmt.Errorf("upload compose file: %w", err)
 				}
 			} else {
-				fmt.Fprintf(output.Stderr, "[5/8] Creating docker-compose.yml...\n")
-				composeContent, err := defaultComposeYAML(cobaltVersion, publicHost, dataDir)
-				if err != nil {
-					return fmt.Errorf("generate compose file: %w", err)
-				}
-				if err := writeRemoteFile(conn, composePath, composeContent); err != nil {
+				fmt.Fprintf(output.Stderr, "[5/8] Writing docker-compose.yml, Caddyfile, .env...\n")
+				if err := writeRemoteFile(conn, composePath, initComposeTemplate); err != nil {
 					return fmt.Errorf("write compose file: %w", err)
+				}
+				if err := writeRemoteFile(conn, caddyfilePath, initCaddyfile); err != nil {
+					return fmt.Errorf("write Caddyfile: %w", err)
+				}
+				image := fmt.Sprintf("ghcr.io/heyblueteam/cobalt:%s", cobaltVersion)
+				envContent := fmt.Sprintf("COBALT_IMAGE=%s\nCOBALT_PUBLIC_HOST=%s\nCOBALT_DATA_DIR=%s\n",
+					image, publicHost, dataDir)
+				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
+					return fmt.Errorf("write .env: %w", err)
 				}
 			}
 
@@ -166,14 +179,14 @@ Examples:
 
 			fmt.Fprintf(output.Stderr, "[7/8] Waiting for cobalt to be healthy...\n")
 			daemonURL := fmt.Sprintf("http://%s/healthz", host)
-			if err := waitForHealthy(ctx, daemonURL, 60*time.Second); err != nil {
+			if err := waitForHealthy(ctx, daemonURL, 120*time.Second); err != nil {
 				return fmt.Errorf("daemon not healthy: %w", err)
 			}
 
-			fmt.Fprintf(output.Stderr, "[8/8] Creating API key...\n")
-			apiKey, err := createAPIKey(ctx, daemonURL)
+			fmt.Fprintf(output.Stderr, "[8/8] Reading bootstrap API key...\n")
+			apiKey, err := readBootstrapKey(ctx, conn)
 			if err != nil {
-				return fmt.Errorf("create API key: %w", err)
+				return fmt.Errorf("read bootstrap key: %w", err)
 			}
 
 			cfg := &cliconfig.Config{
@@ -255,107 +268,25 @@ func waitForHealthy(ctx context.Context, url string, timeout time.Duration) erro
 	}
 }
 
-func createAPIKey(ctx context.Context, baseURL string) (string, error) {
-	reqBody := map[string]string{"name": "init-created-key"}
-	body, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
+// readBootstrapKey reads the daemon's first-boot bootstrap API key from
+// inside the cobalt container. The daemon writes it to
+// {dataDir}/bootstrap-api-key (mode 0600) the first time it starts against
+// an empty apikeys table, then never recreates it.
+//
+// We exec into the container rather than reading the host volume mount
+// directly so we don't have to know docker's volume layout on the host.
+func readBootstrapKey(ctx context.Context, conn *ssh.Conn) (string, error) {
+	const cmd = "cd /opt/cobalt && docker compose exec -T cobalt cat /cobalt/data/bootstrap-api-key"
+	r := conn.Run(ctx, cmd)
+	if r.Err != nil {
+		return "", fmt.Errorf("ssh exec: %w", r.Err)
 	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", baseURL+"/api/apikeys", strings.NewReader(string(body)))
-	if err != nil {
-		return "", err
+	if r.ExitCode != 0 {
+		return "", fmt.Errorf("read bootstrap-api-key (exit %d): %s", r.ExitCode, strings.TrimSpace(r.Stderr))
 	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("create API key request: %w", err)
+	key := strings.TrimSpace(r.Stdout)
+	if key == "" {
+		return "", fmt.Errorf("bootstrap-api-key file is empty")
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", fmt.Errorf("API key creation failed: status %d: %s", resp.StatusCode, string(bodyBytes))
-	}
-
-	var result struct {
-		Key string `json:"key"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", fmt.Errorf("parse API key response: %w", err)
-	}
-
-	return result.Key, nil
-}
-
-func defaultComposeYAML(version, publicHost, dataDir string) (string, error) {
-	return fmt.Sprintf(`---
-version: "3.9"
-
-services:
-  rqlite:
-    image: ghcr.io/rqlite/rqlite:v8.31.0
-    command: >
-      rqlited
-      -d /db
-      -o /rqlite
-      --join ""
-    volumes:
-      - rqlite-data:/db
-    healthcheck:
-      test: ["CMD", "rqlite", "nodes"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    restart: unless-stopped
-
-  cobalt:
-    image: ghcr.io/heyblueteam/cobalt:%s
-    depends_on:
-      rqlite:
-        condition: service_healthy
-    volumes:
-      - cobalt-data:%s
-      - /var/run/docker.sock:/var/run/docker.sock
-      - caddy-socket:/cobalt/caddy-socket:shared
-    environment:
-      COBALT_DATA_DIR: %s
-      COBALT_PUBLIC_HOST: %s
-    command: >
-      server
-      --addr :80
-      --rqlite-url http://rqlite:4001
-      --data-dir /cobalt/data
-      --caddy-socket /cobalt/caddy-socket/caddy.sock
-      --public-host %s
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2.7.6
-    volumes:
-      - caddy-data:/data
-      - caddy-config:/config
-      - caddy-socket:/cobalt/caddy-socket:shared
-    ports:
-      - "80:80"
-      - "443:443"
-    command: >
-      caddy run
-      --config /etc/caddy/Caddyfile
-      --adapter caddyfile
-    restart: unless-stopped
-
-networks:
-  default:
-    driver: bridge
-
-volumes:
-  cobalt-data:
-  rqlite-data:
-  caddy-data:
-  caddy-config:
-  caddy-socket:
-`, version, dataDir, dataDir, publicHost, publicHost), nil
+	return key, nil
 }

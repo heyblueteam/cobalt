@@ -1,24 +1,20 @@
 # syntax=docker/dockerfile:1
 
-FROM golang:1.25-alpine AS build
+# Cross-compile from BUILDPLATFORM (native arch) to TARGETPLATFORM
+# (the requested image arch). buildx + the docker driver supplies these
+# automatically; for plain `docker build` they default to the host arch
+# so single-arch builds keep working.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
+ARG VERSION=dev
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /out/cobalt-amd64 ./cmd/cobalt
-
-FROM golang:1.25-alpine AS build-arm64
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build \
-    -ldflags="-s -w -X main.version=${VERSION}" \
-    -o /out/cobalt-arm64 ./cmd/cobalt
+    -o /out/cobalt ./cmd/cobalt
 
 FROM debian:stable-slim
 RUN apt-get update \
@@ -27,8 +23,6 @@ RUN apt-get update \
         git \
         docker-cli \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=build /out/cobalt-amd64 /usr/local/bin/cobalt
-COPY --from=build-arm64 /out/cobalt-arm64 /usr/local/bin/cobalt
-COPY --from=build-arm64 /out/cobalt-arm64 /cobalt-arm64
-EXPOSE 80
+COPY --from=build /out/cobalt /usr/local/bin/cobalt
+EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/cobalt", "server"]

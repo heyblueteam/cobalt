@@ -241,29 +241,30 @@ func TestInitCommand_Args(t *testing.T) {
 	}
 }
 
-func TestDefaultComposeYAML(t *testing.T) {
-	yaml, err := defaultComposeYAML("v1.0.0", "cobalt.example.com", "/custom/data")
-	if err != nil {
-		t.Fatalf("defaultComposeYAML: %v", err)
+func TestEmbeddedInitAssets(t *testing.T) {
+	if !contains(initComposeTemplate, "${COBALT_IMAGE}") {
+		t.Errorf("compose template missing COBALT_IMAGE substitution")
 	}
-
-	if !contains(yaml, "ghcr.io/heyblueteam/cobalt:v1.0.0") {
-		t.Errorf("compose yaml missing expected image tag")
+	if !contains(initComposeTemplate, "${COBALT_PUBLIC_HOST}") {
+		t.Errorf("compose template missing COBALT_PUBLIC_HOST substitution")
 	}
-	if !contains(yaml, "cobalt.example.com") {
-		t.Errorf("compose yaml missing public host")
+	if !contains(initComposeTemplate, "${COBALT_DATA_DIR}") {
+		t.Errorf("compose template missing COBALT_DATA_DIR substitution")
 	}
-	if !contains(yaml, "/custom/data") {
-		t.Errorf("compose yaml missing custom data dir")
+	if !contains(initComposeTemplate, "rqlite/rqlite:") {
+		t.Errorf("compose template missing rqlite image")
 	}
-	if !contains(yaml, "rqlite") {
-		t.Errorf("compose yaml missing rqlite service")
+	if !contains(initComposeTemplate, "image: caddy:") {
+		t.Errorf("compose template missing caddy image")
 	}
-	if !contains(yaml, "caddy") {
-		t.Errorf("compose yaml missing caddy service")
+	if !contains(initComposeTemplate, "unless-stopped") {
+		t.Errorf("compose template missing restart policy")
 	}
-	if !contains(yaml, "unless-stopped") {
-		t.Errorf("compose yaml missing restart policy")
+	if !contains(initCaddyfile, "reverse_proxy cobalt:8080") {
+		t.Errorf("Caddyfile missing reverse_proxy to cobalt:8080")
+	}
+	if !contains(initCaddyfile, "admin unix//cobalt/caddy-socket/caddy.sock") {
+		t.Errorf("Caddyfile missing admin unix socket")
 	}
 }
 

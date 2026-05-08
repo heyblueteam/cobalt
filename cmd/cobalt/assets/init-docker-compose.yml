@@ -1,0 +1,68 @@
+# Cobalt deployment stack — written by `cobalt init`.
+#
+# Substitutions are done by docker compose from the .env file written
+# alongside this file: COBALT_IMAGE, COBALT_PUBLIC_HOST, COBALT_DATA_DIR.
+
+x-cobalt-base: &cobalt-base
+  image: ${COBALT_IMAGE}
+  depends_on:
+    rqlite:
+      condition: service_healthy
+  volumes:
+    - cobalt-data:${COBALT_DATA_DIR}
+    - caddy-socket:/cobalt/caddy-socket
+    - /var/run/docker.sock:/var/run/docker.sock
+  environment:
+    COBALT_DATA_DIR: ${COBALT_DATA_DIR}
+  restart: unless-stopped
+  command: >
+    server
+    --addr 0.0.0.0:8080
+    --rqlite-url http://rqlite:4001
+    --data-dir ${COBALT_DATA_DIR}
+    --caddy-socket /cobalt/caddy-socket/caddy.sock
+    --public-host ${COBALT_PUBLIC_HOST}
+
+services:
+  rqlite:
+    image: rqlite/rqlite:8.43.4
+    volumes:
+      - rqlite-data:/rqlite/file
+    healthcheck:
+      test: ["CMD", "rqlite", "-H", "localhost", "-p", "4001", ".ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.7.6
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+      - caddy-socket:/cobalt/caddy-socket
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+    restart: unless-stopped
+    depends_on:
+      - rqlite
+
+  cobalt:
+    <<: *cobalt-base
+    labels:
+      - "cobalt.daemon=true"
+
+networks:
+  default:
+    driver: bridge
+
+volumes:
+  cobalt-data:
+  rqlite-data:
+  caddy-data:
+  caddy-config:
+  caddy-socket:
