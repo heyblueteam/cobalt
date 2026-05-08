@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 )
 
@@ -39,6 +40,10 @@ func (r *ExecRunner) Run(ctx context.Context, args []string, stdin io.Reader, st
 		bin = "docker"
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
+	// Enable BuildKit for every docker invocation. The classic builder is
+	// deprecated and doesn't support --secret (which we depend on for
+	// passing env vars into builds).
+	cmd.Env = append(os.Environ(), "DOCKER_BUILDKIT=1")
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}

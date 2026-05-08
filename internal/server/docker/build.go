@@ -59,12 +59,11 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 		args = append(args, "--secret", "id="+k)
 	}
 
-	if opts.CacheDir != "" {
-		args = append(args,
-			"--cache-from", "type=local,src="+opts.CacheDir,
-			"--cache-to", "type=local,dest="+opts.CacheDir+",mode=max",
-		)
-	}
+	// CacheDir is currently a no-op: --cache-from / --cache-to type=local are
+	// buildx-only flags, and the cobalt daemon image ships with the classic
+	// docker-cli (no buildx plugin). Per-project cache isolation comes back
+	// once we install buildx in the daemon image — tracked separately.
+	_ = opts.CacheDir
 
 	contextDir := opts.Context
 	if contextDir == "" {

@@ -17,12 +17,20 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o /out/cobalt ./cmd/cobalt
 
 FROM debian:stable-slim
+ARG TARGETARCH
+ARG BUILDX_VERSION=v0.19.0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         git \
         docker-cli \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /usr/libexec/docker/cli-plugins \
+    && curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${TARGETARCH}" \
+        -o /usr/libexec/docker/cli-plugins/docker-buildx \
+    && chmod 0755 /usr/libexec/docker/cli-plugins/docker-buildx \
+    && /usr/libexec/docker/cli-plugins/docker-buildx version
 COPY --from=build /out/cobalt /usr/local/bin/cobalt
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/cobalt", "server"]

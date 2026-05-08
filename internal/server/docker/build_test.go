@@ -95,7 +95,10 @@ func TestBuild_DefaultContextDot(t *testing.T) {
 	}
 }
 
-func TestBuild_CacheDirAddsBothFlags(t *testing.T) {
+// TestBuild_CacheDirIsNoOp asserts the buildx-only cache flags stay out
+// of argv until the daemon image installs the buildx plugin. CacheDir is
+// preserved on BuildOpts for forward compatibility.
+func TestBuild_CacheDirIsNoOp(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
 	c := NewWithRunner(r)
@@ -108,11 +111,10 @@ func TestBuild_CacheDirAddsBothFlags(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	args := r.lastCall().Args
-	if !argSequence(args, "--cache-from", "type=local,src=/cobalt/data/buildkit-cache/7") {
-		t.Errorf("--cache-from missing or wrong: %v", args)
-	}
-	if !argSequence(args, "--cache-to", "type=local,dest=/cobalt/data/buildkit-cache/7,mode=max") {
-		t.Errorf("--cache-to missing or wrong: %v", args)
+	for _, w := range []string{"--cache-from", "--cache-to"} {
+		if argHas(args, w) {
+			t.Errorf("buildx-only %q should not appear with classic builder: %v", w, args)
+		}
 	}
 }
 
