@@ -90,8 +90,16 @@ func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) error {
 }
 
 func isContextCanceled(err error) bool {
+	if err == nil {
+		return false
+	}
 	msg := err.Error()
+	// "deadline exceeded" is what net/http surfaces when the request
+	// context is cancelled mid-read — it cannot distinguish a real
+	// deadline from a Ctrl+C, so we treat both as quiet exit signals
+	// for streaming consumers (logs, deploy follow).
 	return strings.Contains(msg, "context canceled") ||
+		strings.Contains(msg, "context deadline exceeded") ||
 		strings.Contains(msg, "Canceled") ||
 		strings.Contains(msg, "use of closed network connection")
 }
