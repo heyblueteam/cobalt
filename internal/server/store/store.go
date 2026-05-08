@@ -82,6 +82,7 @@ func (db *DB) InitSchema(ctx context.Context) error {
 			id            INTEGER PRIMARY KEY AUTOINCREMENT,
 			project_id    INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 			name          TEXT NOT NULL UNIQUE,
+			redirect_to   TEXT,
 			created_at    INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_domains_project ON domains(project_id)`,
@@ -164,6 +165,7 @@ func (db *DB) InitSchema(ctx context.Context) error {
 		`ALTER TABLE command_runs ADD COLUMN apikey_id INTEGER`,
 		`ALTER TABLE command_runs ADD COLUMN tty INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE deployments ADD COLUMN rollback_of INTEGER REFERENCES deployments(id)`,
+		`ALTER TABLE domains ADD COLUMN redirect_to TEXT`,
 	} {
 		_, _ = db.Execute(ctx, rqlitehttp.NewSQLStatementsFromStrings([]string{alter}), nil)
 	}

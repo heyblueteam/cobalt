@@ -429,6 +429,115 @@ func TestSetEnv_RedeployEnqueuesDeployment(t *testing.T) {
 
 // --- domains ---
 
+// TestDomainsAddRedirect_RequiresPrimaryTarget asserts the API rejects
+// a redirect that points at a host the project doesn't yet own.
+func TestDomainsAddRedirect_RequiresPrimaryTarget(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/domains", cobaltapi.DomainAddRequest{
+		Name:       "www.example.com",
+		RedirectTo: "example.com",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestDomainsAddRedirect_OK installs a primary, then a redirect
+// pointing at it, and verifies the list reflects both rows with their
+// types correctly populated.
+func TestDomainsAddRedirect_OK(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/domains",
+		cobaltapi.DomainAddRequest{Name: "example.com"})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodPost, "/api/projects/api/domains", cobaltapi.DomainAddRequest{
+		Name:       "www.example.com",
+		RedirectTo: "example.com",
+	})
+	mustStatus(t, resp, http.StatusCreated)
+	got := decode[cobaltapi.Domain](t, resp)
+	if got.Type != cobaltapi.DomainTypeRedirect || got.RedirectTo != "example.com" {
+		t.Errorf("redirect response wrong: %+v", got)
+	}
+
+	resp = e.do(http.MethodGet, "/api/projects/api/domains", nil)
+	list := decode[[]cobaltapi.Domain](t, resp)
+	if len(list) != 2 {
+		t.Fatalf("len: %d, want 2", len(list))
+	}
+	for _, d := range list {
+		switch d.Name {
+		case "example.com":
+			if d.Type != cobaltapi.DomainTypePrimary {
+				t.Errorf("apex should be primary: %+v", d)
+			}
+		case "www.example.com":
+			if d.Type != cobaltapi.DomainTypeRedirect || d.RedirectTo != "example.com" {
+				t.Errorf("www should redirect to apex: %+v", d)
+			}
+		}
+	}
+}
+
+// TestDomainsRemovePrimary_CascadesRedirects asserts that deleting the
+// primary also removes any redirect rows pointing at it (no dangling
+// 301s in Caddy).
+func TestDomainsRemovePrimary_CascadesRedirects(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/domains",
+		cobaltapi.DomainAddRequest{Name: "example.com"})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+	resp = e.do(http.MethodPost, "/api/projects/api/domains", cobaltapi.DomainAddRequest{
+		Name: "www.example.com", RedirectTo: "example.com",
+	})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodDelete, "/api/projects/api/domains/example.com", nil)
+	mustStatus(t, resp, http.StatusNoContent)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodGet, "/api/projects/api/domains", nil)
+	list := decode[[]cobaltapi.Domain](t, resp)
+	if len(list) != 0 {
+		t.Errorf("redirects didn't cascade with primary delete: %+v", list)
+	}
+}
+
+// TestDomainsAddRedirect_RejectsSelfRedirect refuses requests where
+// name == redirectTo.
+func TestDomainsAddRedirect_RejectsSelfRedirect(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/domains",
+		cobaltapi.DomainAddRequest{Name: "example.com"})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodPost, "/api/projects/api/domains", cobaltapi.DomainAddRequest{
+		Name: "example.com", RedirectTo: "example.com",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestDomainsCRUD(t *testing.T) {
 	t.Parallel()
 	e := newEnv(t)

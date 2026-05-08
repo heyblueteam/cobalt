@@ -24,7 +24,12 @@ type SwapCaddy interface {
 
 // SwapStore is the store subset swap-step helpers need.
 type SwapStore interface {
-	ListDomainsForProject(ctx context.Context, projectID int64) ([]string, error)
+	// ListPrimaryDomainsForProject returns just the primary (non-
+	// redirect) hosts. The deploy swap uses this when building the
+	// project route's host matcher; redirect hosts are owned by
+	// separate Caddy routes (managed by the API domain handlers) and
+	// must not be folded into the reverse-proxy matcher.
+	ListPrimaryDomainsForProject(ctx context.Context, projectID int64) ([]string, error)
 	GetLastSuccessfulDeployment(ctx context.Context, projectID int64) (*store.Deployment, error)
 }
 
@@ -48,7 +53,7 @@ func commitCaddySwap(
 		return nil
 	}
 
-	domains, err := st.ListDomainsForProject(ctx, project.ID)
+	domains, err := st.ListPrimaryDomainsForProject(ctx, project.ID)
 	if err != nil {
 		return fmt.Errorf("deploy.commitCaddySwap: list domains: %w", err)
 	}

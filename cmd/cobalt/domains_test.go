@@ -129,3 +129,26 @@ func TestDomainsRemove(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 }
+
+func TestApexWWWPair(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantPair string
+		wantKind string
+	}{
+		{"example.com", "www.example.com", "apex"},
+		{"blue.cc", "www.blue.cc", "apex"},
+		{"www.example.com", "example.com", "www"},
+		{"www.blue.cc", "blue.cc", "www"},
+		{"app.example.com", "", ""},
+		{"a.b.c.example.com", "", ""},
+		{"localhost", "", ""},
+	}
+	for _, tt := range tests {
+		gotPair, gotKind := apexWWWPair(tt.input)
+		if gotPair != tt.wantPair || gotKind != tt.wantKind {
+			t.Errorf("apexWWWPair(%q) = (%q, %q), want (%q, %q)",
+				tt.input, gotPair, gotKind, tt.wantPair, tt.wantKind)
+		}
+	}
+}

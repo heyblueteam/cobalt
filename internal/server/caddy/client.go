@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,9 +36,22 @@ const DefaultPlaceholderUpstream = "cobalt:80"
 
 // Client is a small wrapper over http.Client targeting Caddy's admin API.
 // Methods are safe for concurrent use; the underlying http.Client is.
+//
+// Concurrency: every PATCH to /id/cobalt-project-handler-* triggers a
+// full Caddy config reload, which on a busy server (15+ projects, 30+
+// TLS-managed domains) can take 8-12s. Two deploys racing into the
+// admin API while a reload is in flight will both timeout against the
+// same window. adminMu serializes admin operations on the cobalt side
+// so we never pile concurrent PATCHes on top of an in-flight reload.
 type Client struct {
 	http    *http.Client
 	baseURL string
+
+	// adminMu serializes admin requests. Held by every method that
+	// mutates Caddy state via /config or /id endpoints, plus the GETs
+	// used by the deploy verification path so a verify isn't racing a
+	// concurrent PATCH from another goroutine.
+	adminMu sync.Mutex
 
 	// PlaceholderUpstream is the upstream new project routes start with.
 	// Defaults to DefaultPlaceholderUpstream.
@@ -71,7 +85,7 @@ func NewUnixSocketClient(socketPath string) *Client {
 	return &Client{
 		http: &http.Client{
 			Transport: t,
-			Timeout:   10 * time.Second,
+			Timeout:   60 * time.Second,
 		},
 		baseURL:             "http://cobalt-caddy",
 		PlaceholderUpstream: DefaultPlaceholderUpstream,
@@ -83,7 +97,7 @@ func NewUnixSocketClient(socketPath string) *Client {
 // Production callers want NewUnixSocketClient.
 func NewHTTPClient(baseURL string, client *http.Client) *Client {
 	if client == nil {
-		client = &http.Client{Timeout: 10 * time.Second}
+		client = &http.Client{Timeout: 60 * time.Second}
 	}
 	return &Client{
 		http:                client,
@@ -97,6 +111,78 @@ func NewHTTPClient(baseURL string, client *http.Client) *Client {
 // 2xx, the body is JSON-decoded into out. Non-2xx responses become an error
 // containing the upstream status and body (truncated for safety).
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
+	c.adminMu.Lock()
+	defer c.adminMu.Unlock()
+	return c.doLocked(ctx, method, path, body, out)
+}
+
+// retryableMethods are the HTTP methods our admin client retries on
+// transient failure. Caddy's admin API is idempotent on @id-keyed
+// PATCH/PUT/DELETE — running the same call twice produces the same
+// state. POSTs that target a numeric route position (e.g.
+// `/config/.../routes/0`) ARE NOT idempotent; we don't retry those.
+var retryableMethods = map[string]bool{
+	http.MethodGet:    true,
+	http.MethodPatch:  true,
+	http.MethodPut:    true,
+	http.MethodDelete: true,
+}
+
+// retryBackoff is the per-attempt sleep schedule for retried admin
+// operations. First entry is "no sleep before attempt 0".
+var retryBackoff = []time.Duration{0, 2 * time.Second, 8 * time.Second}
+
+// doLocked is the inner request loop, called with adminMu held. The
+// retry layer covers transient failures (timeouts, connection refused
+// during a Caddy reload) but not permanent errors (4xx responses, JSON
+// marshal failures, context cancellation).
+func (c *Client) doLocked(ctx context.Context, method, path string, body, out any) error {
+	if !retryableMethods[method] {
+		return c.doOnce(ctx, method, path, body, out)
+	}
+	var lastErr error
+	for attempt, backoff := range retryBackoff {
+		if attempt > 0 {
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		err := c.doOnce(ctx, method, path, body, out)
+		if err == nil {
+			return nil
+		}
+		if !isTransientCaddyError(err) {
+			return err
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("caddy: %s %s failed after %d attempts: %w",
+		method, path, len(retryBackoff), lastErr)
+}
+
+// isTransientCaddyError matches the error shapes we expect to recover
+// from on a retry: HTTP timeouts and connection refused during a
+// reload window. 4xx/5xx response bodies are NOT transient (Caddy is
+// telling us the request itself is wrong) — those bubble up.
+func isTransientCaddyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// HTTPError = a real response body Caddy returned; not transient.
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return false
+	}
+	// Anything else is a transport-layer error (timeout, conn refused,
+	// EOF mid-read) — Caddy admin is unreachable or busy, retry.
+	return true
+}
+
+// doOnce performs a single Caddy admin round-trip without retry. Callers
+// outside this file should always use do(), which adds locking + retry.
+func (c *Client) doOnce(ctx context.Context, method, path string, body, out any) error {
 	var buf io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)

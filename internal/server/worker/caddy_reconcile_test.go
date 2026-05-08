@@ -32,7 +32,7 @@ func (f *fakeReconcileStore) GetLastSuccessfulDeployment(_ context.Context, proj
 	}
 	return d, nil
 }
-func (f *fakeReconcileStore) ListDomainsForProject(_ context.Context, projectID int64) ([]string, error) {
+func (f *fakeReconcileStore) ListPrimaryDomainsForProject(_ context.Context, projectID int64) ([]string, error) {
 	return f.domains[projectID], f.domainsErr
 }
 

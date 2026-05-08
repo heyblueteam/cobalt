@@ -16,7 +16,12 @@ import (
 type CaddyReconcileStore interface {
 	ListProjects(ctx context.Context) ([]store.Project, error)
 	GetLastSuccessfulDeployment(ctx context.Context, projectID int64) (*store.Deployment, error)
-	ListDomainsForProject(ctx context.Context, projectID int64) ([]string, error)
+	// ListPrimaryDomainsForProject returns the project's primary
+	// (non-redirect) hosts. The convergence reconciler only manages the
+	// project's reverse-proxy host matchers; redirect routes are owned
+	// by separate Caddy `cobalt-redirect-*` routes and reconciled out
+	// of band by the API domain handlers.
+	ListPrimaryDomainsForProject(ctx context.Context, projectID int64) ([]string, error)
 }
 
 // CaddyReconcileTarget is the Caddy subset the reconciler talks to.
@@ -112,7 +117,7 @@ func reconcileProject(
 		return false, nil
 	}
 
-	domains, err := st.ListDomainsForProject(ctx, p.ID)
+	domains, err := st.ListPrimaryDomainsForProject(ctx, p.ID)
 	if err != nil {
 		return false, fmt.Errorf("list domains: %w", err)
 	}
