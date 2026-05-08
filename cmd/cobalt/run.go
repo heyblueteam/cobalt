@@ -68,20 +68,28 @@ Forwards stdin/stdout/stderr over WebSocket.`,
 					default:
 					}
 					n, err := os.Stdin.Read(buf)
-					if err != nil {
-						cancel()
-						return
-					}
 					if n > 0 {
 						frame := cobaltapi.RunFrame{
 							Type: cobaltapi.RunFrameStdin,
 							Data: string(buf[:n]),
 						}
 						b, _ := json.Marshal(frame)
-						if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
+						if writeErr := conn.Write(ctx, websocket.MessageText, b); writeErr != nil {
+							// Surface a write failure (the WS is gone) by
+							// cancelling so we don't sit forever waiting
+							// for an exit frame that won't arrive.
 							cancel()
 							return
 						}
+					}
+					if err != nil {
+						// EOF from stdin (no piped input, or piped input
+						// drained) just means we're done sending. Exit
+						// the goroutine without cancelling — the container
+						// can still produce output up to its own exit, and
+						// the WS read loop will tear down on the exit
+						// frame.
+						return
 					}
 				}
 			}()
@@ -97,6 +105,13 @@ Forwards stdin/stdout/stderr over WebSocket.`,
 			case <-sigCh:
 				cancel()
 				<-doneCh
+				return nil
+			case <-doneCh:
+				// Read loop ended without an exit frame (e.g. server
+				// closed the WS without one). Treat as success — the
+				// server already wrote whatever output it had to our
+				// stdout. Cancel to tear down the stdin goroutine.
+				cancel()
 				return nil
 			case <-ctx.Done():
 				<-doneCh

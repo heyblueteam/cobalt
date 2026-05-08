@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net/http"
 
@@ -24,6 +25,16 @@ func (c *Client) RunWS(ctx context.Context, project, command, service string) (*
 	}
 	wsurl := "ws" + url[4:]
 	opts := &websocket.DialOptions{
+		// WebSocket upgrade relies on hop-by-hop headers (Connection,
+		// Upgrade) that HTTP/2 doesn't carry, so we must dial over
+		// HTTP/1.1. Setting TLSNextProto to a non-nil empty map is the
+		// stdlib's documented opt-out for HTTP/2 negotiation.
+		HTTPClient: &http.Client{
+			Transport: &http.Transport{
+				ForceAttemptHTTP2: false,
+				TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+			},
+		},
 		HTTPHeader: http.Header{
 			"Authorization": {"Bearer " + c.server.APIKey},
 		},
