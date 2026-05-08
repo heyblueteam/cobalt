@@ -60,14 +60,26 @@ Examples:
 			}
 			headers := []string{"KEY", "VALUE"}
 			var rows [][]string
+			anyStale := false
 			for _, v := range vars {
+				key := v.Key
+				if v.Stale {
+					key += " *"
+					anyStale = true
+				}
 				val := v.Value
 				if !showValues {
 					val = redactEnvValue(v.Value)
 				}
-				rows = append(rows, []string{v.Key, val})
+				rows = append(rows, []string{key, val})
 			}
 			output.PrintTable(headers, rows)
+			if anyStale {
+				output.PrintLines("")
+				output.PrintLines("* updated since the last successful deploy; live")
+				output.PrintLines("  containers haven't picked it up yet. Run `cobalt deploy`")
+				output.PrintLines("  to apply.")
+			}
 			return nil
 		}),
 	}

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/store"
@@ -244,6 +245,96 @@ func setupProject(t *testing.T, e *testEnv, name string) {
 	})
 	mustStatus(t, resp, http.StatusCreated)
 	resp.Body.Close()
+}
+
+// TestListEnv_StaleFlagOnUpdatedAfterDeploy seeds a successful
+// deployment, then sets a new env var. The new var was written
+// after the deploy started, so list must mark it stale; vars set
+// before the deploy must not be flagged.
+func TestListEnv_StaleFlagOnUpdatedAfterDeploy(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	// Pre-deploy var: written before the deploy "started".
+	resp := e.do(http.MethodPost, "/api/projects/api/env", cobaltapi.EnvSetRequest{
+		Vars: map[string]string{"OLD_VAR": "1"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Seed a successful deployment whose started_at is now.
+	pid, err := e.db.GetProjectByName(context.Background(), "api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	depID, err := e.db.CreateDeployment(context.Background(), store.Deployment{
+		ProjectID: pid.ID, Number: 1, Status: cobaltapi.StateQueued,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// SetDeploymentStatus to fetching stamps started_at; success
+	// stamps finished_at. We need started_at set.
+	_ = e.db.SetDeploymentStatus(context.Background(), depID, cobaltapi.StateFetching)
+	_ = e.db.SetDeploymentStatus(context.Background(), depID, cobaltapi.StateSuccess)
+
+	// Wait long enough for any post-deploy env writes to land at a
+	// later unix-second than the deployment's started_at.
+	time.Sleep(1100 * time.Millisecond)
+
+	// Post-deploy var: should be flagged stale.
+	resp = e.do(http.MethodPost, "/api/projects/api/env", cobaltapi.EnvSetRequest{
+		Vars: map[string]string{"NEW_VAR": "2"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodGet, "/api/projects/api/env", nil)
+	mustStatus(t, resp, http.StatusOK)
+	got := decode[[]cobaltapi.EnvVar](t, resp)
+	if len(got) != 2 {
+		t.Fatalf("got %d vars, want 2", len(got))
+	}
+	for _, v := range got {
+		switch v.Key {
+		case "OLD_VAR":
+			if v.Stale {
+				t.Errorf("OLD_VAR should not be stale (set before deploy): %+v", v)
+			}
+		case "NEW_VAR":
+			if !v.Stale {
+				t.Errorf("NEW_VAR should be stale (set after deploy): %+v", v)
+			}
+		default:
+			t.Errorf("unexpected key %q", v.Key)
+		}
+		if v.UpdatedAt == 0 {
+			t.Errorf("%s: UpdatedAt is zero", v.Key)
+		}
+	}
+}
+
+// TestListEnv_NoStalenessUntilFirstDeploy asserts that a project
+// with no successful deployment yet sees Stale=false on every var,
+// even though their UpdatedAt is set.
+func TestListEnv_NoStalenessUntilFirstDeploy(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/env", cobaltapi.EnvSetRequest{
+		Vars: map[string]string{"FOO": "1"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodGet, "/api/projects/api/env", nil)
+	mustStatus(t, resp, http.StatusOK)
+	got := decode[[]cobaltapi.EnvVar](t, resp)
+	if len(got) != 1 || got[0].Stale {
+		t.Errorf("pre-deploy stale flag set: %+v", got)
+	}
 }
 
 func TestEnvCRUD(t *testing.T) {

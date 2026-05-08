@@ -10,7 +10,12 @@ import (
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
-// ListEnv implements GET /api/projects/{name}/env.
+// ListEnv implements GET /api/projects/{name}/env. Each entry's
+// `stale` flag is true when the var was written after the project's
+// last successful deployment started — i.e. the running containers
+// were built with a different (or absent) value and haven't picked
+// up the change yet. Always false until the project has at least
+// one successful deploy.
 func (h *Handler) ListEnv(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.projectFromPath(w, r)
 	if !ok {
@@ -22,9 +27,27 @@ func (h *Handler) ListEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+
+	// Find the live deployment's start time for the staleness
+	// computation. No-deploy yet → no staleness signal possible.
+	var liveStartedAt int64
+	if dep, err := h.DB.GetLastSuccessfulDeployment(r.Context(), p.ID); err == nil && dep.StartedAt != nil {
+		liveStartedAt = *dep.StartedAt
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		h.Log.Warn("api: list env: probe live deployment", "error", err)
+	}
+
 	out := make([]cobaltapi.EnvVar, 0, len(vars))
 	for _, v := range vars {
-		out = append(out, cobaltapi.EnvVar{Key: v.Key, Value: v.Value})
+		entry := cobaltapi.EnvVar{
+			Key:       v.Key,
+			Value:     v.Value,
+			UpdatedAt: v.UpdatedAt,
+		}
+		if liveStartedAt > 0 && v.UpdatedAt > liveStartedAt {
+			entry.Stale = true
+		}
+		out = append(out, entry)
 	}
 	writeJSON(w, out)
 }

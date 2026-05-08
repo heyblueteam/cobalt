@@ -11,13 +11,16 @@ import (
 )
 
 type EnvVar struct {
-	Key   string
-	Value string
+	Key       string
+	Value     string
+	UpdatedAt int64 // unix seconds; surfaced via the API so clients can
+	// detect staleness (env updated since last successful deploy =
+	// running containers haven't picked it up yet).
 }
 
 func (db *DB) ListEnvVars(ctx context.Context, projectID int64) ([]EnvVar, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(`
-		SELECT key, value FROM env_vars WHERE project_id = ? ORDER BY key
+		SELECT key, value, updated_at FROM env_vars WHERE project_id = ? ORDER BY key
 	`, projectID)
 	if err != nil {
 		return nil, err
@@ -40,7 +43,11 @@ func (db *DB) ListEnvVars(ctx context.Context, projectID int64) ([]EnvVar, error
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, EnvVar{Key: toString(row[0]), Value: val})
+		out = append(out, EnvVar{
+			Key:       toString(row[0]),
+			Value:     val,
+			UpdatedAt: toInt64(row[2]),
+		})
 	}
 	return out, nil
 }

@@ -4,6 +4,16 @@ package cobaltapi
 type EnvVar struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	// UpdatedAt is the unix-second timestamp of the most recent
+	// write to this var. Omitted from set responses where the
+	// server doesn't compute it.
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
+	// Stale is true when the var was updated after the project's
+	// last successful deployment — the running containers were
+	// built with a different value and haven't picked this up.
+	// Computed server-side. Always false on a project that has no
+	// successful deployment yet (nothing to be stale relative to).
+	Stale bool `json:"stale,omitempty"`
 }
 
 // EnvSetRequest is the body of POST /api/projects/{name}/env.
