@@ -1,34 +1,16 @@
-# Cobalt deployment stack — written by `cobalt init`.
+# Cobalt deployment stack — deployed by `cobalt init` via
+# `docker stack deploy -c docker-compose.yml cobalt`.
 #
-# Substitutions are done by docker compose from the .env file written
-# alongside this file: COBALT_IMAGE, COBALT_PUBLIC_HOST, COBALT_DATA_DIR.
-
-x-cobalt-base: &cobalt-base
-  image: ${COBALT_IMAGE}
-  depends_on:
-    rqlite:
-      condition: service_healthy
-  volumes:
-    - cobalt-data:${COBALT_DATA_DIR}
-    - caddy-socket:/cobalt/caddy-socket
-    - /var/run/docker.sock:/var/run/docker.sock
-    # AES key used to encrypt env values at rest. The host file lives
-    # outside the cobalt-data volume so a backup of that volume alone
-    # yields ciphertext only. Read-only inside the container; the
-    # /run/secrets/ path matches the swarm-secret convention so a
-    # later migration to `docker stack deploy` only changes this
-    # mount, not the daemon code.
-    - /etc/cobalt/encryption.key:/run/secrets/cobalt_encryption_key:ro
-  environment:
-    COBALT_DATA_DIR: ${COBALT_DATA_DIR}
-  restart: unless-stopped
-  command: >
-    server
-    --addr 0.0.0.0:8080
-    --rqlite-url http://rqlite:4001
-    --data-dir ${COBALT_DATA_DIR}
-    --caddy-socket /cobalt/caddy-socket/caddy.sock
-    --public-host ${COBALT_PUBLIC_HOST}
+# Variables (COBALT_IMAGE, COBALT_PUBLIC_HOST, COBALT_DATA_DIR) are
+# substituted from the calling shell environment; cobalt init sources
+# /opt/cobalt/.env before invoking stack deploy, since stack deploy —
+# unlike compose up — doesn't auto-load .env files.
+#
+# Stack-deploy specifics: services use deploy.* blocks for restart
+# policy and replication; depends_on is preserved for the (rare)
+# `docker compose up` workflow but isn't honored by swarm. Bind-mount
+# paths are absolute because relative paths aren't reliably resolved
+# in stack mode.
 
 services:
   rqlite:
@@ -41,7 +23,16 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      # Pin to the manager so the named volume's data persists across
+      # restarts. Multi-manager swarms would need an external volume
+      # driver (NFS, Longhorn, etc.) to lift this constraint.
+      placement:
+        constraints:
+          - node.role == manager
 
   caddy:
     image: caddy:2.7.6
@@ -49,31 +40,75 @@ services:
       - caddy-data:/data
       - caddy-config:/config
       - caddy-socket:/cobalt/caddy-socket
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/cobalt/Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
-      - "80:80"
-      - "443:443"
+      # Use host-mode so client IPs reach Caddy directly (auto-HTTPS
+      # HTTP-01 challenge needs the inbound IP, and access logs are
+      # less useful behind the swarm routing mesh).
+      - target: 80
+        published: 80
+        mode: host
+      - target: 443
+        published: 443
+        mode: host
     environment:
       COBALT_PUBLIC_HOST: ${COBALT_PUBLIC_HOST}
     command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
-    restart: unless-stopped
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      placement:
+        constraints:
+          - node.role == manager
     depends_on:
       - rqlite
-    # Caddy joins cobalt-main so it can resolve swarm service hostnames
-    # (e.g. e2e-6-web) for reverse_proxy upstreams. The network is
-    # pre-created by `cobalt init` before this stack starts.
+    # Caddy joins cobalt-main (an external attachable overlay
+    # pre-created by `cobalt init`) so it can resolve swarm service
+    # hostnames (e.g. e2e-6-web) for reverse_proxy upstreams.
     networks:
       - default
       - cobalt-main
 
   cobalt:
-    <<: *cobalt-base
-    labels:
-      - "cobalt.daemon=true"
+    image: ${COBALT_IMAGE}
+    # depends_on is preserved for the local-dev `docker compose up`
+    # workflow — `docker stack deploy` ignores it. The daemon's
+    # rqlite client retries on connection refused, so swarm not
+    # honoring depends_on isn't a correctness issue.
+    depends_on:
+      - rqlite
+    volumes:
+      - cobalt-data:${COBALT_DATA_DIR}
+      - caddy-socket:/cobalt/caddy-socket
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      COBALT_DATA_DIR: ${COBALT_DATA_DIR}
+    secrets:
+      # Mounted as tmpfs at /run/secrets/cobalt_encryption_key. The
+      # bytes live in the swarm Raft log (Docker-encrypted at rest)
+      # and never touch a disk-backed FS inside the container.
+      - cobalt_encryption_key
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - "cobalt.daemon=true"
+    command: >
+      server
+      --addr 0.0.0.0:8080
+      --rqlite-url http://rqlite:4001
+      --data-dir ${COBALT_DATA_DIR}
+      --caddy-socket /cobalt/caddy-socket/caddy.sock
+      --public-host ${COBALT_PUBLIC_HOST}
 
 networks:
   default:
-    driver: bridge
+    driver: overlay
   cobalt-main:
     external: true
     name: cobalt-main
@@ -84,3 +119,7 @@ volumes:
   caddy-data:
   caddy-config:
   caddy-socket:
+
+secrets:
+  cobalt_encryption_key:
+    external: true

@@ -190,42 +190,35 @@ Examples:
 				return fmt.Errorf("ensure cobalt-main network: %w", netCheck.Err)
 			}
 
-			// /etc/cobalt/encryption.key is the AES-GCM key the daemon
-			// uses to encrypt env values at rest. We'd ideally use a
-			// Docker Swarm secret (raft-log-encrypted, tmpfs-mounted)
-			// but `docker compose up` doesn't support external swarm
-			// secrets — that needs `docker stack deploy`, which is a
-			// future migration. The host-fs bind-mount still satisfies
-			// the main goal: storage separation from the data volume,
-			// so a backup of /var/lib/docker/volumes/ alone yields
-			// ciphertext only.
+			// cobalt_encryption_key is a Docker Swarm secret holding the
+			// AES-256 key the daemon uses to encrypt env values at
+			// rest. The bytes live in the swarm Raft log (encrypted
+			// by Docker) and are mounted into the daemon as tmpfs at
+			// /run/secrets/cobalt_encryption_key. Backing up the
+			// cobalt-data volume yields ciphertext only; the key
+			// itself isn't on disk anywhere outside the Raft log.
 			//
-			// The path inside the container is /run/secrets/cobalt_encryption_key,
-			// matching the swarm-secret convention, so when we migrate
-			// to stack deploy the daemon code doesn't have to change —
-			// only the compose mount source.
-			//
-			// Idempotent: reuse the existing key on subsequent inits.
-			keyCheck := conn.Run(ctx,
-				"if [ -s /etc/cobalt/encryption.key ]; then "+
+			// Idempotent: reuse the existing secret on subsequent inits.
+			// Rotation is a separate operator flow.
+			secretCheck := conn.Run(ctx,
+				"if docker secret inspect cobalt_encryption_key >/dev/null 2>&1; then "+
 					"  echo present; "+
 					"else "+
-					"  install -d -m 0700 /etc/cobalt && "+
-					"  head -c 32 /dev/urandom > /etc/cobalt/encryption.key && "+
-					"  chmod 0600 /etc/cobalt/encryption.key && "+
+					"  head -c 32 /dev/urandom | docker secret create cobalt_encryption_key - >/dev/null && "+
 					"  echo generated; "+
 					"fi",
 			)
-			if keyCheck.Err != nil {
-				return fmt.Errorf("ensure encryption.key: %w", keyCheck.Err)
+			if secretCheck.Err != nil {
+				return fmt.Errorf("ensure cobalt_encryption_key secret: %w", secretCheck.Err)
 			}
-			if strings.Contains(keyCheck.Stdout, "present") {
-				fmt.Fprintf(output.Stderr, "[3d/8] Encryption key (/etc/cobalt/encryption.key) present.\n")
+			if strings.Contains(secretCheck.Stdout, "present") {
+				fmt.Fprintf(output.Stderr, "[3d/8] Encryption key (cobalt_encryption_key) present.\n")
 			} else {
 				fmt.Fprintf(output.Stderr,
-					"[3d/8] Encryption key (/etc/cobalt/encryption.key) generated.\n"+
-						"        Back this up offline — env vars encrypted with it cannot be\n"+
-						"        recovered if both this host and your backup are lost.\n")
+					"[3d/8] Encryption key (cobalt_encryption_key) generated.\n"+
+						"        It lives in the swarm Raft log; rotate via\n"+
+						"        `docker secret create cobalt_encryption_key_v2 -` + future\n"+
+						"        cobalt admin rotate-key flow.\n")
 			}
 
 			if localImage != "" {
@@ -281,13 +274,20 @@ Examples:
 				}
 			}
 
-			fmt.Fprintf(output.Stderr, "[6/8] Starting Docker Compose stack...\n")
-			result := conn.Run(ctx, "cd /opt/cobalt && docker compose up -d")
+			fmt.Fprintf(output.Stderr, "[6/8] Deploying cobalt swarm stack...\n")
+			// `docker stack deploy` doesn't auto-load .env files the
+			// way `docker compose up` does, so source the file into
+			// the calling shell first. set -a / set +a auto-exports
+			// every assignment without us listing the var names.
+			result := conn.Run(ctx,
+				"set -a && . /opt/cobalt/.env && set +a && "+
+					"docker stack deploy --with-registry-auth -c /opt/cobalt/docker-compose.yml cobalt",
+			)
 			if result.Err != nil {
-				return fmt.Errorf("docker compose up failed: %w", result.Err)
+				return fmt.Errorf("docker stack deploy failed: %w", result.Err)
 			}
 			if result.ExitCode != 0 {
-				return fmt.Errorf("docker compose up failed (exit %d): %s", result.ExitCode, result.Stderr)
+				return fmt.Errorf("docker stack deploy failed (exit %d): %s", result.ExitCode, result.Stderr)
 			}
 
 			fmt.Fprintf(output.Stderr, "[7/8] Waiting for cobalt to be healthy...\n")
@@ -419,16 +419,51 @@ func waitForHealthy(ctx context.Context, url string, timeout time.Duration) erro
 	}
 }
 
-// readBootstrapKey reads the daemon's first-boot bootstrap API key from
-// inside the cobalt container. The daemon writes it to
-// {dataDir}/bootstrap-api-key (mode 0600) the first time it starts against
-// an empty apikeys table, then never recreates it.
+// daemonExec runs cmd inside the live cobalt daemon container. It
+// resolves the swarm task's container ID by docker-ps filter on the
+// stack-managed service label so we don't have to know the dynamic
+// task suffix swarm appends.
 //
-// We exec into the container rather than reading the host volume mount
-// directly so we don't have to know docker's volume layout on the host.
+// Used by readBootstrapKey / removeBootstrapKey now that the stack is
+// deployed with `docker stack deploy` instead of `docker compose up`
+// (compose-exec by service name doesn't apply).
+func daemonExec(ctx context.Context, conn *ssh.Conn, cmd string) *ssh.Result {
+	const wrapped = "id=$(docker ps --filter label=com.docker.swarm.service.name=cobalt_cobalt -q | head -1); " +
+		"if [ -z \"$id\" ]; then echo 'cobalt_cobalt task not running' >&2; exit 1; fi; " +
+		"docker exec %q sh -c %q"
+	// We don't actually use %q here — that would force shell quoting of
+	// the inner command twice. Inline the command into a single sh -c.
+	full := "id=$(docker ps --filter label=com.docker.swarm.service.name=cobalt_cobalt -q | head -1); " +
+		"if [ -z \"$id\" ]; then echo 'cobalt_cobalt task not running' >&2; exit 1; fi; " +
+		"docker exec \"$id\" sh -c " + shellSingleQuote(cmd)
+	_ = wrapped // silence linter; comment block above documents the shape
+	return conn.Run(ctx, full)
+}
+
+// shellSingleQuote wraps s in single quotes for a POSIX shell,
+// escaping any embedded single quotes via the standard `'\''` trick.
+// (Mirrors the helper of the same name in internal/ssh/ssh.go to keep
+// init.go free of new internal-package imports for this one-liner.)
+func shellSingleQuote(s string) string {
+	out := make([]byte, 0, len(s)+2)
+	out = append(out, '\'')
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\'' {
+			out = append(out, '\'', '\\', '\'', '\'')
+			continue
+		}
+		out = append(out, s[i])
+	}
+	out = append(out, '\'')
+	return string(out)
+}
+
+// readBootstrapKey reads the daemon's first-boot bootstrap API key
+// from inside the live cobalt task. The daemon writes it to
+// {dataDir}/bootstrap-api-key (mode 0600) the first time it starts
+// against an empty apikeys table, then never recreates it.
 func readBootstrapKey(ctx context.Context, conn *ssh.Conn) (string, error) {
-	const cmd = "cd /opt/cobalt && docker compose exec -T cobalt cat /cobalt/data/bootstrap-api-key"
-	r := conn.Run(ctx, cmd)
+	r := daemonExec(ctx, conn, "cat /cobalt/data/bootstrap-api-key")
 	if r.Err != nil {
 		return "", fmt.Errorf("ssh exec: %w", r.Err)
 	}
@@ -442,14 +477,12 @@ func readBootstrapKey(ctx context.Context, conn *ssh.Conn) (string, error) {
 	return key, nil
 }
 
-// removeBootstrapKey deletes the bootstrap-api-key file from the daemon's
-// data volume. Called after the local cliconfig has been saved so the
-// key only ever lives in two places: in our local config, and (hashed)
-// in the daemon's apikeys table. Once the apikeys row exists, the
-// daemon's first-boot path won't recreate the file.
+// removeBootstrapKey deletes the bootstrap-api-key file from the
+// daemon's data volume. Called after the local cliconfig has been
+// saved so the key only ever lives in two places: in our local
+// config, and (hashed) in the daemon's apikeys table.
 func removeBootstrapKey(ctx context.Context, conn *ssh.Conn) error {
-	const cmd = "cd /opt/cobalt && docker compose exec -T cobalt rm -f /cobalt/data/bootstrap-api-key"
-	r := conn.Run(ctx, cmd)
+	r := daemonExec(ctx, conn, "rm -f /cobalt/data/bootstrap-api-key")
 	if r.Err != nil {
 		return fmt.Errorf("ssh exec: %w", r.Err)
 	}

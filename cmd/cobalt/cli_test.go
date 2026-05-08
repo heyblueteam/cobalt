@@ -257,8 +257,17 @@ func TestEmbeddedInitAssets(t *testing.T) {
 	if !contains(initComposeTemplate, "image: caddy:") {
 		t.Errorf("compose template missing caddy image")
 	}
-	if !contains(initComposeTemplate, "unless-stopped") {
-		t.Errorf("compose template missing restart policy")
+	// stack-deploy syntax: deploy.restart_policy.condition: any.
+	if !contains(initComposeTemplate, "condition: any") {
+		t.Errorf("compose template missing deploy.restart_policy")
+	}
+	// Encryption key delivered as a real swarm secret, not a host
+	// bind mount any longer.
+	if !contains(initComposeTemplate, "cobalt_encryption_key") {
+		t.Errorf("compose template missing cobalt_encryption_key secret")
+	}
+	if !contains(initComposeTemplate, "external: true") {
+		t.Errorf("compose template missing external: true (cobalt-main / secret declarations)")
 	}
 	for name, body := range map[string]string{
 		"auto-https": initCaddyfileAutoHTTPS,
