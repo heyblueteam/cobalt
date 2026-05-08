@@ -53,6 +53,11 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
 	}
 	defer closeOut()
 
+	// Header so even a no-build deploy (all services declare an explicit
+	// image, no Dockerfile) leaves a useful trace in the log file.
+	fmt.Fprintf(out, "==> deploy #%d for project %q started\n", dep.Number, project.Name)
+	defer fmt.Fprintf(out, "==> deploy #%d ended\n", dep.Number)
+
 	envVars, err := o.DB.EnvVarMap(ctx, project.ID)
 	if err != nil {
 		return fmt.Errorf("deploy: env vars: %w", err)
@@ -80,7 +85,7 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) error {
 		log.Warn("set status building", "error", err)
 	}
 
-	built, err := o.Builder.Build(ctx, *project, dep, ws)
+	built, err := o.Builder.Build(ctx, *project, dep, ws, out)
 	if err != nil {
 		return fmt.Errorf("deploy: build: %w", err)
 	}

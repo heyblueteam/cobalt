@@ -189,7 +189,7 @@ type fakeBuild struct {
 	err   error
 }
 
-func (f *fakeBuild) Build(_ context.Context, _ store.Project, _ store.Deployment, _ *Workspace) ([]BuiltService, error) {
+func (f *fakeBuild) Build(_ context.Context, _ store.Project, _ store.Deployment, _ *Workspace, _ io.Writer) ([]BuiltService, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

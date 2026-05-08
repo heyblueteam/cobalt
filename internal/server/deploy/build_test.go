@@ -61,7 +61,7 @@ func TestBuilder_BuildsEachUniqueImageOnce(t *testing.T) {
 	b := NewBuilder(d, &fakeEnv{}, "/data")
 
 	out, err := b.Build(context.Background(), store.Project{ID: 7, Name: "api"},
-		store.Deployment{Number: 3}, ws)
+		store.Deployment{Number: 3}, ws, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -99,6 +99,7 @@ func TestBuilder_PassesCacheDir(t *testing.T) {
 		store.Project{ID: 42, Name: "api"},
 		store.Deployment{Number: 5},
 		&Workspace{Path: "/tmp/repo", Cobaltfile: cf},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -125,7 +126,7 @@ func TestBuilder_StaticOnlySkipsBuild(t *testing.T) {
 	b := NewBuilder(d, &fakeEnv{}, "")
 
 	out, err := b.Build(context.Background(), store.Project{ID: 1, Name: "x"},
-		store.Deployment{Number: 1}, &Workspace{Cobaltfile: cf})
+		store.Deployment{Number: 1}, &Workspace{Cobaltfile: cf}, nil)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -154,6 +155,7 @@ func TestBuilder_PropagatesEnvSecrets(t *testing.T) {
 		store.Project{ID: 1, Name: "x"},
 		store.Deployment{Number: 1, NoCache: true},
 		&Workspace{Cobaltfile: cf},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -187,6 +189,7 @@ func TestBuilder_UnknownImageErrors(t *testing.T) {
 		store.Project{Name: "x"},
 		store.Deployment{Number: 1},
 		&Workspace{Cobaltfile: cf},
+		nil,
 	)
 	if err == nil {
 		t.Error("expected error")
@@ -206,6 +209,7 @@ func TestBuilder_PropagatesDockerError(t *testing.T) {
 		store.Project{ID: 1, Name: "x"},
 		store.Deployment{Number: 1},
 		&Workspace{Cobaltfile: cf},
+		nil,
 	)
 	if err == nil {
 		t.Error("expected error from docker")

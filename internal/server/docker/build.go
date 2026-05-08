@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 )
@@ -23,6 +24,12 @@ type BuildOpts struct {
 	// cache between projects, so two projects sharing a repo can't poison
 	// each other's builds (improvement E from the deploy-flow audit).
 	CacheDir string
+	// Output, when non-nil, captures buildx's stdout AND stderr (interleaved
+	// — buildkit writes its progress to stderr, image layer progress to
+	// stdout). Callers tee this into the per-deployment log file so
+	// `cobalt deployments output` and the SSE follow-stream have content
+	// to render.
+	Output io.Writer
 }
 
 // Build builds an image and tags it as InternalImageName(...).
@@ -81,7 +88,7 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	}
 	args = append(args, contextDir)
 
-	if err := c.run(ctx, args...); err != nil {
+	if err := c.runner.Run(ctx, args, nil, opts.Output, opts.Output); err != nil {
 		return "", fmt.Errorf("docker.Build %s: %w", tag, err)
 	}
 	return tag, nil

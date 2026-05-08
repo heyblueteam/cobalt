@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strconv"
 
@@ -25,8 +26,12 @@ type BuiltService struct {
 // Builder turns a workspace + parsed cobaltfile into a set of built
 // services ready for cutover. Different services may share an image; we
 // build each unique image once.
+//
+// out, when non-nil, receives buildx's progress output (stdout + stderr
+// interleaved) so the orchestrator can tee it into the per-deployment
+// log file.
 type Builder interface {
-	Build(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace) ([]BuiltService, error)
+	Build(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace, out io.Writer) ([]BuiltService, error)
 }
 
 // EnvLister is the subset of *store.DB the builder uses to gather build
@@ -53,7 +58,7 @@ type dockerBuilder struct {
 	dataDir string
 }
 
-func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace) ([]BuiltService, error) {
+func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace, out io.Writer) ([]BuiltService, error) {
 	if ws == nil || ws.Cobaltfile == nil {
 		return nil, fmt.Errorf("deploy.Build: workspace required")
 	}
@@ -82,6 +87,9 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 			return nil, fmt.Errorf("deploy.Build: service references unknown image %q", svc.Image)
 		}
 
+		if out != nil {
+			fmt.Fprintf(out, "==> building image %q (Dockerfile=%s context=%s)\n", svc.Image, img.Dockerfile, img.Context)
+		}
 		opts := docker.BuildOpts{
 			ProjectID:        project.ID,
 			ProjectName:      project.Name,
@@ -92,6 +100,7 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 			EnvSecrets:       envSecrets,
 			NoCache:          dep.NoCache,
 			CacheDir:         cacheDir,
+			Output:           out,
 		}
 		tag, err := b.docker.Build(ctx, opts)
 		if err != nil {
@@ -100,15 +109,15 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 		tagByImage[svc.Image] = tag
 	}
 
-	out := make([]BuiltService, 0, len(ws.Cobaltfile.Services))
+	built := make([]BuiltService, 0, len(ws.Cobaltfile.Services))
 	for name, svc := range ws.Cobaltfile.Services {
-		out = append(out, BuiltService{
+		built = append(built, BuiltService{
 			Name:     name,
 			Service:  svc,
 			ImageTag: tagByImage[svc.Image],
 		})
 	}
-	return out, nil
+	return built, nil
 }
 
 // needsBuild mirrors cobaltfile's "this service needs an image" rule.
