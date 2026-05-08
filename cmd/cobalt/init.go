@@ -71,23 +71,27 @@ Examples:
 
 			fmt.Fprintf(output.Stderr, "[1/8] Connecting to %s...\n", target)
 
+			// Auth precedence: explicit flags first, then ambient SSH agent,
+			// then interactive prompt. Without this order an SSH_AUTH_SOCK in
+			// the environment silently overrides --password, which has bitten us.
 			var auth ssh.AuthMethod
-			if keyPath != "" {
+			switch {
+			case keyPath != "":
 				auth = ssh.PublicKeyAuth{KeyPath: keyPath, Passphrase: keyPassphrase}
-			} else if socket := ssh.DefaultAgentSocket(); socket != "" {
-				if conn, err := net.Dial("unix", socket); err == nil {
-					conn.Close()
-					auth = ssh.AgentAuth{Socket: socket}
+			case password != "":
+				auth = ssh.PasswordAuth{Password: password}
+			default:
+				if socket := ssh.DefaultAgentSocket(); socket != "" {
+					if conn, err := net.Dial("unix", socket); err == nil {
+						conn.Close()
+						auth = ssh.AgentAuth{Socket: socket}
+					}
 				}
 			}
 
-			if auth == nil && password != "" {
-				auth = ssh.PasswordAuth{Password: password}
-			}
-
 			if auth == nil {
-				password := ssh.AskPassword("SSH password")
-				auth = ssh.PasswordAuth{Password: password}
+				p := ssh.AskPassword("SSH password")
+				auth = ssh.PasswordAuth{Password: p}
 			}
 
 			if user == "" {

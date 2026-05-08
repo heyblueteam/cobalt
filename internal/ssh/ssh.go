@@ -68,14 +68,10 @@ func (a AgentAuth) auth() []ssh.AuthMethod {
 	if err != nil {
 		return []ssh.AuthMethod{}
 	}
-	defer conn.Close()
-
-	agentClient := agent.NewClient(conn)
-	signers, err := agentClient.Signers()
-	if err != nil || len(signers) == 0 {
-		return []ssh.AuthMethod{}
-	}
-	return []ssh.AuthMethod{ssh.PublicKeys(signers...)}
+	// Intentionally do not close conn: the SSH library invokes the
+	// signer callback during the handshake, which requires a live
+	// agent connection. The OS reaps the fd on process exit.
+	return []ssh.AuthMethod{ssh.PublicKeysCallback(agent.NewClient(conn).Signers)}
 }
 
 func DefaultAgentSocket() string {
@@ -166,6 +162,10 @@ func (c *Conn) Run(ctx context.Context, cmd string) *Result {
 	return &Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: 0}
 }
 
+// ScpTo uploads localPath to remotePath by streaming the file contents into
+// a remote `cat > path` shell redirect. Not the SCP wire protocol — just a
+// trivial pipe-into-file that works whether or not scp(1) is installed on
+// the remote. Creates the parent directory and applies the local file's mode.
 func (c *Conn) ScpTo(localPath, remotePath string) error {
 	file, err := os.Open(localPath)
 	if err != nil {
@@ -188,35 +188,49 @@ func (c *Conn) ScpTo(localPath, remotePath string) error {
 	if err != nil {
 		return err
 	}
-	defer stdin.Close()
 
 	var errBuf bytes.Buffer
 	session.Stderr = &errBuf
 
-	mkdirCmd := fmt.Sprintf(`sudo /bin/sh -c 'mkdir -p "$(dirname '%s')" && cat > '%s' && chmod %o '%s'<'`, remotePath, remotePath, stat.Mode().Perm(), remotePath)
-	if err := session.Start(mkdirCmd); err != nil {
-		return fmt.Errorf("start scp: %w", err)
-	}
-
-	header := fmt.Sprintf("C%04o %d %s\n", stat.Mode().Perm(), stat.Size(), remotePath)
-	if _, err := stdin.Write([]byte(header)); err != nil {
-		return fmt.Errorf("write header: %w", err)
+	rq := shellSingleQuote(remotePath)
+	dq := shellSingleQuote(filepathDir(remotePath))
+	cmd := fmt.Sprintf("mkdir -p %s && cat > %s && chmod %o %s", dq, rq, stat.Mode().Perm(), rq)
+	if err := session.Start(cmd); err != nil {
+		return fmt.Errorf("start upload: %w", err)
 	}
 
 	if _, err := io.Copy(stdin, file); err != nil {
+		stdin.Close()
 		return fmt.Errorf("copy data: %w", err)
 	}
-
-	_, err = stdin.Write([]byte("\x00"))
-	if err != nil {
-		return fmt.Errorf("write terminator: %w", err)
+	if err := stdin.Close(); err != nil {
+		return fmt.Errorf("close stdin: %w", err)
 	}
 
-	err = session.Wait()
-	if err != nil {
-		return fmt.Errorf("scp: %v: %s", err, errBuf.String())
+	if err := session.Wait(); err != nil {
+		return fmt.Errorf("upload: %v: %s", err, errBuf.String())
 	}
 	return nil
+}
+
+// shellSingleQuote wraps s in single quotes for a POSIX shell, escaping any
+// embedded single quotes via the standard `'\''` trick.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// filepathDir returns everything before the last '/' in p, or "." if there
+// is no slash. Avoids importing path/filepath which on Windows would use '\\'.
+func filepathDir(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' {
+			if i == 0 {
+				return "/"
+			}
+			return p[:i]
+		}
+	}
+	return "."
 }
 
 func ParseSSHURL(raw string) (user, host string) {
