@@ -187,6 +187,11 @@ Examples:
 			for _, v := range result {
 				output.PrintLines(fmt.Sprintf("Set %s=%s", v.Key, v.Value))
 			}
+			if !redeploy {
+				output.PrintLines("")
+				output.PrintLines("Note: live containers won't see this until next deploy.")
+				output.PrintLines("      Pass --redeploy to deploy now, or run `cobalt deploy`.")
+			}
 			return nil
 		}),
 	}
@@ -199,10 +204,12 @@ func newEnvRemoveCmd() *cobra.Command {
 		Use:   "remove <KEY>",
 		Short: "Remove an environment variable",
 		Long: `Removes an environment variable from a project. Use --yes to skip the
-confirmation prompt.
+confirmation prompt. Pass --redeploy to apply the removal to live
+containers immediately.
 
 Examples:
-  cobalt env remove FOO --project api --yes`,
+  cobalt env remove FOO --project api --yes
+  cobalt env remove FOO --project api --yes --redeploy`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			key := args[0]
@@ -212,12 +219,22 @@ Examples:
 			if err := confirm(cmd, "Remove env var \""+key+"\"?"); err != nil {
 				return err
 			}
+			redeploy, _ := cmd.Flags().GetBool("redeploy")
 			pc, err := newProjectClient(cmd)
 			if err != nil {
 				return err
 			}
-			return pc.DeleteEnvVar(cmd.Context(), pc.WrapProject(), key)
+			if err := pc.DeleteEnvVar(cmd.Context(), pc.WrapProject(), key, redeploy); err != nil {
+				return err
+			}
+			if !output.IsJSON() && !redeploy {
+				output.PrintLines("")
+				output.PrintLines("Note: live containers won't see this until next deploy.")
+				output.PrintLines("      Pass --redeploy to deploy now, or run `cobalt deploy`.")
+			}
+			return nil
 		}),
 	}
+	cmd.Flags().Bool("redeploy", false, "enqueue a fresh deployment after the env change")
 	return cmd
 }

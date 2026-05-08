@@ -31,6 +31,10 @@ func (c *Client) SetEnvVars(ctx context.Context, project string, req cobaltapi.E
 	return vars, nil
 }
 
-func (c *Client) DeleteEnvVar(ctx context.Context, project, key string) error {
-	return c.del(ctx, fmt.Sprintf("/api/projects/%s/env/%s", project, key))
+func (c *Client) DeleteEnvVar(ctx context.Context, project, key string, redeploy bool) error {
+	path := fmt.Sprintf("/api/projects/%s/env/%s", project, key)
+	if redeploy {
+		path += "?redeploy=true"
+	}
+	return c.del(ctx, path)
 }
