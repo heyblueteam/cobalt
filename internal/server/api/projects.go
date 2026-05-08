@@ -138,7 +138,9 @@ func (h *Handler) RenameProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // DeleteProject implements DELETE /api/projects/{name}. Cascades remove
-// env_vars, domains, deployments, command_runs via FK.
+// env_vars, domains, deployments, command_runs via FK, and best-effort
+// removes the on-disk repo + deploy logs for the project so a later
+// project re-created with the same name doesn't inherit stale history.
 func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.projectFromPath(w, r)
 	if !ok {
@@ -149,7 +151,25 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	h.cleanupProjectArtifacts(p.Name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// cleanupProjectArtifacts removes the on-disk paths a project owns. Failures
+// are logged but do not fail the API call — the DB row is already gone, and
+// stale dirs are recoverable by the operator.
+func (h *Handler) cleanupProjectArtifacts(projectName string) {
+	if h.DataDir == "" {
+		return
+	}
+	for _, p := range []string{
+		filepath.Join(h.DataDir, "projects", projectName),
+		filepath.Join(h.DataDir, "logs", "deployments", projectName),
+	} {
+		if err := os.RemoveAll(p); err != nil {
+			h.Log.Warn("api: delete project: remove dir", "path", p, "error", err)
+		}
+	}
 }
 
 // projectToAPI converts a store.Project to its public shape.

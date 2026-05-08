@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -21,27 +23,33 @@ import (
 // dispatcher is OK; api.go tolerates it).
 
 type testEnv struct {
-	t      *testing.T
-	srv    *httptest.Server
-	db     *store.DB
-	queue  *deploy.Queue
-	client *http.Client
+	t       *testing.T
+	srv     *httptest.Server
+	db      *store.DB
+	queue   *deploy.Queue
+	client  *http.Client
+	dataDir string
 }
 
 func newEnv(t *testing.T) *testEnv {
+	return newEnvWithDataDir(t, "")
+}
+
+func newEnvWithDataDir(t *testing.T, dataDir string) *testEnv {
 	t.Helper()
 	db := openTestDB(t)
 	q := deploy.NewQueue(db)
 	mux := http.NewServeMux()
 	h := &Handler{
-		DB:    db,
-		Queue: q,
-		Log:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DB:      db,
+		Queue:   q,
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir: dataDir,
 	}
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &testEnv{t: t, srv: srv, db: db, queue: q, client: srv.Client()}
+	return &testEnv{t: t, srv: srv, db: db, queue: q, client: srv.Client(), dataDir: dataDir}
 }
 
 func (e *testEnv) do(method, path string, body any) *http.Response {
@@ -84,6 +92,49 @@ func mustStatus(t *testing.T, resp *http.Response, want int) {
 }
 
 // --- projects ---
+
+// TestDeleteProject_RemovesOnDiskArtifacts asserts that the project's
+// repo dir and deploy log dir under DataDir are wiped on DELETE so a
+// later project re-created with the same name doesn't inherit stale
+// log entries or repo state.
+func TestDeleteProject_RemovesOnDiskArtifacts(t *testing.T) {
+	t.Parallel()
+	tmp := t.TempDir()
+	e := newEnvWithDataDir(t, tmp)
+
+	resp := e.do(http.MethodPost, "/api/projects", cobaltapi.ProjectCreateRequest{
+		Name: "api", GithubRepo: "h/api", Branch: "main",
+	})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Seed both dirs with sentinel files to prove they get removed.
+	repoDir := filepath.Join(tmp, "projects", "api")
+	logDir := filepath.Join(tmp, "logs", "deployments", "api")
+	if err := os.MkdirAll(filepath.Join(repoDir, "repo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(logDir, "1.log"), []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resp = e.do(http.MethodDelete, "/api/projects/api", nil)
+	mustStatus(t, resp, http.StatusNoContent)
+	resp.Body.Close()
+
+	if _, err := os.Stat(repoDir); !os.IsNotExist(err) {
+		t.Errorf("repo dir still exists after delete: err=%v", err)
+	}
+	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
+		t.Errorf("log dir still exists after delete: err=%v", err)
+	}
+}
 
 func TestProjectsCRUD(t *testing.T) {
 	t.Parallel()
