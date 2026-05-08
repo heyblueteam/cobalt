@@ -144,12 +144,11 @@ func (c *Client) ListServicesForDeployment(ctx context.Context, projectID int64,
 	return c.listServices(ctx, FilterByDeployment(projectID, deploymentNumber))
 }
 
-func (c *Client) listServices(ctx context.Context, filter string) ([]ServiceInfo, error) {
-	out, err := c.output(ctx,
-		"service", "ls",
-		"--filter", filter,
-		"--format", "{{.Name}}\t{{.Replicas}}",
-	)
+func (c *Client) listServices(ctx context.Context, filters []string) ([]ServiceInfo, error) {
+	args := []string{"service", "ls"}
+	args = withFilterFlags(args, filters)
+	args = append(args, "--format", "{{.Name}}\t{{.Replicas}}")
+	out, err := c.output(ctx, args...)
 	if err != nil {
 		return nil, err
 	}

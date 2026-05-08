@@ -70,11 +70,40 @@ func TestLabels(t *testing.T) {
 
 func TestFilters(t *testing.T) {
 	t.Parallel()
-	if got := FilterByProjectID(7); got != "label=cobalt.project.id=7" {
-		t.Errorf("FilterByProjectID: %q", got)
+	got := FilterByProjectID(7)
+	wantProj := []string{"label=cobalt.project.id=7"}
+	if !equalStrings(got, wantProj) {
+		t.Errorf("FilterByProjectID: got %v, want %v", got, wantProj)
 	}
-	want := "label=cobalt.project.id=7,label=cobalt.deployment.number=3"
-	if got := FilterByDeployment(7, 3); got != want {
-		t.Errorf("FilterByDeployment: got %q, want %q", got, want)
+	// Each filter must arrive as its own --filter flag — Docker CLI
+	// does not AND a comma-joined `label=X,label=Y` form.
+	got = FilterByDeployment(7, 3)
+	want := []string{
+		"label=cobalt.project.id=7",
+		"label=cobalt.deployment.number=3",
 	}
+	if !equalStrings(got, want) {
+		t.Errorf("FilterByDeployment: got %v, want %v", got, want)
+	}
+}
+
+func TestWithFilterFlags(t *testing.T) {
+	t.Parallel()
+	got := withFilterFlags([]string{"service", "ls"}, []string{"label=A=1", "label=B=2"})
+	want := []string{"service", "ls", "--filter", "label=A=1", "--filter", "label=B=2"}
+	if !equalStrings(got, want) {
+		t.Errorf("withFilterFlags: got %v, want %v", got, want)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

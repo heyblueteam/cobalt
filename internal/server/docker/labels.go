@@ -31,18 +31,31 @@ func serviceLabels(projectID int64, projectName, serviceName string, deploymentN
 	)
 }
 
-// FilterByProjectID returns the value for `--filter label=...` that selects
-// only resources tagged with the given project id.
-func FilterByProjectID(projectID int64) string {
-	return fmt.Sprintf("label=%s=%d", LabelProjectID, projectID)
+// FilterByProjectID returns the values for `--filter label=...` that select
+// only resources tagged with the given project id. Always one element;
+// returned as a slice so callers can splice it into a `--filter X --filter Y`
+// argv uniformly with the multi-label variant below.
+func FilterByProjectID(projectID int64) []string {
+	return []string{fmt.Sprintf("label=%s=%d", LabelProjectID, projectID)}
 }
 
-// FilterByDeployment returns the filter that selects resources for a single
-// deployment of a project.
-func FilterByDeployment(projectID int64, deploymentNumber int) string {
-	return fmt.Sprintf(
-		"label=%s=%d,label=%s=%d",
-		LabelProjectID, projectID,
-		LabelDeploymentNumber, deploymentNumber,
-	)
+// FilterByDeployment returns the filters that select resources for a single
+// deployment of a project. Each element is one `--filter` value; callers
+// must emit them as separate `--filter` flags. Docker CLI does NOT accept
+// a comma-joined `label=X,label=Y` form — only repeated `--filter` flags
+// AND together as expected.
+func FilterByDeployment(projectID int64, deploymentNumber int) []string {
+	return []string{
+		fmt.Sprintf("label=%s=%d", LabelProjectID, projectID),
+		fmt.Sprintf("label=%s=%d", LabelDeploymentNumber, deploymentNumber),
+	}
+}
+
+// withFilterFlags pairs each filter value with `--filter` and appends the
+// flag pairs to args. Returns the new args slice.
+func withFilterFlags(args []string, filters []string) []string {
+	for _, f := range filters {
+		args = append(args, "--filter", f)
+	}
+	return args
 }

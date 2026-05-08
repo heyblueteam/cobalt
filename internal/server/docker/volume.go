@@ -55,11 +55,10 @@ func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
 
 // ListVolumesForProject returns every cobalt-managed volume for a project.
 func (c *Client) ListVolumesForProject(ctx context.Context, projectID int64) ([]string, error) {
-	out, err := c.output(ctx,
-		"volume", "ls",
-		"--filter", FilterByProjectID(projectID),
-		"--format", "{{.Name}}",
-	)
+	args := []string{"volume", "ls"}
+	args = withFilterFlags(args, FilterByProjectID(projectID))
+	args = append(args, "--format", "{{.Name}}")
+	out, err := c.output(ctx, args...)
 	if err != nil {
 		return nil, err
 	}

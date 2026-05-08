@@ -70,11 +70,10 @@ func (c *Client) DisconnectNetwork(ctx context.Context, networkName, containerNa
 // unlabeled networks (host bridges, ingress, disco leftovers from before
 // cutover, hand-created networks).
 func (c *Client) ListNetworksForProject(ctx context.Context, projectID int64, projectName string) ([]NetworkInfo, error) {
-	out, err := c.output(ctx,
-		"network", "ls",
-		"--filter", FilterByProjectID(projectID),
-		"--format", "{{.Name}}",
-	)
+	args := []string{"network", "ls"}
+	args = withFilterFlags(args, FilterByProjectID(projectID))
+	args = append(args, "--format", "{{.Name}}")
+	out, err := c.output(ctx, args...)
 	if err != nil {
 		return nil, err
 	}
