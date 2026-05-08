@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -26,9 +27,9 @@ are terminals; pass --no-tty to force pipe semantics for scripted use,
 or --tty to force PTY when one side isn't a terminal.`,
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return fmt.Errorf("command is required, e.g. 'cobalt run --project api \"ls -la\"'")
+				return fmt.Errorf("command is required, e.g. 'cobalt run --project api -- ls -la'")
 			}
-			command := args[0]
+			command := joinRunArgs(args)
 			service, _ := cmd.Flags().GetString("service")
 
 			pc, err := newProjectClient(cmd)
@@ -61,6 +62,16 @@ or --tty to force PTY when one side isn't a terminal.`,
 	cmd.Flags().Bool("tty", false, "force allocate a PTY even when stdio isn't a terminal")
 	cmd.Flags().Bool("no-tty", false, "force no PTY even when stdio is a terminal")
 	return cmd
+}
+
+// joinRunArgs assembles the user's command from cobra's split argv.
+// `cobalt run -- echo hello` arrives as []string{"echo","hello"}; the
+// daemon wraps the result in `sh -c "..."`, so joining with a space
+// reconstitutes the line the user typed (modulo any quoting cobra
+// already stripped). A single quoted arg (`cobalt run -- "ls -la"`)
+// passes through unchanged.
+func joinRunArgs(args []string) string {
+	return strings.Join(args, " ")
 }
 
 // resolveTTYMode picks PTY vs pipes. --tty / --no-tty override; the
