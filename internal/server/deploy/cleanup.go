@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 
@@ -26,6 +28,7 @@ func cleanupOldServices(
 	d CleanupDocker,
 	project store.Project,
 	dep store.Deployment,
+	out io.Writer,
 ) {
 	services, err := d.ListServicesForProject(ctx, project.ID)
 	if err != nil {
@@ -33,17 +36,26 @@ func cleanupOldServices(
 		return
 	}
 	currentPrefix := project.Name + "-" + itoaSimple(dep.Number) + "-"
+	var stale []string
 	for _, s := range services {
-		if strings.HasPrefix(s.Name, currentPrefix) {
-			continue
+		if !strings.HasPrefix(s.Name, currentPrefix) {
+			stale = append(stale, s.Name)
 		}
-		if err := d.RemoveService(ctx, s.Name); err != nil {
+	}
+	if len(stale) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "🧹 stopping %d service(s) from previous deployments\n", len(stale))
+	for _, name := range stale {
+		if err := d.RemoveService(ctx, name); err != nil {
 			log.Warn("cleanup: remove service",
-				"name", s.Name, "project_id", project.ID, "error", err)
+				"name", name, "project_id", project.ID, "error", err)
+			fmt.Fprintf(out, "❌ stop %s: %s\n", name, err)
 			continue
 		}
 		log.Info("cleanup: removed old service",
-			"name", s.Name, "project_id", project.ID, "current_deployment", dep.Number)
+			"name", name, "project_id", project.ID, "current_deployment", dep.Number)
+		fmt.Fprintf(out, "✅ stopped %s\n", name)
 	}
 }
 

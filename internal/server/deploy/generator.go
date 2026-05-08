@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
@@ -71,9 +72,12 @@ func runGenerators(
 			Stdout:  stdout,
 			Stderr:  stderr,
 		}
+		fmt.Fprintf(stdout, "🛠  running generator %q\n", b.Name)
+		t0 := time.Now()
 		if err := d.Run(ctx, opts); err != nil {
 			return "", fmt.Errorf("deploy.runGenerators %q: %w", b.Name, err)
 		}
+		fmt.Fprintf(stdout, "✅ generator %q complete (%s)\n", b.Name, time.Since(t0).Round(time.Second))
 	}
 
 	if !createdDir {

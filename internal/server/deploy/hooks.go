@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
@@ -46,6 +47,8 @@ func runHook(
 	imageTag := docker.InternalImageName(project.Name, svc.Image, dep.Number)
 	containerName := docker.HookContainerName(project.Name, hookName, dep.Number)
 
+	fmt.Fprintf(stdout, "🪝 running %s\n", hookName)
+	t0 := time.Now()
 	opts := docker.RunOpts{
 		ProjectID:        project.ID,
 		ProjectName:      project.Name,
@@ -63,6 +66,7 @@ func runHook(
 	if err := d.Run(ctx, opts); err != nil {
 		return fmt.Errorf("deploy.runHook %q: %w", hookName, err)
 	}
+	fmt.Fprintf(stdout, "✅ %s complete (%s)\n", hookName, time.Since(t0).Round(time.Second))
 	return nil
 }
 

@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
@@ -37,12 +38,14 @@ func startServicesPhase(
 	built []BuiltService,
 	envVars map[string]string,
 	deploymentNetwork string,
+	out io.Writer,
 ) ([]string, error) {
 	var started []string
 	for _, b := range built {
 		if !runsAsService(b.Service) {
 			continue
 		}
+		fmt.Fprintf(out, "🚀 starting service %s\n", b.Name)
 		opts := serviceCreateOpts(project, dep, b, envVars, deploymentNetwork)
 		if err := d.CreateService(ctx, opts); err != nil {
 			return started, fmt.Errorf("deploy: create service %q: %w", b.Name, err)
@@ -60,16 +63,24 @@ func waitHealthyAll(
 	project store.Project,
 	dep store.Deployment,
 	built []BuiltService,
+	out io.Writer,
 ) error {
+	first := true
 	for _, b := range built {
 		if !runsAsService(b.Service) {
 			continue
 		}
+		if first {
+			fmt.Fprintf(out, "⏳ waiting for healthchecks\n")
+			first = false
+		}
 		name := docker.ServiceName(project.Name, dep.Number, b.Name)
 		replicas := 1 // cobaltfile services don't expose replica count yet; default 1
+		t0 := time.Now()
 		if err := d.WaitForServiceHealthy(ctx, name, replicas, HealthcheckTimeout); err != nil {
 			return fmt.Errorf("deploy: wait healthy %q: %w", b.Name, err)
 		}
+		fmt.Fprintf(out, "✅ %s healthy (%s)\n", b.Name, time.Since(t0).Round(time.Second))
 	}
 	return nil
 }

@@ -365,14 +365,17 @@ func TestOrchestrator_FailureWritesErrorToDeployLog(t *testing.T) {
 		t.Fatal("expected error")
 	}
 	logged := buf.String()
-	if !strings.Contains(logged, "ERROR:") {
-		t.Errorf("deploy log missing ERROR prefix: %q", logged)
+	if !strings.Contains(logged, "❌") {
+		t.Errorf("deploy log missing ❌ failure marker: %q", logged)
 	}
 	if !strings.Contains(logged, "could not read Username") {
 		t.Errorf("deploy log missing root-cause text: %q", logged)
 	}
-	if !strings.Contains(logged, "started") || !strings.Contains(logged, "ended") {
-		t.Errorf("deploy log missing start/end markers: %q", logged)
+	if !strings.Contains(logged, "started") {
+		t.Errorf("deploy log missing started marker: %q", logged)
+	}
+	if !strings.Contains(logged, "deploy failed") {
+		t.Errorf("deploy log missing failure marker: %q", logged)
 	}
 }
 

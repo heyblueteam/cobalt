@@ -6,6 +6,7 @@ import (
 	"io"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
@@ -88,8 +89,9 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 		}
 
 		if out != nil {
-			fmt.Fprintf(out, "==> building image %q (Dockerfile=%s context=%s)\n", svc.Image, img.Dockerfile, img.Context)
+			fmt.Fprintf(out, "🔨 building image %q (Dockerfile=%s context=%s)\n", svc.Image, img.Dockerfile, img.Context)
 		}
+		buildStart := time.Now()
 		opts := docker.BuildOpts{
 			ProjectID:        project.ID,
 			ProjectName:      project.Name,
@@ -105,6 +107,9 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 		tag, err := b.docker.Build(ctx, opts)
 		if err != nil {
 			return nil, fmt.Errorf("deploy.Build: image %q: %w", svc.Image, err)
+		}
+		if out != nil {
+			fmt.Fprintf(out, "✅ built %s (%s)\n", tag, time.Since(buildStart).Round(time.Second))
 		}
 		tagByImage[svc.Image] = tag
 	}

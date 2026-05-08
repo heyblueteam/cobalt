@@ -61,9 +61,9 @@ func (o *Orchestrator) rollbackRun(
 		return err
 	}
 
-	fmt.Fprintf(out, "==> rolling back to deployment #%d (commit %s)\n",
+	fmt.Fprintf(out, "↩️  rolling back to deployment #%d (commit %s)\n",
 		target.Number, commitDisplay(target.CommitSHA))
-	fmt.Fprintf(out, "==> reusing %d cached image(s)\n", countImageBuilds(built))
+	fmt.Fprintf(out, "✅ reusing %d cached image(s)\n", countImageBuilds(built))
 
 	// Persist the cobaltfile on the new row so subsequent reads (e.g.
 	// caddy reconciler, scale list) see the rollback's effective shape.

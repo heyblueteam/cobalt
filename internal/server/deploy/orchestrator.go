@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
@@ -65,22 +66,27 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 	}
 	defer closeOut()
 
-	// Header so even a no-build deploy (all services declare an explicit
-	// image, no Dockerfile) leaves a useful trace in the log file. The
-	// deferred trailer surfaces any returned error in the deploy log so
-	// `cobalt deployments output` can show operators why a deploy failed
-	// without them needing shell access to the daemon host.
-	header := fmt.Sprintf("deploy #%d for project %q", dep.Number, project.Name)
+	// Header + footer so even a no-build deploy (all services declare
+	// an explicit image, no Dockerfile) leaves a useful trace in the
+	// log file. The deferred trailer surfaces any returned error and
+	// stamps the elapsed time so operators can spot slow deploys at a
+	// glance, and `cobalt deployments output` doesn't need shell
+	// access to the host to explain failures.
+	deployKind := "deploy"
 	if dep.RollbackOf != nil {
-		header = fmt.Sprintf("rollback #%d (target deployment id=%d) for project %q",
-			dep.Number, *dep.RollbackOf, project.Name)
+		deployKind = "rollback"
 	}
+	header := fmt.Sprintf("%s #%d for project %q", deployKind, dep.Number, project.Name)
+	startTime := time.Now()
 	fmt.Fprintf(out, "==> %s started\n", header)
 	defer func() {
+		elapsed := time.Since(startTime).Round(time.Second)
 		if err != nil {
-			fmt.Fprintf(out, "ERROR: %s\n", err)
+			fmt.Fprintf(out, "❌ %s\n", err)
+			fmt.Fprintf(out, "❌ %s failed (%s)\n", deployKind, elapsed)
+		} else {
+			fmt.Fprintf(out, "✅ %s #%d complete (%s)\n", deployKind, dep.Number, elapsed)
 		}
-		fmt.Fprintf(out, "==> %s ended\n", header)
 	}()
 
 	envVars, err := o.DB.EnvVarMap(ctx, project.ID)
@@ -97,11 +103,15 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 
 	// PHASE 1 — prepare. Reversible, no Caddy touch.
 
+	fmt.Fprintf(out, "📥 fetching from github.com/%s\n", project.GithubRepo)
+	prepStart := time.Now()
 	ws, err := o.Preparer.Prepare(ctx, *project, dep)
 	if err != nil {
 		return fmt.Errorf("deploy: prepare: %w", err)
 	}
 	log.Info("repo prepared", "commit", ws.Commit)
+	fmt.Fprintf(out, "✅ checked out %s (%s)\n",
+		shortSHA(ws.Commit), time.Since(prepStart).Round(time.Second))
 
 	// Persist the resolved cobaltfile so the §8d Caddy convergence
 	// reconciler can read authoritative desired state without re-cloning
@@ -200,35 +210,40 @@ func (o *Orchestrator) cutover(
 		log.Warn("set status swapping", "error", err)
 	}
 
-	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork)
+	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, out)
 	if err != nil {
 		// Phase 1 failure: stop services we did start, no Caddy touch.
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return err
 	}
-	if err := waitHealthyAll(ctx, o.Docker, *project, dep, built); err != nil {
+	if err := waitHealthyAll(ctx, o.Docker, *project, dep, built, out); err != nil {
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return err
 	}
 
 	// PHASE 2 — commit. Caddy cutover, atomic from the public's POV.
 
+	fmt.Fprintf(out, "🌍 routing traffic to deployment #%d\n", dep.Number)
 	if err := commitCaddySwap(ctx, o.Caddy, o.DB, *project, dep, cf); err != nil {
 		// Try to revert; whether or not revert succeeds, kill the new
 		// services so they don't linger.
+		fmt.Fprintf(out, "↩️  traffic swap failed, reverting\n")
 		revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return fmt.Errorf("deploy: commit caddy: %w", err)
 	}
+	fmt.Fprintf(out, "✅ traffic swap verified\n")
 
-	// After-hook: best effort. If the deploy is live, a failed after-hook
-	// is a warning, not a rollback trigger.
+	// After-hook: best effort. If the deploy is live, a failed
+	// after-hook is a 🚨 alert (not a rollback trigger) — the new
+	// containers are already serving requests.
 	if err := runAfterHook(ctx, o.Docker, *project, dep, cf, envVars, out, out); err != nil {
 		log.Warn("after-hook failed (deployment is live)", "error", err)
+		fmt.Fprintf(out, "🚨 after-hook failed (deploy is live anyway): %s\n", err)
 	}
 
 	// POST-SUCCESS — clean up old services. Best effort.
-	cleanupOldServices(context.Background(), log, o.Docker, *project, dep)
+	cleanupOldServices(context.Background(), log, o.Docker, *project, dep, out)
 
 	// Cron reconciliation: register / update / remove project crons
 	// declared in the just-cut-over cobaltfile. Best effort; failure
@@ -269,6 +284,18 @@ func (o *Orchestrator) openLog(project store.Project, dep store.Deployment) (io.
 
 // ensureDeploymentNetwork creates the per-deployment network if missing
 // (always missing for a new deployment; the helper is idempotent for
+// shortSHA renders a 7-char prefix of a git SHA for log lines.
+// Empty/short input passes through unchanged.
+func shortSHA(s string) string {
+	if len(s) > 7 {
+		return s[:7]
+	}
+	if s == "" {
+		return "(unknown)"
+	}
+	return s
+}
+
 // completeness / retries).
 func (o *Orchestrator) ensureDeploymentNetwork(ctx context.Context, project store.Project, dep store.Deployment) error {
 	name := docker.NetworkName(project.Name, dep.Number)
