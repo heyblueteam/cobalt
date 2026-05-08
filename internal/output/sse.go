@@ -11,11 +11,6 @@ import (
 	"github.com/heyblueteam/cobalt/internal/client"
 )
 
-type SSEEvent struct {
-	ID   string
-	Data string
-}
-
 func FollowDeployOutput(ctx context.Context, cl *client.Client, deploymentID int64, offset int64, out io.Writer) error {
 	resp, err := cl.DeployOutput(ctx, deploymentID, offset)
 	if err != nil {
@@ -41,7 +36,18 @@ func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) error {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1024<<10)
 
-	var current SSEEvent
+	var (
+		dataLines []string
+		eventID   string
+	)
+
+	flush := func() {
+		if len(dataLines) > 0 {
+			fmt.Fprintln(out, strings.Join(dataLines, "\n"))
+		}
+		dataLines = dataLines[:0]
+		eventID = ""
+	}
 
 	for scanner.Scan() {
 		select {
@@ -51,26 +57,31 @@ func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) error {
 		}
 
 		line := scanner.Text()
+		// Per the SSE spec: a blank line dispatches the buffered event.
+		// Multiple `data:` fields within one event are joined by '\n'
+		// when delivered to the consumer; previously we overwrote on each
+		// `data:` line so multi-line events lost everything but the last.
 		if line == "" {
-			if current.Data != "" {
-				fmt.Fprintln(out, current.Data)
-			}
-			current = SSEEvent{}
+			flush()
 			continue
 		}
 		if strings.HasPrefix(line, ":") {
 			continue
 		}
-		if strings.HasPrefix(line, "data: ") {
-			current.Data = line[6:]
-		} else if strings.HasPrefix(line, "data:") {
-			current.Data = line[5:]
-		} else if strings.HasPrefix(line, "id: ") {
-			current.ID = line[4:]
-		} else if strings.HasPrefix(line, "id:") {
-			current.ID = line[3:]
+		switch {
+		case strings.HasPrefix(line, "data: "):
+			dataLines = append(dataLines, line[6:])
+		case strings.HasPrefix(line, "data:"):
+			dataLines = append(dataLines, line[5:])
+		case strings.HasPrefix(line, "id: "):
+			eventID = line[4:]
+		case strings.HasPrefix(line, "id:"):
+			eventID = line[3:]
 		}
 	}
+	// Flush any trailing event the server didn't terminate before EOF.
+	flush()
+	_ = eventID
 
 	if err := scanner.Err(); err != nil && !isContextCanceled(err) {
 		return fmt.Errorf("read sse stream: %w", err)
