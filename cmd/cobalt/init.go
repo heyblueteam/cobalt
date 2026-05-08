@@ -190,6 +190,44 @@ Examples:
 				return fmt.Errorf("ensure cobalt-main network: %w", netCheck.Err)
 			}
 
+			// /etc/cobalt/encryption.key is the AES-GCM key the daemon
+			// uses to encrypt env values at rest. We'd ideally use a
+			// Docker Swarm secret (raft-log-encrypted, tmpfs-mounted)
+			// but `docker compose up` doesn't support external swarm
+			// secrets — that needs `docker stack deploy`, which is a
+			// future migration. The host-fs bind-mount still satisfies
+			// the main goal: storage separation from the data volume,
+			// so a backup of /var/lib/docker/volumes/ alone yields
+			// ciphertext only.
+			//
+			// The path inside the container is /run/secrets/cobalt_encryption_key,
+			// matching the swarm-secret convention, so when we migrate
+			// to stack deploy the daemon code doesn't have to change —
+			// only the compose mount source.
+			//
+			// Idempotent: reuse the existing key on subsequent inits.
+			keyCheck := conn.Run(ctx,
+				"if [ -s /etc/cobalt/encryption.key ]; then "+
+					"  echo present; "+
+					"else "+
+					"  install -d -m 0700 /etc/cobalt && "+
+					"  head -c 32 /dev/urandom > /etc/cobalt/encryption.key && "+
+					"  chmod 0600 /etc/cobalt/encryption.key && "+
+					"  echo generated; "+
+					"fi",
+			)
+			if keyCheck.Err != nil {
+				return fmt.Errorf("ensure encryption.key: %w", keyCheck.Err)
+			}
+			if strings.Contains(keyCheck.Stdout, "present") {
+				fmt.Fprintf(output.Stderr, "[3d/8] Encryption key (/etc/cobalt/encryption.key) present.\n")
+			} else {
+				fmt.Fprintf(output.Stderr,
+					"[3d/8] Encryption key (/etc/cobalt/encryption.key) generated.\n"+
+						"        Back this up offline — env vars encrypted with it cannot be\n"+
+						"        recovered if both this host and your backup are lost.\n")
+			}
+
 			if localImage != "" {
 				fmt.Fprintf(output.Stderr, "[3c/8] Uploading local image %s...\n", localImage)
 				if err := uploadLocalImage(ctx, conn, localImage); err != nil {

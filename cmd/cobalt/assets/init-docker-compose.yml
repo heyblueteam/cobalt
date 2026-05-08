@@ -12,6 +12,13 @@ x-cobalt-base: &cobalt-base
     - cobalt-data:${COBALT_DATA_DIR}
     - caddy-socket:/cobalt/caddy-socket
     - /var/run/docker.sock:/var/run/docker.sock
+    # AES key used to encrypt env values at rest. The host file lives
+    # outside the cobalt-data volume so a backup of that volume alone
+    # yields ciphertext only. Read-only inside the container; the
+    # /run/secrets/ path matches the swarm-secret convention so a
+    # later migration to `docker stack deploy` only changes this
+    # mount, not the daemon code.
+    - /etc/cobalt/encryption.key:/run/secrets/cobalt_encryption_key:ro
   environment:
     COBALT_DATA_DIR: ${COBALT_DATA_DIR}
   restart: unless-stopped
