@@ -1,6 +1,7 @@
 # Binaries
 /cobalt
 /cobaltd
+/bin/
 /dist/
 
 # Go
