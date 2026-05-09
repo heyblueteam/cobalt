@@ -45,11 +45,12 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 	// Every secret should appear with the env=KEY form so buildkit
 	// resolves the value from the subprocess env (not as a filename).
 	// Order is alphabetical so output is reproducible: AAA, API_KEY,
-	// DB_URL.
+	// DB_URL. The aggregate `.env` secret follows the per-key block.
 	wantSecrets := []string{
 		"--secret", "id=AAA,env=AAA",
 		"--secret", "id=API_KEY,env=API_KEY",
 		"--secret", "id=DB_URL,env=DB_URL",
+		"--secret", "id=.env,env=COBALT_DOT_ENV",
 	}
 	if !argSequence(args, wantSecrets...) {
 		t.Errorf("secrets not in expected env=KEY form: %v", args)
@@ -59,6 +60,13 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 	env := r.lastCall().Env
 	if env["AAA"] != "a" || env["API_KEY"] != "k" || env["DB_URL"] != "u" {
 		t.Errorf("buildx subprocess env missing/wrong values: %v", env)
+	}
+
+	// COBALT_DOT_ENV holds the aggregate dotenv body, sorted keys, plain
+	// form (no specials in these values).
+	wantDotEnv := "AAA=a\nAPI_KEY=k\nDB_URL=u\n"
+	if env["COBALT_DOT_ENV"] != wantDotEnv {
+		t.Errorf("COBALT_DOT_ENV: got %q, want %q", env["COBALT_DOT_ENV"], wantDotEnv)
 	}
 
 	// Every label should be present.
@@ -185,5 +193,132 @@ func TestBuild_ErrorPropagates(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "boom") {
 		t.Errorf("Build err: %v", err)
+	}
+}
+
+// TestBuild_AggregateAlwaysEmitted: the `.env` aggregate secret must be
+// present even when EnvSecrets is empty so Dockerfiles with an
+// unconditional `RUN --mount=type=secret,id=.env ...` see a (possibly
+// empty) file at /run/secrets/.env rather than a buildkit error.
+func TestBuild_AggregateAlwaysEmitted(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if _, err := c.Build(context.Background(), BuildOpts{
+		ProjectName: "api", ImageName: "default", DeploymentNumber: 1,
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	args := r.lastCall().Args
+	if !argSequence(args, "--secret", "id=.env,env=COBALT_DOT_ENV") {
+		t.Errorf("aggregate secret missing for empty EnvSecrets: %v", args)
+	}
+	env := r.lastCall().Env
+	if env["COBALT_DOT_ENV"] != "" {
+		t.Errorf("COBALT_DOT_ENV: got %q, want empty", env["COBALT_DOT_ENV"])
+	}
+}
+
+// TestBuild_DoesNotMutateCallerEnvSecrets: synthesizing COBALT_DOT_ENV
+// must not appear back in the caller's input map. EnvVarMap returns
+// state callers may reuse; a stray key would leak into per-key argv on
+// the next build.
+func TestBuild_DoesNotMutateCallerEnvSecrets(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	in := map[string]string{"FOO": "bar"}
+	if _, err := c.Build(context.Background(), BuildOpts{
+		ProjectName: "api", ImageName: "default", DeploymentNumber: 1,
+		EnvSecrets: in,
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, ok := in["COBALT_DOT_ENV"]; ok {
+		t.Errorf("caller's EnvSecrets was mutated: %v", in)
+	}
+	if len(in) != 1 {
+		t.Errorf("caller's EnvSecrets size changed: %v", in)
+	}
+}
+
+func TestFormatDotEnv(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		in   map[string]string
+		want string
+	}{
+		{
+			name: "empty",
+			in:   nil,
+			want: "",
+		},
+		{
+			name: "plain",
+			in:   map[string]string{"B": "two", "A": "one"},
+			want: "A=one\nB=two\n",
+		},
+		{
+			name: "value with newline",
+			in:   map[string]string{"K": "line1\nline2"},
+			want: "K=\"line1\\nline2\"\n",
+		},
+		{
+			name: "value with carriage return",
+			in:   map[string]string{"K": "a\rb"},
+			want: "K=\"a\\rb\"\n",
+		},
+		{
+			name: "value with double quote",
+			in:   map[string]string{"K": `say "hi"`},
+			want: "K=\"say \\\"hi\\\"\"\n",
+		},
+		{
+			name: "value with backslash",
+			in:   map[string]string{"K": `c:\path`},
+			want: "K=\"c:\\\\path\"\n",
+		},
+		{
+			name: "value with leading space",
+			in:   map[string]string{"K": " leading"},
+			want: "K=\" leading\"\n",
+		},
+		{
+			name: "value with trailing space",
+			in:   map[string]string{"K": "trailing "},
+			want: "K=\"trailing \"\n",
+		},
+		{
+			name: "value starting with hash",
+			in:   map[string]string{"K": "#nope"},
+			want: "K=\"#nope\"\n",
+		},
+		{
+			name: "value with hash mid-string is plain",
+			in:   map[string]string{"K": "abc#def"},
+			want: "K=abc#def\n",
+		},
+		{
+			name: "empty value",
+			in:   map[string]string{"K": ""},
+			want: "K=\n",
+		},
+		{
+			name: "url with equals and slashes is plain",
+			in:   map[string]string{"URL": "https://api.blue.cc/v1?x=1&y=2"},
+			want: "URL=https://api.blue.cc/v1?x=1&y=2\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := formatDotEnv(tc.in)
+			if got != tc.want {
+				t.Errorf("formatDotEnv:\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
 	}
 }

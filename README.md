@@ -76,6 +76,8 @@ This SSHs into your server, deploys the Cobalt stack via Docker Compose, and con
 cobalt projects add myapp --github-repo owner/repo
 
 # Configure environment
+# Each var is exposed at /run/secrets/KEY during build, plus an aggregate
+# /run/secrets/.env containing every var (drop-in for disco-style Dockerfiles).
 cobalt env set DATABASE_URL=postgres://...
 
 # Deploy

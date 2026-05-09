@@ -34,12 +34,19 @@ type BuildOpts struct {
 
 // Build builds an image and tags it as InternalImageName(...).
 //
-// Each entry in EnvSecrets is exposed to the build via
-// `--secret id=KEY,env=KEY`. The Dockerfile must opt in with
-// `RUN --mount=type=secret,id=KEY ...` to access them. Secrets are NOT
-// visible in image layers — this is the point of using --secret over
-// --build-arg. The values are passed to the buildx subprocess via its
-// environment so buildkit's `env=KEY` resolver finds them.
+// Each entry in EnvSecrets is exposed to the build two ways:
+//
+//  1. Per-key as `--secret id=KEY,env=KEY`. The Dockerfile opts in with
+//     `RUN --mount=type=secret,id=KEY ...` and reads /run/secrets/KEY.
+//  2. As a single aggregate `--secret id=.env,env=COBALT_DOT_ENV` whose
+//     body is a dotenv-formatted file (KEY=VAL per line, values
+//     conditionally double-quoted to survive newlines/quotes). This
+//     matches the disco-era contract many Dockerfiles already expect:
+//     `RUN --mount=type=secret,id=.env cp /run/secrets/.env .env && ...`.
+//
+// Secrets are NOT visible in image layers — this is the point of using
+// --secret over --build-arg. Values are passed to the buildx subprocess
+// via its environment so buildkit's `env=KEY` resolver finds them.
 func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	if opts.ProjectName == "" || opts.ImageName == "" {
 		return "", fmt.Errorf("docker.Build: ProjectName and ImageName required")
@@ -82,6 +89,15 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 		args = append(args, "--secret", "id="+k+",env="+k)
 	}
 
+	// Aggregate `.env` secret: a single dotenv-formatted file containing
+	// every env var, mounted at /run/secrets/.env. Emitted unconditionally
+	// (even when EnvSecrets is empty) so Dockerfiles that always
+	// `RUN --mount=type=secret,id=.env ...` see a present-but-possibly-
+	// empty file. The subprocess env var name is COBALT_DOT_ENV (cobalt-
+	// prefixed to dodge collisions with user keys). buildkit then
+	// resolves `id=.env,env=COBALT_DOT_ENV` to that string.
+	args = append(args, "--secret", "id=.env,env=COBALT_DOT_ENV")
+
 	if opts.CacheDir != "" {
 		args = append(args,
 			"--cache-from", "type=local,src="+opts.CacheDir,
@@ -98,11 +114,107 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	// Thread the env values into the buildx subprocess so buildkit's
 	// `env=KEY` resolver finds them. EnvSecrets is the project's
 	// per-deploy env state; we don't leak it into the daemon's own
-	// environment.
-	if err := c.runner.RunWithEnv(ctx, opts.EnvSecrets, args, nil, opts.Output, opts.Output); err != nil {
+	// environment. We also synthesize COBALT_DOT_ENV (the aggregate
+	// `.env` secret body) here rather than mutating the caller's map.
+	runEnv := make(map[string]string, len(opts.EnvSecrets)+1)
+	for k, v := range opts.EnvSecrets {
+		runEnv[k] = v
+	}
+	runEnv["COBALT_DOT_ENV"] = formatDotEnv(opts.EnvSecrets)
+	if err := c.runner.RunWithEnv(ctx, runEnv, args, nil, opts.Output, opts.Output); err != nil {
 		return "", fmt.Errorf("docker.Build %s: %w", tag, err)
 	}
 	return tag, nil
+}
+
+// formatDotEnv serializes env into a deterministic dotenv-formatted body
+// (sorted keys, KEY=VAL per line, trailing newline). Values containing
+// newlines, quotes, backslashes, leading/trailing whitespace, or starting
+// with '#' are double-quoted with backslash escapes so the file remains
+// parseable by the dotenv libraries Vite/Next/etc. use. Plain values are
+// emitted unquoted to keep the file legible.
+//
+// Returns "" for an empty/nil map (matches an empty .env file).
+func formatDotEnv(env map[string]string) string {
+	if len(env) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(quoteDotEnvValue(env[k]))
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// quoteDotEnvValue wraps v in double quotes (with backslash escapes for
+// `\`, `"`, literal newlines, and carriage returns) when v contains any
+// character that would corrupt a plain `KEY=VAL` line — newlines, quotes,
+// backslashes, leading/trailing whitespace, or a leading '#' (which most
+// dotenv parsers treat as a comment). Otherwise returns v unchanged.
+func quoteDotEnvValue(v string) string {
+	if v == "" {
+		return ""
+	}
+	needsQuote := false
+	if v[0] == '#' {
+		needsQuote = true
+	}
+	if !needsQuote {
+		switch v[0] {
+		case ' ', '\t':
+			needsQuote = true
+		}
+	}
+	if !needsQuote {
+		switch v[len(v)-1] {
+		case ' ', '\t':
+			needsQuote = true
+		}
+	}
+	if !needsQuote {
+		for i := 0; i < len(v); i++ {
+			switch v[i] {
+			case '\n', '\r', '"', '\\':
+				needsQuote = true
+			}
+			if needsQuote {
+				break
+			}
+		}
+	}
+	if !needsQuote {
+		return v
+	}
+
+	var b strings.Builder
+	b.Grow(len(v) + 4)
+	b.WriteByte('"')
+	for i := 0; i < len(v); i++ {
+		c := v[i]
+		switch c {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteByte(c)
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // SplitParams parses an extraSwarmParams / extraRunParams string into argv

@@ -98,6 +98,11 @@ Cobalt uses a single config file called cobalt.json in your project root:
 - cobalt env:set KEY=value — Set an environment variable
 - cobalt env:unset KEY — Remove an environment variable
 
+At build time each var is mounted as a buildkit secret at /run/secrets/KEY
+(opt in via RUN --mount=type=secret,id=KEY ...), and an aggregate of all
+vars is mounted at /run/secrets/.env in dotenv form (drop-in for disco-style
+Dockerfiles using RUN --mount=type=secret,id=.env cp /run/secrets/.env .env).
+
 ### Domains
 - cobalt domains — List custom domains
 - cobalt domains:add domain.com — Add a custom domain

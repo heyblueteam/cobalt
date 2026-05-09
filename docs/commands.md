@@ -62,6 +62,14 @@ Cobra-native, matches `gh`/`kubectl`/`flyctl`. Colon forms are not aliased — c
 | `cobalt env set --project <p> KEY=val [...]` | YES | Triggers redeploy |
 | `cobalt env remove --project <p> <KEY>` | YES | Triggers redeploy |
 
+At build time each var is exposed two ways: per-key at `/run/secrets/KEY`
+(Dockerfile opts in with `RUN --mount=type=secret,id=KEY ...`), and as a
+single aggregate at `/run/secrets/.env` containing every var in dotenv
+form (drop-in for disco-era Dockerfiles that do
+`RUN --mount=type=secret,id=.env cp /run/secrets/.env .env && ...`).
+Values containing newlines, quotes, or backslashes are double-quoted in
+the aggregate so the file stays parseable.
+
 ## domains
 
 | Command | v1 | Notes |
