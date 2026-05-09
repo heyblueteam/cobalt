@@ -19,7 +19,6 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 FROM debian:stable-slim
 ARG TARGETARCH
 ARG BUILDX_VERSION=v0.19.0
-ARG COMPOSE_VERSION=v2.32.4
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -31,16 +30,7 @@ RUN apt-get update \
     && curl -fsSL "https://github.com/docker/buildx/releases/download/${BUILDX_VERSION}/buildx-${BUILDX_VERSION}.linux-${TARGETARCH}" \
         -o /usr/libexec/docker/cli-plugins/docker-buildx \
     && chmod 0755 /usr/libexec/docker/cli-plugins/docker-buildx \
-    && /usr/libexec/docker/cli-plugins/docker-buildx version \
-    && case "${TARGETARCH}" in \
-        amd64) COMPOSE_ARCH=x86_64 ;; \
-        arm64) COMPOSE_ARCH=aarch64 ;; \
-        *) echo "unsupported TARGETARCH=${TARGETARCH}" && exit 1 ;; \
-    esac \
-    && curl -fsSL "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-${COMPOSE_ARCH}" \
-        -o /usr/libexec/docker/cli-plugins/docker-compose \
-    && chmod 0755 /usr/libexec/docker/cli-plugins/docker-compose \
-    && /usr/libexec/docker/cli-plugins/docker-compose version
+    && /usr/libexec/docker/cli-plugins/docker-buildx version
 COPY --from=build /out/cobalt /usr/local/bin/cobalt
 EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/cobalt", "server"]

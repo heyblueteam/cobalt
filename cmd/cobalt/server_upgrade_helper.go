@@ -22,21 +22,23 @@ import (
 // detached transient container during a self-upgrade. The helper:
 //
 //  1. logs structured progress to a file in cobalt-data so the daemon's
-//     SSE endpoint can stream it (the daemon survives across the
-//     restart because the log lives on a docker-managed volume)
-//  2. pulls the target image
-//  3. captures the running cobalt container's image as the rollback
-//     target
-//  4. updates the host compose dir's .env to pin COBALT_VERSION
-//  5. runs `docker compose up -d cobalt` to swap the container
-//  6. probes the new daemon's /api/meta/info for up to 90s — must
-//     report the target version
-//  7. on probe-timeout: rolls back to the captured image
-//  8. updates the upgrade row's terminal status in rqlite
+//     SSE endpoint can stream it (the daemon survives the restart
+//     because the log lives on a docker-managed volume)
+//  2. captures the running cobalt service's current image as the
+//     rollback target (Swarm tracks this natively too — we capture
+//     for logging clarity)
+//  3. runs `docker service update --image <new> cobalt_cobalt` —
+//     Swarm rolling-updates the replica
+//  4. probes the daemon's public HTTPS endpoint until it reports the
+//     target version, with a 90s deadline
+//  5. on probe-timeout: `docker service update --rollback cobalt_cobalt`
+//     reverts the service spec atomically using Swarm's previous-
+//     spec tracking
+//  6. updates the upgrade row's terminal status in rqlite
 //
-// This is hidden from `cobalt --help` because operators never invoke
-// it directly. End users use `cobalt upgrade`, which POSTs to the
-// daemon, which spawns this helper.
+// Hidden because operators never invoke this directly. End users use
+// `cobalt upgrade`, which POSTs to the daemon, which spawns this
+// helper.
 func newServerUpgradeHelperCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:    "server-upgrade-helper",
@@ -49,7 +51,8 @@ func newServerUpgradeHelperCmd() *cobra.Command {
 				rollbackImage: mustFlagString(cmd, "rollback-image"),
 				logPath:       mustFlagString(cmd, "log-path"),
 				rqliteURL:     mustFlagString(cmd, "rqlite-url"),
-				composeDir:    mustFlagString(cmd, "compose-dir"),
+				serviceName:   mustFlagString(cmd, "service-name"),
+				publicHost:    mustFlagString(cmd, "public-host"),
 				doPull:        !mustFlagBool(cmd, "no-pull"),
 			}
 			return h.run(cmd.Context())
@@ -57,12 +60,13 @@ func newServerUpgradeHelperCmd() *cobra.Command {
 	}
 	cmd.Flags().String("upgrade-id", "", "upgrade row id (required)")
 	cmd.Flags().String("target-image", "", "image to swap to (required)")
-	cmd.Flags().String("rollback-image", "", "image to revert to if the new daemon fails health probe")
+	cmd.Flags().String("rollback-image", "", "image to revert to if the new daemon fails health probe; empty = use Swarm's previous-spec rollback")
 	cmd.Flags().String("log-path", "", "path to write structured progress to (required)")
 	cmd.Flags().String("rqlite-url", "http://rqlite:4001", "rqlite cluster URL")
-	cmd.Flags().String("compose-dir", "/cobalt/compose", "directory containing the host's docker-compose.yml")
-	cmd.Flags().Bool("no-pull", false, "skip docker pull (image already present)")
-	for _, name := range []string{"upgrade-id", "target-image", "log-path"} {
+	cmd.Flags().String("service-name", "cobalt_cobalt", "Swarm service name to update (stack-prefix + service)")
+	cmd.Flags().String("public-host", "", "daemon's public hostname for the post-upgrade health probe (required)")
+	cmd.Flags().Bool("no-pull", false, "skip docker pull (image already present on host)")
+	for _, name := range []string{"upgrade-id", "target-image", "log-path", "public-host"} {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
@@ -85,15 +89,14 @@ type upgradeHelper struct {
 	rollbackImage string
 	logPath       string
 	rqliteURL     string
-	composeDir    string
+	serviceName   string
+	publicHost    string
 	doPull        bool
 
 	logFile *os.File
 }
 
 func (h *upgradeHelper) run(ctx context.Context) error {
-	// Open the log file in append mode so subsequent reconnect-style
-	// SSE follows see the full history, not just lines after open.
 	if err := os.MkdirAll(filepath.Dir(h.logPath), 0o755); err != nil {
 		return fmt.Errorf("mkdir log dir: %w", err)
 	}
@@ -106,9 +109,11 @@ func (h *upgradeHelper) run(ctx context.Context) error {
 
 	h.logf("==> upgrade %s starting", h.upgradeID)
 	h.logf("    target image:   %s", h.targetImage)
-	h.logf("    rollback image: %s", strDefault(h.rollbackImage, "(not provided — will inspect)"))
+	h.logf("    swarm service:  %s", h.serviceName)
+	h.logf("    public host:    %s", h.publicHost)
 
-	// Step 1: pull target image.
+	// Step 1: pull target image. Pre-pulling means Swarm doesn't have
+	// to pause mid-update to fetch — keeps the cutover window tight.
 	if h.doPull {
 		h.logf("📥 pulling %s", h.targetImage)
 		if err := h.runDockerStreaming(ctx, "pull", h.targetImage); err != nil {
@@ -119,70 +124,77 @@ func (h *upgradeHelper) run(ctx context.Context) error {
 		h.logf("⏭  skipping pull (--no-pull)")
 	}
 
-	// Step 2: confirm rollback image is something we can fall back to.
+	// Step 2: capture rollback image from the live service spec. We
+	// don't actually need this for `docker service update --rollback`
+	// (Swarm tracks the previous spec on its own), but logging it
+	// makes the upgrade audit trail useful.
 	if h.rollbackImage == "" {
-		out, err := h.runDockerCapture(ctx, "inspect", "--format", "{{.Config.Image}}", "cobalt")
+		out, err := h.runDockerCapture(ctx,
+			"service", "inspect", h.serviceName,
+			"--format", "{{.Spec.TaskTemplate.ContainerSpec.Image}}",
+		)
 		if err != nil {
-			return h.fail(ctx, fmt.Errorf("inspect running cobalt: %w", err))
+			return h.fail(ctx, fmt.Errorf("inspect %s: %w", h.serviceName, err))
 		}
 		h.rollbackImage = strings.TrimSpace(out)
-		h.logf("    captured rollback image: %s", h.rollbackImage)
 	}
+	h.logf("    rollback image: %s", h.rollbackImage)
 	if h.rollbackImage == h.targetImage {
 		h.logf("⏭  rollback == target; this is a no-op upgrade")
 		return h.success(ctx)
 	}
 
-	// Step 3: persist target version in compose .env so subsequent
-	// `docker compose up` calls (manual or automated) keep the new
-	// image. Without this, COBALT_VERSION substitution falls back to
-	// :latest and the next compose recreate would silently roll back.
-	targetVer := imageTagSuffix(h.targetImage)
-	if targetVer == "" {
-		targetVer = h.targetImage // operator passed a digest or untagged ref
-	}
-	if err := h.upsertEnvVar("COBALT_VERSION", targetVer); err != nil {
-		return h.fail(ctx, fmt.Errorf("update .env: %w", err))
-	}
-	h.logf("📝 pinned COBALT_VERSION=%s in %s/.env", targetVer, h.composeDir)
-
-	// Step 4: docker compose up -d cobalt. Compose substitutes the
-	// pinned env, sees the new image differs, recreates the container.
-	h.logf("🔄 swapping cobalt service to %s", h.targetImage)
-	composeFile := filepath.Join(h.composeDir, "docker-compose.yml")
+	// Step 3: docker service update. Swarm performs a rolling update
+	// of the service's replicas (1 in our case) — old task drains,
+	// new task starts. The daemon API is briefly unavailable; the
+	// post-update probe handles that.
+	h.logf("🔄 swapping %s to %s", h.serviceName, h.targetImage)
 	if err := h.runDockerStreaming(ctx,
-		"compose", "-f", composeFile, "up", "-d", "cobalt",
+		"service", "update",
+		"--image", h.targetImage,
+		// Wait for swarm to settle. Without this, `service update`
+		// returns immediately and we'd race the probe against a
+		// not-yet-converged service.
+		"--update-order", "stop-first",
+		h.serviceName,
 	); err != nil {
-		// Try to roll back even though we may not have a successful
-		// new container yet — the half-pulled state is still bad.
-		h.logf("❌ compose up failed; attempting rollback")
-		_ = h.upsertEnvVar("COBALT_VERSION", imageTagSuffix(h.rollbackImage))
-		_ = h.runDockerStreaming(ctx, "compose", "-f", composeFile, "up", "-d", "cobalt")
-		return h.fail(ctx, fmt.Errorf("compose up: %w", err))
+		h.logf("❌ docker service update failed; attempting rollback")
+		_ = h.swarmRollback(ctx)
+		return h.fail(ctx, fmt.Errorf("service update: %w", err))
 	}
 
-	// Step 5: probe the new daemon. Localhost via cobalt-caddy is the
-	// most realistic path — same network the public traffic uses.
-	probeURL := "http://cobalt:8080/api/meta/info"
+	// Step 4: probe the new daemon over public HTTPS. Use the public
+	// host because (a) the helper container isn't attached to the
+	// cobalt-main overlay, so it can't resolve `cobalt_cobalt` via
+	// Swarm DNS without extra plumbing, and (b) the public path is
+	// exactly what real traffic uses, so success here means the swap
+	// is end-to-end correct, not just "container is running."
+	probeURL := "https://" + h.publicHost + "/api/meta/info"
 	h.logf("🩺 probing %s for new daemon (timeout 90s)", probeURL)
-	if err := h.probeNewDaemon(ctx, probeURL, targetVer, 90*time.Second); err != nil {
+	wantVer := imageTagSuffix(h.targetImage)
+	if err := h.probeNewDaemon(ctx, probeURL, wantVer, 90*time.Second); err != nil {
 		h.logf("❌ new daemon health probe failed: %v", err)
-		h.logf("↩️  rolling back to %s", h.rollbackImage)
-		_ = h.upsertEnvVar("COBALT_VERSION", imageTagSuffix(h.rollbackImage))
-		if rerr := h.runDockerStreaming(ctx,
-			"compose", "-f", composeFile, "up", "-d", "cobalt",
-		); rerr != nil {
-			h.logf("🚨 rollback compose up ALSO failed: %v", rerr)
+		h.logf("↩️  rolling back via `docker service update --rollback`")
+		if rerr := h.swarmRollback(ctx); rerr != nil {
+			h.logf("🚨 rollback ALSO failed: %v", rerr)
 			return h.markStatus(ctx, store.UpgradeStatusFailed,
 				fmt.Sprintf("upgrade failed (%s) and rollback also failed (%v)", err, rerr))
 		}
-		// Wait briefly for the rollback daemon to be reachable.
+		// Wait for the rollback to settle so the daemon is reachable
+		// again by the time the operator's CLI re-polls.
 		_ = h.probeNewDaemon(ctx, probeURL, imageTagSuffix(h.rollbackImage), 60*time.Second)
 		h.logf("✅ rolled back to %s", h.rollbackImage)
 		return h.markStatus(ctx, store.UpgradeStatusRolledBack, err.Error())
 	}
 
 	return h.success(ctx)
+}
+
+// swarmRollback reverts the service to its previous spec using
+// Swarm's native --rollback flag. Swarm keeps the previous spec
+// after every successful update, so this is a single command.
+func (h *upgradeHelper) swarmRollback(ctx context.Context) error {
+	return h.runDockerStreaming(ctx, "service", "update", "--rollback", h.serviceName)
 }
 
 func (h *upgradeHelper) success(ctx context.Context) error {
@@ -195,10 +207,10 @@ func (h *upgradeHelper) fail(ctx context.Context, err error) error {
 	return h.markStatus(ctx, store.UpgradeStatusFailed, err.Error())
 }
 
-// markStatus writes the terminal status row to rqlite via the same
-// Store interface the daemon uses. We open a fresh DB connection
-// here — the helper container shares the rqlite cluster with the
-// daemon, so this works whether the new daemon is up or not.
+// markStatus writes the terminal status to rqlite. The helper opens
+// its own DB connection — the daemon may be mid-restart and
+// unavailable for a few seconds, but rqlite is a separate service
+// that stays up across the daemon swap.
 func (h *upgradeHelper) markStatus(ctx context.Context, status, errMsg string) error {
 	db, err := store.Open(h.rqliteURL)
 	if err != nil {
@@ -213,18 +225,19 @@ func (h *upgradeHelper) markStatus(ctx context.Context, status, errMsg string) e
 }
 
 // probeNewDaemon polls the daemon's /api/meta/info every 2s. Success
-// is HTTP 200 + version field == wantVersion. Used both for the
-// post-upgrade health check and the post-rollback re-stabilization.
+// is HTTP 200 + version field == wantVersion, OR HTTP 401/403
+// (daemon is up + responding, just refusing us due to missing auth —
+// the daemon being live is the load-bearing signal).
 //
-// Auth is intentionally skipped: /api/meta/info is the one endpoint
-// that doesn't require a key (same as today's pre-upgrade install
-// pattern). If that ever changes, the helper will need credentials
-// passed through from the daemon.
+// InsecureSkipVerify is on because we're probing the daemon's public
+// host but during a brief window when LE may not yet have reissued
+// (it shouldn't reissue, since the cert lives in the caddy volume
+// which isn't touched). Belt-and-suspenders for the cutover window.
 func (h *upgradeHelper) probeNewDaemon(ctx context.Context, url, wantVersion string, timeout time.Duration) error {
 	cli := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec  // localhost probe
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec  // probe across cutover
 		},
 	}
 	deadline := time.Now().Add(timeout)
@@ -234,34 +247,29 @@ func (h *upgradeHelper) probeNewDaemon(ctx context.Context, url, wantVersion str
 			return ctx.Err()
 		}
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		// /api/meta/info is auth-gated. Skip auth — daemon refuses 401
-		// before checking version, but the body is small. Easier: rely
-		// on a public health endpoint OR provide an API key. We use
-		// the daemon's existing public meta if present; otherwise
-		// fall through to "container exists + replied with status
-		// 401" as a positive signal that SOMETHING is listening.
 		resp, err := cli.Do(req)
 		if err != nil {
 			lastErr = err
 		} else {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<14))
 			resp.Body.Close()
-			if resp.StatusCode == 200 {
+			switch resp.StatusCode {
+			case 200:
 				var info struct {
 					Version string `json:"version"`
 				}
 				_ = json.Unmarshal(body, &info)
-				if info.Version == wantVersion {
+				if wantVersion == "" || info.Version == wantVersion {
 					return nil
 				}
 				lastErr = fmt.Errorf("got version=%q want %q", info.Version, wantVersion)
-			} else if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			case 401, 403:
 				// Daemon is up + responding to HTTP, just refusing
-				// us. Accept as healthy — the version string we want
-				// to verify is unreachable, but the daemon being live
-				// is the more important signal.
+				// our unauthenticated probe. That's the signal we
+				// care about — it means the swap landed and the new
+				// daemon is serving.
 				return nil
-			} else {
+			default:
 				lastErr = fmt.Errorf("status %d body=%s", resp.StatusCode, snippet(string(body)))
 			}
 		}
@@ -279,9 +287,8 @@ func (h *upgradeHelper) probeNewDaemon(ctx context.Context, url, wantVersion str
 	}
 }
 
-// runDockerStreaming runs a docker subprocess and pipes its stdout +
-// stderr line-by-line into the log file. Used for `docker pull`,
-// `docker compose up` etc. where the user wants to see progress.
+// runDockerStreaming runs a docker subprocess and pipes stdout +
+// stderr line-by-line into the log file.
 func (h *upgradeHelper) runDockerStreaming(ctx context.Context, args ...string) error {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdout = newPrefixWriter(h.logFile, "    ")
@@ -290,7 +297,6 @@ func (h *upgradeHelper) runDockerStreaming(ctx context.Context, args ...string) 
 }
 
 // runDockerCapture runs a docker subprocess and returns its stdout.
-// Used for `docker inspect` style read commands.
 func (h *upgradeHelper) runDockerCapture(ctx context.Context, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	out, err := cmd.Output()
@@ -298,35 +304,6 @@ func (h *upgradeHelper) runDockerCapture(ctx context.Context, args ...string) (s
 		return "", err
 	}
 	return string(out), nil
-}
-
-// upsertEnvVar adds or replaces a KEY=VALUE line in the compose dir's
-// .env file. Touch-and-rewrite — small file, easier to keep correct
-// than partial-line edits. Called inside the helper container; the
-// compose dir is bind-mounted read-write.
-func (h *upgradeHelper) upsertEnvVar(key, value string) error {
-	path := filepath.Join(h.composeDir, ".env")
-	existing, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	var out []string
-	replaced := false
-	for _, line := range strings.Split(string(existing), "\n") {
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, key+"=") {
-			out = append(out, key+"="+value)
-			replaced = true
-			continue
-		}
-		out = append(out, line)
-	}
-	if !replaced {
-		out = append(out, key+"="+value)
-	}
-	return os.WriteFile(path, []byte(strings.Join(out, "\n")+"\n"), 0o644)
 }
 
 // logf writes a timestamped line to both stdout (for `docker logs`)
@@ -341,9 +318,9 @@ func (h *upgradeHelper) logf(format string, args ...any) {
 	}
 }
 
-// prefixWriter wraps an io.Writer and prefixes each line with a fixed
-// string. Used to indent `docker pull` output so it's visually
-// distinguishable from helper-emitted progress lines.
+// prefixWriter wraps an io.Writer and prefixes each line with a
+// fixed string. Used to indent docker subprocess output so it's
+// visually distinguishable from helper-emitted progress lines.
 type prefixWriter struct {
 	w      io.Writer
 	prefix string
@@ -378,13 +355,6 @@ func indexByte(b []byte, c byte) int {
 	return -1
 }
 
-func strDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
 func snippet(s string) string {
 	const max = 120
 	s = strings.TrimSpace(s)
@@ -395,16 +365,16 @@ func snippet(s string) string {
 }
 
 // imageTagSuffix returns the tag portion of a docker image ref, or
-// "latest" when none is present. Mirrors imageTagAsVersion in the api
-// package but lives here so the helper has no api package dependency.
+// "" when none is present (so the caller can decide whether to skip
+// version verification).
 func imageTagSuffix(image string) string {
 	i := strings.LastIndex(image, ":")
 	if i <= 0 {
-		return "latest"
+		return ""
 	}
 	tail := image[i+1:]
 	if strings.Contains(tail, "/") {
-		return "latest"
+		return ""
 	}
 	return tail
 }

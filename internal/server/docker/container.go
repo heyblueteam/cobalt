@@ -114,13 +114,17 @@ func (c *Client) RunDetached(ctx context.Context, opts DetachedRunOpts) (string,
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// InspectContainerImage returns the image reference of a running
-// container by name. Used by the self-upgrade flow to capture the
-// current daemon image as the rollback target before swapping.
-func (c *Client) InspectContainerImage(ctx context.Context, name string) (string, error) {
+// InspectServiceImage returns the image of a running Swarm service
+// by name. Used by the self-upgrade flow to log what the rollback
+// target would be (`docker service update --rollback` doesn't need
+// this — Swarm tracks the previous spec natively — but it's useful
+// for the upgrade audit trail).
+func (c *Client) InspectServiceImage(ctx context.Context, name string) (string, error) {
 	var stdout strings.Builder
 	if err := c.runner.Run(ctx,
-		[]string{"inspect", "--format", "{{.Config.Image}}", name},
+		[]string{"service", "inspect",
+			"--format", "{{.Spec.TaskTemplate.ContainerSpec.Image}}",
+			name},
 		nil, &stdout, io.Discard,
 	); err != nil {
 		return "", err

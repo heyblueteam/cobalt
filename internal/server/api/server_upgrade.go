@@ -43,10 +43,9 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "daemon DataDir not configured")
 		return
 	}
-	composeHostDir := os.Getenv("COBALT_COMPOSE_HOST_DIR")
-	if composeHostDir == "" {
+	if h.PublicHost == "" {
 		writeError(w, http.StatusInternalServerError,
-			"COBALT_COMPOSE_HOST_DIR not set on the daemon — see deploy/compose/docker-compose.yml")
+			"daemon PublicHost not configured — required for the post-upgrade health probe")
 		return
 	}
 
@@ -111,7 +110,8 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 		"--target-image", req.Image,
 		"--log-path", "/cobalt/data/upgrades/" + id + ".log",
 		"--rqlite-url", "http://rqlite:4001",
-		"--compose-dir", "/cobalt/compose",
+		"--service-name", swarmServiceName(),
+		"--public-host", h.PublicHost,
 	}
 	if rollbackImage != "" {
 		helperCmd = append(helperCmd, "--rollback-image", rollbackImage)
@@ -126,7 +126,6 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 		BindMounts: []string{
 			"/var/run/docker.sock:/var/run/docker.sock",
 			"cobalt-data:/cobalt/data",
-			composeHostDir + ":/cobalt/compose",
 		},
 		EnvVars: map[string]string{
 			"COBALT_DATA_DIR": "/cobalt/data",
@@ -320,14 +319,25 @@ func imageTagAsVersion(image string) string {
 	return ""
 }
 
-// currentDaemonImage asks docker for the image of the running cobalt
-// container. Used as the rollback target — if the new daemon won't
-// come up, the helper restarts the old image rather than leaving the
-// host on a broken version.
+// currentDaemonImage asks Swarm for the image of the running cobalt
+// service. Used purely for logging — Swarm tracks the previous spec
+// natively, so `docker service update --rollback` doesn't need this
+// hint to revert. If lookup fails we just continue without it.
 func currentDaemonImage(ctx context.Context, d *docker.Client) (string, error) {
-	out, err := d.InspectContainerImage(ctx, "cobalt")
+	out, err := d.InspectServiceImage(ctx, swarmServiceName())
 	if err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// swarmServiceName is the Swarm service name to update when self-
+// upgrading. cobalt init deploys the stack as `cobalt`, so the
+// service is `cobalt_cobalt`. Override via env var for forks or
+// custom stack names.
+func swarmServiceName() string {
+	if v := os.Getenv("COBALT_SWARM_SERVICE_NAME"); v != "" {
+		return v
+	}
+	return "cobalt_cobalt"
 }
