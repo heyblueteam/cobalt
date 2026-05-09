@@ -114,6 +114,34 @@ func (c *Client) RunDetached(ctx context.Context, opts DetachedRunOpts) (string,
 	return strings.TrimSpace(stdout.String()), nil
 }
 
+// FindContainerByLabel returns the name of the first container
+// matching the supplied "label=value" filter. Used by the readiness
+// probe to find the running cobalt_caddy task container in Swarm
+// mode (where the actual container name is
+// `cobalt_caddy.<replica>.<task-id>`, not the bare service name).
+//
+// Returns the literal name as docker reports it. Caller decides what
+// to do with multiple matches; this implementation returns just the
+// first line so callers can pass a label that's expected to be
+// unique (typically com.docker.swarm.service.name).
+func (c *Client) FindContainerByLabel(ctx context.Context, label string) (string, error) {
+	var stdout strings.Builder
+	if err := c.runner.Run(ctx,
+		[]string{"ps", "--filter", "label=" + label, "--format", "{{.Names}}"},
+		nil, &stdout, io.Discard,
+	); err != nil {
+		return "", err
+	}
+	name := strings.TrimSpace(stdout.String())
+	if name == "" {
+		return "", fmt.Errorf("no container with label %q", label)
+	}
+	if i := strings.IndexByte(name, '\n'); i > 0 {
+		name = name[:i]
+	}
+	return name, nil
+}
+
 // InspectServiceImage returns the image of a running Swarm service
 // by name. Used by the self-upgrade flow to log what the rollback
 // target would be (`docker service update --rollback` doesn't need

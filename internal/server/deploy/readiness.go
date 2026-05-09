@@ -29,18 +29,25 @@ const (
 
 	readinessPollInterval = 2 * time.Second
 
-	// ReadinessProbeContainer is the cobalt-managed Caddy container we
-	// exec into to reach swarm services via overlay DNS. Probing from
-	// inside Caddy means resolution + reachability mirror what live
-	// public traffic will see when commitCaddySwap routes to it.
-	ReadinessProbeContainer = "cobalt-caddy"
+	// caddyServiceLabel selects the caddy task container in Swarm
+	// installs. cobalt init deploys the stack as `cobalt`, so the
+	// caddy service is `cobalt_caddy` and the actual container name
+	// is `cobalt_caddy.<replica>.<task-id>` — too dynamic to
+	// hardcode. We look it up by Swarm service label per probe.
+	caddyServiceLabel = "com.docker.swarm.service.name=cobalt_caddy"
+
+	// caddyContainerCompose is the bare container name used in the
+	// non-Swarm `docker compose up` topology. Used as a fallback when
+	// the Swarm-label lookup returns no match.
+	caddyContainerCompose = "cobalt-caddy"
 )
 
 // ReadinessProber is the docker subset waitHTTPReady uses. *docker.Client
-// satisfies it via Exec. Defined as an interface so unit tests can plug a
-// fake without spinning up a container.
+// satisfies it via Exec + FindContainerByLabel. Defined as an interface
+// so unit tests can plug a fake without spinning up a container.
 type ReadinessProber interface {
 	Exec(ctx context.Context, container string, cmd []string, stdout, stderr io.Writer) error
+	FindContainerByLabel(ctx context.Context, label string) (string, error)
 }
 
 // waitHTTPReady blocks until the cobaltfile's `web` service accepts a TCP
@@ -115,12 +122,13 @@ func waitHTTPReady(
 func probeTCP(ctx context.Context, p ReadinessProber, service string, port int) (bool, string) {
 	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	caddy := resolveCaddyContainer(probeCtx, p)
 	cmd := []string{
 		"nc", "-z", "-w", "3",
 		service, fmt.Sprintf("%d", port),
 	}
 	var stderr bytes.Buffer
-	err := p.Exec(probeCtx, ReadinessProbeContainer, cmd, io.Discard, &stderr)
+	err := p.Exec(probeCtx, caddy, cmd, io.Discard, &stderr)
 	if err == nil {
 		return true, ""
 	}
@@ -129,6 +137,18 @@ func probeTCP(ctx context.Context, p ReadinessProber, service string, port int) 
 		msg = err.Error()
 	}
 	return false, snippetReadiness(msg)
+}
+
+// resolveCaddyContainer returns the name of the running caddy
+// container — looked up by Swarm service label, with a fallback to
+// the compose-mode literal name. Re-resolved every probe so a Swarm
+// task replacement (which gives the new task a fresh container ID)
+// doesn't wedge subsequent probes against a dead name.
+func resolveCaddyContainer(ctx context.Context, p ReadinessProber) string {
+	if name, err := p.FindContainerByLabel(ctx, caddyServiceLabel); err == nil && name != "" {
+		return name
+	}
+	return caddyContainerCompose
 }
 
 func snippetReadiness(s string) string {

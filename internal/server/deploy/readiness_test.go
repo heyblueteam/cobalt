@@ -32,6 +32,13 @@ type fakeProber struct {
 	recordCmd []string
 }
 
+// FindContainerByLabel satisfies the ReadinessProber interface.
+// Tests don't exercise the lookup path; return the compose-mode
+// fallback name so probeTCP behaves as before.
+func (f *fakeProber) FindContainerByLabel(_ context.Context, _ string) (string, error) {
+	return "cobalt-caddy", nil
+}
+
 func (f *fakeProber) Exec(ctx context.Context, container string, cmd []string, stdout, stderr io.Writer) error {
 	idx := atomic.AddInt32(&f.calls, 1) - 1
 	f.mu.Lock()
