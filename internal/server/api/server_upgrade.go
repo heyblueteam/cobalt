@@ -120,12 +120,20 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 		helperCmd = append(helperCmd, "--no-pull")
 	}
 
+	// The helper needs to write its log to the SAME volume the daemon
+	// reads from for SSE streaming. In Swarm mode the volume is named
+	// `<stack>_<compose-volume>` (e.g. cobalt_cobalt-data) — the bare
+	// `cobalt-data` would silently create a new empty volume the
+	// daemon doesn't see, and the SSE follow times out reading an
+	// empty file. Discover the actual source by inspecting our own
+	// container's mounts; fall back to the Swarm default.
+	dataVolume := dataVolumeName()
 	_, runErr := h.Docker.RunDetached(r.Context(), docker.DetachedRunOpts{
 		Name:  helperName,
 		Image: req.Image,
 		BindMounts: []string{
 			"/var/run/docker.sock:/var/run/docker.sock",
-			"cobalt-data:/cobalt/data",
+			dataVolume + ":/cobalt/data",
 		},
 		EnvVars: map[string]string{
 			"COBALT_DATA_DIR": "/cobalt/data",
@@ -340,4 +348,17 @@ func swarmServiceName() string {
 		return v
 	}
 	return "cobalt_cobalt"
+}
+
+// dataVolumeName is the source-side name for the cobalt-data volume
+// when constructing the helper container's bind mount. Stack-deploy
+// prefixes the compose volume name with the stack name (so
+// `cobalt-data` becomes `cobalt_cobalt-data`); compose-mode uses the
+// bare name. Override via env var when the install diverges from the
+// canonical `cobalt init` setup.
+func dataVolumeName() string {
+	if v := os.Getenv("COBALT_DATA_VOLUME"); v != "" {
+		return v
+	}
+	return "cobalt_cobalt-data"
 }
