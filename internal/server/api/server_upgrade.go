@@ -141,9 +141,14 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 	// empty file. Discover the actual source by inspecting our own
 	// container's mounts; fall back to the Swarm default.
 	dataVolume := dataVolumeName()
+	// Override entrypoint to skip the image's default `cobalt server`
+	// — the helper invokes the `server-upgrade-helper` subcommand
+	// directly, which would otherwise be interpreted as an extra arg
+	// to `server`.
 	_, runErr := h.Docker.RunDetached(r.Context(), docker.DetachedRunOpts{
-		Name:  helperName,
-		Image: req.Image,
+		Name:       helperName,
+		Image:      req.Image,
+		Entrypoint: "/usr/local/bin/cobalt",
 		BindMounts: []string{
 			"/var/run/docker.sock:/var/run/docker.sock",
 			dataVolume + ":/cobalt/data",

@@ -79,12 +79,13 @@ func (c *Client) Run(ctx context.Context, opts RunOpts) error {
 // has unusual requirements (host-socket mount, host-path bind mount)
 // that would clutter RunOpts if added there.
 type DetachedRunOpts struct {
-	Name        string            // --name; required
-	Image       string            // image:tag
-	Command     []string          // argv after the image
+	Name        string // --name; required
+	Image       string // image:tag
+	Entrypoint  string // optional override; empty = use image's ENTRYPOINT
+	Command     []string
 	EnvVars     map[string]string
-	BindMounts  []string          // pre-formatted "src:dst" or "src:dst:ro"
-	ExtraParams []string          // any escape-hatch flags
+	BindMounts  []string // pre-formatted "src:dst" or "src:dst:ro"
+	ExtraParams []string
 }
 
 // RunDetached spawns a detached, auto-cleanup container. Returns the
@@ -97,6 +98,9 @@ func (c *Client) RunDetached(ctx context.Context, opts DetachedRunOpts) (string,
 		return "", fmt.Errorf("docker.RunDetached: Name and Image are required")
 	}
 	args := []string{"run", "--rm", "--detach", "--name", opts.Name}
+	if opts.Entrypoint != "" {
+		args = append(args, "--entrypoint", opts.Entrypoint)
+	}
 	for _, k := range sortedKeys(opts.EnvVars) {
 		args = append(args, "--env", k+"="+opts.EnvVars[k])
 	}
