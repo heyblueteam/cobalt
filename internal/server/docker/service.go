@@ -47,6 +47,14 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 	name := ServiceName(opts.ProjectName, opts.DeploymentNumber, opts.ServiceName)
 	args := []string{
 		"service", "create",
+		// --detach=true returns as soon as Swarm accepts the spec.
+		// Docker 20.10+ defaults to synchronous "wait for service to
+		// converge" mode, which hangs forever on a crash-looping
+		// container — the daemon's WaitForServiceHealthy is the
+		// proper place to wait, with fail-fast on shutdown count.
+		// Without --detach, a deploy of a broken image wedges in
+		// `🚀 starting service` and never reaches the fail-fast path.
+		"--detach=true",
 		"--name", name,
 		"--with-registry-auth",
 	}
