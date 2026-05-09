@@ -24,14 +24,23 @@ type Project struct {
 	GitHub  string
 }
 
-// NewProject creates a uniquely-named project pointing at the e2e
-// fixture repo. The name embeds the test name + a unix timestamp so
-// concurrent runs and abandoned cleanup leftovers don't collide.
+// NewProject creates a uniquely-named project on the fixture repo's
+// `main` branch. Most scenarios want this. For scenarios that need a
+// specific fixture branch (slow-startup, crash-loop), use
+// NewProjectOnBranch.
+func NewProject(t *testing.T, env Env, scenario string) *Project {
+	return NewProjectOnBranch(t, env, scenario, "main")
+}
+
+// NewProjectOnBranch creates a uniquely-named project pointing at a
+// specific fixture-repo branch. The name embeds the test slug + a
+// unix timestamp so concurrent runs and abandoned cleanup leftovers
+// don't collide.
 //
 // scenario should be a short slug (e.g. "primary-deploy",
 // "with-www") used to label the project on the daemon for easier
 // post-mortem when COBALT_E2E_KEEP=1.
-func NewProject(t *testing.T, env Env, scenario string) *Project {
+func NewProjectOnBranch(t *testing.T, env Env, scenario, branch string) *Project {
 	t.Helper()
 	name := projectName(scenario)
 	cl := env.Client()
@@ -40,17 +49,17 @@ func NewProject(t *testing.T, env Env, scenario string) *Project {
 	_, err := cl.CreateProject(ctx, cobaltapi.ProjectCreateRequest{
 		Name:       name,
 		GithubRepo: env.FixtureRepo,
-		Branch:     "main",
+		Branch:     branch,
 	})
 	if err != nil {
-		t.Fatalf("create project %s: %v", name, err)
+		t.Fatalf("create project %s on branch %s: %v", name, branch, err)
 	}
 	p := &Project{
 		t:      t,
 		env:    env,
 		client: cl,
 		Name:   name,
-		Branch: "main",
+		Branch: branch,
 		GitHub: env.FixtureRepo,
 	}
 	t.Cleanup(func() {

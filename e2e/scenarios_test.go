@@ -178,6 +178,85 @@ func TestRemoveCascadesRedirects(t *testing.T) {
 	}
 }
 
+// TestSlowStartup: deploy a fixture branch where the container sleeps
+// 30s before nginx accepts connections. Asserts that cobalt's
+// readiness probe waits it out and the deploy succeeds — not that it
+// returns "success" at t≈0 because Swarm reported the task running
+// before the app was actually listening.
+//
+// Pre-readiness-probe behavior: deploy completed in ~17s with the
+// fixture's 30s sleep happening *inside* a "successful" container
+// that wasn't yet serving. With the probe, deploy time should be at
+// least ~30s and the post-deploy HTTP probe should hit immediately.
+func TestSlowStartup(t *testing.T) {
+	env := RequireEnv(t)
+	base := env.requireDomainBase(t)
+
+	p := NewProjectOnBranch(t, env, "slow-startup", "slow-startup")
+	domain := fmt.Sprintf("slow-%d.%s", time.Now().Unix(), base)
+	if _, err := p.AddDomain(domain); err != nil {
+		t.Fatalf("add domain: %v", err)
+	}
+
+	t0 := time.Now()
+	p.DeployWithTimeout(t, 5*time.Minute)
+	elapsed := time.Since(t0)
+
+	// The fixture sleeps 30s. Allow some slack for build + container
+	// boot, but deploys finishing in <20s prove the probe didn't run.
+	if elapsed < 20*time.Second {
+		t.Fatalf("deploy returned success in %s — readiness probe likely didn't wait for the app to actually listen",
+			elapsed.Round(time.Second))
+	}
+
+	url := "https://" + domain + "/"
+	if err := WaitForHTTP(url, 200, 60*time.Second); err != nil {
+		t.Fatalf("slow-startup not serving after deploy: %v", err)
+	}
+	if err := AssertBodyContains(url, "slow-startup"); err != nil {
+		t.Fatalf("body assertion: %v", err)
+	}
+}
+
+// TestCrashLoop: deploy a fixture branch where the web container
+// `exit 1`s on start. Asserts the deploy fails fast — pre-readiness-
+// probe cobalt would hang in `swapping` for the full 5-minute
+// HealthcheckTimeout because Swarm's task-state never settles.
+//
+// We assert the deploy reaches a terminal non-success state inside
+// 4 minutes; HealthcheckTimeout itself is 5 min, so anything past
+// that is the old hang behavior.
+//
+// Future extension: with a project-branch update API or commit
+// override, we could also assert that a previous-good deployment
+// keeps serving traffic across the failed deploy. Today we only
+// validate the fail-fast property.
+func TestCrashLoop(t *testing.T) {
+	env := RequireEnv(t)
+
+	p := NewProjectOnBranch(t, env, "crash-loop", "crash-loop")
+	// Domain is required by the daemon for projects with a web
+	// service; use a synthetic .test name since we never actually
+	// expect HTTPS to come up.
+	domain := fmt.Sprintf("crash-%d.example.test", time.Now().Unix())
+	if _, err := p.AddDomain(domain); err != nil {
+		t.Fatalf("add domain: %v", err)
+	}
+
+	t0 := time.Now()
+	failed := p.DeployExpectingFailure(t, 4*time.Minute)
+	elapsed := time.Since(t0)
+	t.Logf("crash-loop deploy ended in %s after %s (expected non-success)",
+		failed.Status, elapsed.Round(time.Second))
+
+	// Hard upper bound: anything past 4 min means the daemon's
+	// readiness/healthcheck wait isn't surfacing failure tightly
+	// enough — the bug class this test is meant to guard against.
+	if elapsed >= 4*time.Minute {
+		t.Fatalf("crash-loop deploy took %s — expected fast failure", elapsed)
+	}
+}
+
 func hasRedirect(domains []cobaltapi.Domain, from, to string) bool {
 	for _, d := range domains {
 		if d.Name == from && d.Type == cobaltapi.DomainTypeRedirect && d.RedirectTo == to {

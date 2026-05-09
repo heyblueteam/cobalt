@@ -24,6 +24,29 @@ func (p *Project) Deploy(t *testing.T) *cobaltapi.Deployment {
 // DeployWithTimeout is Deploy with an explicit overall timeout.
 func (p *Project) DeployWithTimeout(t *testing.T, timeout time.Duration) *cobaltapi.Deployment {
 	t.Helper()
+	final := p.deployRaw(t, timeout)
+	if final.Status != cobaltapi.StateSuccess {
+		t.Fatalf("deploy %d ended in %s (expected success)", final.ID, final.Status)
+	}
+	return final
+}
+
+// DeployExpectingFailure enqueues a deployment, waits for it to reach
+// a terminal state, and fails the test if it succeeds. Used by
+// scenarios that exercise deploy-failure paths (crash-loop, etc.) —
+// the daemon should refuse to cut traffic over to a non-serving
+// container.
+func (p *Project) DeployExpectingFailure(t *testing.T, timeout time.Duration) *cobaltapi.Deployment {
+	t.Helper()
+	final := p.deployRaw(t, timeout)
+	if final.Status == cobaltapi.StateSuccess {
+		t.Fatalf("deploy %d succeeded; expected failure", final.ID)
+	}
+	return final
+}
+
+func (p *Project) deployRaw(t *testing.T, timeout time.Duration) *cobaltapi.Deployment {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	d, err := p.client.CreateDeployment(ctx, p.Name, cobaltapi.DeploymentCreateRequest{})
@@ -33,9 +56,6 @@ func (p *Project) DeployWithTimeout(t *testing.T, timeout time.Duration) *cobalt
 	final, err := p.WaitForDeploy(d.ID, timeout)
 	if err != nil {
 		t.Fatalf("wait for deploy %d: %v", d.ID, err)
-	}
-	if final.Status != cobaltapi.StateSuccess {
-		t.Fatalf("deploy %d ended in %s (expected success)", final.ID, final.Status)
 	}
 	return final
 }

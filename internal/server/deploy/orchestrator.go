@@ -220,6 +220,15 @@ func (o *Orchestrator) cutover(
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return err
 	}
+	// Swarm says the task is running, but "running" only means the
+	// process started — the app may still be opening its socket, loading
+	// config, warming a cache, etc. Probe the web service's port from
+	// inside cobalt-caddy before we route traffic; otherwise we'll cut
+	// over to a backend that 502s.
+	if err := waitHTTPReady(ctx, o.Docker, *project, dep, cf, out); err != nil {
+		_ = stopServices(context.Background(), o.Docker, startedServices)
+		return err
+	}
 
 	// PHASE 2 — commit. Caddy cutover, atomic from the public's POV.
 
