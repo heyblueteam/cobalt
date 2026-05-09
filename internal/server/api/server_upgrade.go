@@ -145,6 +145,12 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 	// — the helper invokes the `server-upgrade-helper` subcommand
 	// directly, which would otherwise be interpreted as an extra arg
 	// to `server`.
+	//
+	// Attach to the stack's default overlay network so the helper can
+	// reach rqlite via Swarm DNS — without this the helper lives on
+	// the docker bridge, can't resolve `rqlite`, and the terminal
+	// status write fails (the upgrade itself completes but the row
+	// stays in `running` until the sweeper catches it).
 	_, runErr := h.Docker.RunDetached(r.Context(), docker.DetachedRunOpts{
 		Name:       helperName,
 		Image:      req.Image,
@@ -153,6 +159,7 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 			"/var/run/docker.sock:/var/run/docker.sock",
 			dataVolume + ":/cobalt/data",
 		},
+		ExtraParams: []string{"--network", helperNetwork()},
 		EnvVars: map[string]string{
 			"COBALT_DATA_DIR": "/cobalt/data",
 		},
@@ -366,6 +373,17 @@ func swarmServiceName() string {
 		return v
 	}
 	return "cobalt_cobalt"
+}
+
+// helperNetwork is the docker network the helper container attaches
+// to so it can reach rqlite (and the Swarm overlay's DNS) for
+// terminal-status writes. cobalt init's stack-deploy creates a
+// `cobalt_default` overlay; non-canonical installs override.
+func helperNetwork() string {
+	if v := os.Getenv("COBALT_HELPER_NETWORK"); v != "" {
+		return v
+	}
+	return "cobalt_default"
 }
 
 // dataVolumeName is the source-side name for the cobalt-data volume
