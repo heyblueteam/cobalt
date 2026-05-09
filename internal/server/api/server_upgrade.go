@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -146,11 +147,11 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 	// directly, which would otherwise be interpreted as an extra arg
 	// to `server`.
 	//
-	// Attach to the stack's default overlay network so the helper can
-	// reach rqlite via Swarm DNS — without this the helper lives on
-	// the docker bridge, can't resolve `rqlite`, and the terminal
-	// status write fails (the upgrade itself completes but the row
-	// stays in `running` until the sweeper catches it).
+	// Helper lands on docker bridge by default. It writes terminal
+	// status to a sentinel file in cobalt-data when its rqlite path
+	// fails (typical in Swarm because the stack overlay is non-
+	// attachable by default). The daemon's GET handler reconciles
+	// the file. See reconcileUpgradeStatusFile.
 	_, runErr := h.Docker.RunDetached(r.Context(), docker.DetachedRunOpts{
 		Name:       helperName,
 		Image:      req.Image,
@@ -159,7 +160,6 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 			"/var/run/docker.sock:/var/run/docker.sock",
 			dataVolume + ":/cobalt/data",
 		},
-		ExtraParams: []string{"--network", helperNetwork()},
 		EnvVars: map[string]string{
 			"COBALT_DATA_DIR": "/cobalt/data",
 		},
@@ -189,12 +189,19 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 
 // GetServerUpgrade implements GET /api/server/upgrade/{id}. Polled by
 // the CLI to check terminal status after the SSE stream closes.
+//
+// Reconciles a sentinel file the helper container drops into
+// cobalt-data when its rqlite path was unavailable (Swarm overlay
+// non-attachable, etc.). The file carries the helper's terminal
+// status — applying it inline + deleting the file means the row
+// converges without the helper needing network access.
 func (h *Handler) GetServerUpgrade(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, http.StatusBadRequest, "missing upgrade id")
 		return
 	}
+	h.reconcileUpgradeStatusFile(r.Context(), id)
 	u, err := h.DB.GetUpgrade(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "upgrade not found")
@@ -329,6 +336,43 @@ func upgradeLogPath(dataDir, id string) string {
 	return filepath.Join(dataDir, "upgrades", id+".log")
 }
 
+// reconcileUpgradeStatusFile reads the helper's sentinel file (if
+// present) and applies its status to the upgrade row. The helper
+// drops this file as a fallback when it can't reach rqlite directly.
+// File is deleted after a successful row update so we don't repeat
+// the work on every poll. Failure is silent — the next poll retries,
+// and the boot sweeper catches truly stuck rows.
+func (h *Handler) reconcileUpgradeStatusFile(ctx context.Context, id string) {
+	if h.DataDir == "" {
+		return
+	}
+	path := strings.TrimSuffix(upgradeLogPath(h.DataDir, id), ".log") + ".status"
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return // most upgrades — file never existed because rqlite worked
+	}
+	var payload struct {
+		Status       string `json:"status"`
+		ErrorMessage string `json:"error_message"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		h.Log.Warn("upgrade status file unparseable", "upgrade_id", id, "error", err)
+		return
+	}
+	if payload.Status == "" {
+		return
+	}
+	if err := h.DB.SetUpgradeStatus(ctx, id, payload.Status, payload.ErrorMessage); err != nil {
+		h.Log.Warn("apply upgrade status from sentinel file failed",
+			"upgrade_id", id, "error", err)
+		return
+	}
+	if err := os.Remove(path); err != nil {
+		h.Log.Warn("remove upgrade status file failed",
+			"upgrade_id", id, "error", err)
+	}
+}
+
 // newUpgradeID generates a short, URL-safe id. 8 bytes = 16 hex chars,
 // plenty of entropy for cross-helper container names.
 func newUpgradeID() string {
@@ -373,17 +417,6 @@ func swarmServiceName() string {
 		return v
 	}
 	return "cobalt_cobalt"
-}
-
-// helperNetwork is the docker network the helper container attaches
-// to so it can reach rqlite (and the Swarm overlay's DNS) for
-// terminal-status writes. cobalt init's stack-deploy creates a
-// `cobalt_default` overlay; non-canonical installs override.
-func helperNetwork() string {
-	if v := os.Getenv("COBALT_HELPER_NETWORK"); v != "" {
-		return v
-	}
-	return "cobalt_default"
 }
 
 // dataVolumeName is the source-side name for the cobalt-data volume

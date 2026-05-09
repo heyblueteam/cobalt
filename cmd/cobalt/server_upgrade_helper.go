@@ -207,21 +207,43 @@ func (h *upgradeHelper) fail(ctx context.Context, err error) error {
 	return h.markStatus(ctx, store.UpgradeStatusFailed, err.Error())
 }
 
-// markStatus writes the terminal status to rqlite. The helper opens
-// its own DB connection — the daemon may be mid-restart and
-// unavailable for a few seconds, but rqlite is a separate service
-// that stays up across the daemon swap.
+// markStatus records terminal status. Two-path: try rqlite first
+// (fast, single source of truth), fall back to a sentinel JSON file
+// the daemon picks up next time it serves /api/server/upgrade/{id}.
+// The fallback exists because helper containers may not be on a
+// network that resolves rqlite (Swarm overlays default to non-
+// attachable; the helper lands on the docker bridge).
 func (h *upgradeHelper) markStatus(ctx context.Context, status, errMsg string) error {
+	if err := h.writeStatusFile(status, errMsg); err != nil {
+		h.logf("⚠️  status file write failed: %v", err)
+	}
 	db, err := store.Open(h.rqliteURL)
 	if err != nil {
-		h.logf("🚨 could not open rqlite to write terminal status: %v", err)
-		return err
+		h.logf("ℹ️  rqlite unreachable from helper, terminal status will be picked up via status file: %v", err)
+		return nil
 	}
 	if err := db.SetUpgradeStatus(ctx, h.upgradeID, status, errMsg); err != nil {
-		h.logf("🚨 could not write terminal status %q: %v", status, err)
-		return err
+		h.logf("ℹ️  rqlite write failed, terminal status will be picked up via status file: %v", err)
+		return nil
 	}
 	return nil
+}
+
+// writeStatusFile drops a small JSON next to the upgrade log. The
+// daemon's GET /api/server/upgrade/{id} handler reconciles this into
+// the upgrade row when it sees one. Idempotent — last writer wins,
+// daemon deletes the file after applying.
+func (h *upgradeHelper) writeStatusFile(status, errMsg string) error {
+	path := strings.TrimSuffix(h.logPath, ".log") + ".status"
+	body := map[string]string{
+		"status":        status,
+		"error_message": errMsg,
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o644)
 }
 
 // probeNewDaemon polls the daemon's /api/meta/info every 2s. Success
