@@ -43,8 +43,24 @@ x-cobalt-base: &cobalt-base
     - cobalt-data:/cobalt/data
     - caddy-socket:/cobalt/caddy-socket
     - /var/run/docker.sock:/var/run/docker.sock
+    # Mount the host's compose directory so `cobalt upgrade` can shell
+    # out to `docker compose -f /cobalt/compose/docker-compose.yml
+    # up -d cobalt` from inside a transient helper container that the
+    # daemon spawns. Read-only on the daemon side (it never writes
+    # here); the helper mounts the same host path read-write so it
+    # can update .env to pin the new COBALT_VERSION.
+    # COBALT_COMPOSE_DIR (host path) defaults to ./ — i.e. the dir the
+    # operator ran `docker compose up` in.
+    - ${COBALT_COMPOSE_DIR:-./}:/cobalt/compose:ro
   environment:
     COBALT_DATA_DIR: /cobalt/data
+    COBALT_VERSION: ${COBALT_VERSION:-latest}
+    # Host-side absolute path to the compose dir, so the daemon knows
+    # what to pass as the helper container's bind-mount source. Without
+    # this the helper would see the daemon's view of the directory but
+    # `docker run --volume <src>:<dst>` resolves <src> on the host, not
+    # in the daemon container.
+    COBALT_COMPOSE_HOST_DIR: ${COBALT_COMPOSE_DIR:-./}
   restart: unless-stopped
   command: >
     server

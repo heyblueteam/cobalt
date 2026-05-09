@@ -26,13 +26,12 @@ func (h *Handler) GetMetaInfo(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// MetaUpgrade implements POST /api/meta/upgrade. For v1 this is a stub —
-// the daemon cannot safely self-upgrade while running. Manual upgrade via
-// `docker service update --image ghcr.io/heyblueteam/cobalt:<tag> cobalt` is
-// required. Returns 501 with a message directing users to the manual process.
+// MetaUpgrade is the deprecated alias for ServerUpgrade — kept so
+// older CLIs can keep upgrading until they roll forward. Just calls
+// the new handler. Will be removed one minor release after every
+// supported install has the new CLI.
 func (h *Handler) MetaUpgrade(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented,
-		"manual upgrade required: docker service update --image <image> cobalt")
+	h.ServerUpgrade(w, r)
 }
 
 // MetaHost implements POST /api/meta/host. Updates the daemon's public

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 )
 
 // RunOpts describes a one-shot `docker run` invocation. Used by the deploy
@@ -70,6 +71,61 @@ func (c *Client) Run(ctx context.Context, opts RunOpts) error {
 	args = append(args, opts.Command...)
 
 	return c.runner.Run(ctx, args, opts.Stdin, opts.Stdout, opts.Stderr)
+}
+
+// DetachedRunOpts is a slimmed-down `docker run -d` for the
+// self-upgrade helper. The full RunOpts is overkill (no project
+// labels, no networks, no env-var ergonomics needed), and the helper
+// has unusual requirements (host-socket mount, host-path bind mount)
+// that would clutter RunOpts if added there.
+type DetachedRunOpts struct {
+	Name        string            // --name; required
+	Image       string            // image:tag
+	Command     []string          // argv after the image
+	EnvVars     map[string]string
+	BindMounts  []string          // pre-formatted "src:dst" or "src:dst:ro"
+	ExtraParams []string          // any escape-hatch flags
+}
+
+// RunDetached spawns a detached, auto-cleanup container. Returns the
+// container ID on success. Used by the daemon to launch a helper
+// process that needs to outlive the daemon itself (self-upgrade flow:
+// the helper restarts the cobalt service while the daemon dies, so
+// it CANNOT be a child of the daemon process).
+func (c *Client) RunDetached(ctx context.Context, opts DetachedRunOpts) (string, error) {
+	if opts.Name == "" || opts.Image == "" {
+		return "", fmt.Errorf("docker.RunDetached: Name and Image are required")
+	}
+	args := []string{"run", "--rm", "--detach", "--name", opts.Name}
+	for _, k := range sortedKeys(opts.EnvVars) {
+		args = append(args, "--env", k+"="+opts.EnvVars[k])
+	}
+	for _, m := range opts.BindMounts {
+		args = append(args, "--volume", m)
+	}
+	args = append(args, opts.ExtraParams...)
+	args = append(args, opts.Image)
+	args = append(args, opts.Command...)
+
+	var stdout strings.Builder
+	if err := c.runner.Run(ctx, args, nil, &stdout, io.Discard); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
+}
+
+// InspectContainerImage returns the image reference of a running
+// container by name. Used by the self-upgrade flow to capture the
+// current daemon image as the rollback target before swapping.
+func (c *Client) InspectContainerImage(ctx context.Context, name string) (string, error) {
+	var stdout strings.Builder
+	if err := c.runner.Run(ctx,
+		[]string{"inspect", "--format", "{{.Config.Image}}", name},
+		nil, &stdout, io.Discard,
+	); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(stdout.String()), nil
 }
 
 // RemoveContainer removes a container by name with --force. Treats a

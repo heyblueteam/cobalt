@@ -61,8 +61,16 @@ func (h *Handler) Register(mux *http.ServeMux) {
 
 	// Meta
 	mux.HandleFunc("GET /api/meta/info", h.GetMetaInfo)
-	mux.HandleFunc("POST /api/meta/upgrade", h.MetaUpgrade)
+	mux.HandleFunc("POST /api/meta/upgrade", h.MetaUpgrade) // deprecated alias for /api/server/upgrade
 	mux.HandleFunc("POST /api/meta/host", h.MetaHost)
+
+	// Server (daemon-side ops). The new home for upgrade + future
+	// daemon-management surfaces. Meta routes above are deprecated and
+	// will be removed once self-upgrade has shipped to the v0.7.0+ box
+	// fleet.
+	mux.HandleFunc("POST /api/server/upgrade", h.ServerUpgrade)
+	mux.HandleFunc("GET /api/server/upgrade/{id}", h.GetServerUpgrade)
+	mux.HandleFunc("GET /api/server/upgrade/{id}/output", h.ServerUpgradeOutput)
 }
 
 // RegisterPublic attaches public (unauthenticated) routes onto mux.

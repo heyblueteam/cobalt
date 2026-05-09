@@ -154,6 +154,18 @@ func (db *DB) InitSchema(ctx context.Context) error {
 			finished_at   INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_runs_project ON command_runs(project_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS upgrades (
+			id              TEXT PRIMARY KEY,
+			target_image    TEXT NOT NULL,
+			target_version  TEXT NOT NULL,
+			from_version    TEXT NOT NULL,
+			status          TEXT NOT NULL,
+			error_message   TEXT,
+			log_path        TEXT NOT NULL,
+			started_at      INTEGER NOT NULL,
+			ended_at        INTEGER
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_upgrades_status ON upgrades(status, started_at)`,
 	})
 	if _, err := db.Execute(ctx, stmts, nil); err != nil {
 		return err
