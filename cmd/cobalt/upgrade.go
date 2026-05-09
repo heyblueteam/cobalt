@@ -111,10 +111,13 @@ func followUpgrade(ctx context.Context, cl *client.Client, id string) error {
 		return fmt.Errorf("log stream returned %s", resp.Status)
 	}
 	streamErr := output.ConsumeSSE(ctx, resp.Body, output.Stdout)
-	// SSE closing means terminal — fetch the row to see how it ended.
-	// Be patient: the daemon itself just restarted (twice if there was
-	// a rollback), so the API may briefly be unavailable.
-	final, err := getUpgradeWithRetry(ctx, cl, id, 30*time.Second)
+	// SSE close happens for two reasons during a real upgrade: the
+	// daemon serving the stream got swapped (TCP reset on the old
+	// container), or the upgrade really finished. Either way we now
+	// poll for terminal status — generous deadline because the helper
+	// can still be finishing post-stream work (probe, status file
+	// write, daemon reconcile of the file).
+	final, err := getUpgradeWithRetry(ctx, cl, id, 3*time.Minute)
 	if err != nil {
 		// Stream may have closed mid-restart; surface the streamErr if
 		// it's the more useful one.
@@ -137,18 +140,39 @@ func followUpgrade(ctx context.Context, cl *client.Client, id string) error {
 	}
 }
 
-// getUpgradeWithRetry polls GetUpgrade through the post-restart
-// window when the daemon is briefly unavailable.
+// getUpgradeWithRetry polls GetUpgrade until the row reaches a
+// terminal status, the daemon stops responding, or the timeout
+// elapses. Two distinct retry concerns this folds together:
+//
+//   - the daemon is briefly unavailable across the restart that the
+//     upgrade itself causes (transport error, retry)
+//   - the helper is still finishing post-restart work — sentinel
+//     file not yet written, status reconciliation hasn't fired
+//     (status=running, retry)
+//
+// Returns the row only when IsTerminal() is true, or with the last
+// error when the deadline passes.
 func getUpgradeWithRetry(ctx context.Context, cl *client.Client, id string, timeout time.Duration) (*cobaltapi.ServerUpgrade, error) {
 	deadline := time.Now().Add(timeout)
+	var lastResult *cobaltapi.ServerUpgrade
 	var lastErr error
 	for {
-		if u, err := cl.GetUpgrade(ctx, id); err == nil {
-			return u, nil
+		u, err := cl.GetUpgrade(ctx, id)
+		if err == nil {
+			lastResult = u
+			if u.IsTerminal() {
+				return u, nil
+			}
 		} else {
 			lastErr = err
 		}
 		if time.Now().After(deadline) {
+			if lastResult != nil {
+				// Daemon was reachable but the row never went
+				// terminal within the budget. Surface the row as-is
+				// so the caller can produce a useful error message.
+				return lastResult, nil
+			}
 			return nil, lastErr
 		}
 		select {
