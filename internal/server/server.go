@@ -120,6 +120,18 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 
+	// Mark any upgrade rows still in `running` status from before this
+	// boot as failed. Without this, a daemon crash mid-upgrade (or a
+	// helper container that exited without calling SetUpgradeStatus,
+	// e.g. earlier-version bugs) leaves the row stuck and the
+	// single-flight 409 blocks every future `cobalt upgrade` call.
+	// 30 min is a generous upper bound on any real upgrade.
+	if n, err := db.SweepStaleUpgrades(ctx, 30*time.Minute); err != nil {
+		log.Warn("sweep stale upgrades failed", "error", err)
+	} else if n > 0 {
+		log.Info("swept stale upgrade rows", "count", n)
+	}
+
 	// Wire the env-var encryption cipher BEFORE any code path that
 	// touches env_vars. The key is bind-mounted into the daemon at
 	// /run/secrets/cobalt_encryption_key by the embedded compose;

@@ -49,13 +49,26 @@ func (h *Handler) ServerUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 409 if there's already an upgrade running. Operators expect to
-	// follow the existing one, not stack a second helper that would
-	// race the first inside the compose project.
+	// 409 if there's a recent upgrade still running. A row that's
+	// been running for more than 10 min is presumed dead — the helper
+	// crashed or the daemon was killed mid-upgrade — so we mark it
+	// failed and let the new request proceed instead of blocking
+	// forever. SweepStaleUpgrades handles this on boot; this inline
+	// check covers the much-shorter staleness window between boots.
 	if existing, err := h.DB.LatestRunningUpgrade(r.Context()); err == nil && existing != nil {
-		writeError(w, http.StatusConflict,
-			"upgrade "+existing.ID+" already running — follow with /api/server/upgrade/"+existing.ID+"/output")
-		return
+		const maxRunning = 10 * time.Minute
+		ageSecs := time.Now().Unix() - existing.StartedAt
+		if ageSecs > int64(maxRunning.Seconds()) {
+			_ = h.DB.SetUpgradeStatus(r.Context(), existing.ID,
+				store.UpgradeStatusFailed,
+				"upgrade row was running for more than 10 min — presumed dead, cleared by next request")
+			h.Log.Warn("cleared stale running upgrade",
+				"upgrade_id", existing.ID, "age_secs", ageSecs)
+		} else {
+			writeError(w, http.StatusConflict,
+				"upgrade "+existing.ID+" already running — follow with /api/server/upgrade/"+existing.ID+"/output")
+			return
+		}
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		h.Log.Error("api: check running upgrade", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
