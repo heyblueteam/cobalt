@@ -8,4 +8,5 @@ var (
 	ErrNotInFlight           = errors.New("deploy: not in-flight")
 	ErrNotTracked            = errors.New("deploy: not tracked in dispatcher")
 	ErrDeploymentNotCancelable = errors.New("deploy: deployment cannot be canceled in current state")
+	ErrCancelDuringCutover   = errors.New("deploy: cannot cancel during cutover (swapping)")
 )

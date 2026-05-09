@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -63,6 +64,35 @@ func (h *Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var cancelledID int64
+	if req.Force && h.Dispatcher != nil {
+		active, err := h.DB.ActiveDeploymentForProject(r.Context(), p.ID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			h.Log.Error("api: lookup active deploy for force", "project_id", p.ID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		if active != nil {
+			if active.Status == cobaltapi.StateSwapping {
+				writeError(w, http.StatusConflict,
+					fmt.Sprintf("in-flight deploy %d is in cutover (swapping); --force not allowed at this stage", active.ID))
+				return
+			}
+			if err := h.Dispatcher.Cancel(r.Context(), active.ID); err != nil {
+				if errors.Is(err, deploy.ErrCancelDuringCutover) {
+					writeError(w, http.StatusConflict,
+						fmt.Sprintf("in-flight deploy %d entered cutover; --force not allowed", active.ID))
+					return
+				}
+				if !errors.Is(err, deploy.ErrNotInFlight) && !errors.Is(err, deploy.ErrNotTracked) {
+					h.Log.Warn("api: force-cancel in-flight", "id", active.ID, "error", err)
+				}
+			} else {
+				cancelledID = active.ID
+			}
+		}
+	}
+
 	id, _, err := h.Queue.Enqueue(r.Context(), enq)
 	if err != nil {
 		h.Log.Error("api: enqueue deploy", "project_id", p.ID, "error", err)
@@ -78,7 +108,10 @@ func (h *Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
-	writeJSON(w, deploymentToAPI(*dep))
+	writeJSON(w, cobaltapi.DeploymentCreateResponse{
+		Deployment:          deploymentToAPI(*dep),
+		CancelledInflightId: cancelledID,
+	})
 }
 
 // GetDeployment implements GET /api/deployments/{id}.
@@ -121,6 +154,11 @@ func (h *Handler) CancelDeployment(w http.ResponseWriter, r *http.Request) {
 	}
 	if cancelInFlight && h.Dispatcher != nil {
 		if err := h.Dispatcher.Cancel(r.Context(), id); err != nil {
+			if errors.Is(err, deploy.ErrCancelDuringCutover) {
+				writeError(w, http.StatusConflict,
+					fmt.Sprintf("deploy %d is in cutover (swapping); cancel not allowed at this stage", id))
+				return
+			}
 			h.Log.Warn("api: dispatcher cancel signal", "id", id, "error", err)
 		}
 	}

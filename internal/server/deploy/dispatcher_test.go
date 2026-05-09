@@ -250,6 +250,55 @@ func TestDispatcher_DifferentProjectsRunInParallel(t *testing.T) {
 	close(runner.gate)
 }
 
+// TestDispatcher_CancelDuringSwapping_Refused asserts the safety guard:
+// once a deploy reaches StateSwapping (cutover), Cancel returns
+// ErrCancelDuringCutover and does not interrupt the runner. Cancelling
+// mid-cutover can leave Docker Swarm and Caddy in inconsistent state.
+func TestDispatcher_CancelDuringSwapping_Refused(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	q := NewQueue(db)
+	pid := newProject(t, db, "api")
+	id, _, _ := q.Enqueue(context.Background(), EnqueueRequest{ProjectID: pid})
+
+	runner := newRecordingRunner()
+	d := NewDispatcher(db, runner, quietLogger(), DispatcherOpts{PollInterval: 50 * time.Millisecond})
+	d.Start(context.Background())
+	t.Cleanup(d.Stop)
+
+	// Wait for the runner to be invoked (deploy is in fetching).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && runner.callCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Manually transition to swapping to simulate cutover; the runner is
+	// still gated, so it stays "in flight" until we close the gate.
+	if err := db.SetDeploymentStatus(context.Background(), id, cobaltapi.StateSwapping); err != nil {
+		t.Fatalf("set swapping: %v", err)
+	}
+
+	if err := d.Cancel(context.Background(), id); !errors.Is(err, ErrCancelDuringCutover) {
+		t.Fatalf("Cancel during swapping: got %v, want ErrCancelDuringCutover", err)
+	}
+
+	// Release the runner so the deploy completes naturally; the cancel
+	// must not have terminated it early.
+	close(runner.gate)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		dep, _ := db.GetDeployment(context.Background(), id)
+		if dep.Status.IsTerminal() {
+			if dep.Status == cobaltapi.StateCanceled {
+				t.Fatalf("deploy was canceled despite refusal during swapping: %+v", dep)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("deploy never reached terminal state after gate release")
+}
+
 func TestRecoverOnBoot(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

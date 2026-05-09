@@ -91,6 +91,21 @@ type DeploymentCreateRequest struct {
 	Commit             string `json:"commit,omitempty"`
 	NoCache            bool   `json:"noCache,omitempty"`
 	CobaltfileOverride string `json:"cobaltfileOverride,omitempty"`
+	// Force, if true, cancels any in-flight deploy for the project
+	// (during fetch or build) before enqueuing the new one. Rejected
+	// with 409 if the in-flight deploy has reached cutover (swapping).
+	Force bool `json:"force,omitempty"`
+}
+
+// DeploymentCreateResponse is the body returned by POST
+// /api/projects/{name}/deployments. Wire-flat: Deployment is embedded
+// so older clients that unmarshal into Deployment keep working and
+// just ignore CancelledInflightId.
+type DeploymentCreateResponse struct {
+	Deployment
+	// CancelledInflightId, if non-zero, is the deployment that was
+	// cancelled to make room for this new one (Force=true path).
+	CancelledInflightId int64 `json:"cancelledInflightId,omitempty"`
 }
 
 // ProjectCron is the wire shape of one project-cron entry returned

@@ -27,11 +27,13 @@ Use --no-follow to enqueue and exit immediately.`,
 			commit, _ := cmd.Flags().GetString("commit")
 			noCache, _ := cmd.Flags().GetBool("no-cache")
 			noFollow, _ := cmd.Flags().GetBool("no-follow")
+			force, _ := cmd.Flags().GetBool("force")
 			filePath, _ := cmd.Flags().GetString("file")
 
 			req := cobaltapi.DeploymentCreateRequest{
 				Commit:  commit,
 				NoCache: noCache,
+				Force:   force,
 			}
 
 			if filePath != "" {
@@ -45,14 +47,19 @@ Use --no-follow to enqueue and exit immediately.`,
 				req.CobaltfileOverride = string(data)
 			}
 
-			d, err := pc.CreateDeployment(cmd.Context(), pc.WrapProject(), req)
+			resp, err := pc.CreateDeployment(cmd.Context(), pc.WrapProject(), req)
 			if err != nil {
 				return err
+			}
+			d := &resp.Deployment
+
+			if resp.CancelledInflightId != 0 && !output.IsJSON() {
+				output.PrintLines(fmt.Sprintf("Cancelled in-flight deployment %d", resp.CancelledInflightId))
 			}
 
 			if noFollow {
 				if output.IsJSON() {
-					output.PrintJSON(d)
+					output.PrintJSON(resp)
 				} else {
 					output.PrintLines(client.FormatDeployment(d))
 				}
@@ -85,6 +92,7 @@ Use --no-follow to enqueue and exit immediately.`,
 	cmd.Flags().String("commit", "", "git commit to deploy (defaults to latest on branch)")
 	cmd.Flags().Bool("no-cache", false, "disable docker build cache")
 	cmd.Flags().Bool("no-follow", false, "enqueue and exit without waiting")
+	cmd.Flags().Bool("force", false, "cancel any in-flight fetch/build for this project before enqueuing (rejected if the in-flight deploy is already in cutover)")
 	cmd.Flags().String("file", "", "path to a cobalt.json override file")
 	return cmd
 }

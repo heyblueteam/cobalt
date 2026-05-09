@@ -9,12 +9,12 @@ import (
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
-func (c *Client) CreateDeployment(ctx context.Context, project string, req cobaltapi.DeploymentCreateRequest) (*cobaltapi.Deployment, error) {
-	var d cobaltapi.Deployment
-	if err := c.post(ctx, fmt.Sprintf("/api/projects/%s/deployments", project), req, &d); err != nil {
+func (c *Client) CreateDeployment(ctx context.Context, project string, req cobaltapi.DeploymentCreateRequest) (*cobaltapi.DeploymentCreateResponse, error) {
+	var resp cobaltapi.DeploymentCreateResponse
+	if err := c.post(ctx, fmt.Sprintf("/api/projects/%s/deployments", project), req, &resp); err != nil {
 		return nil, err
 	}
-	return &d, nil
+	return &resp, nil
 }
 
 // ListProjectCrons returns the cron services currently registered

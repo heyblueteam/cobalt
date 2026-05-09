@@ -107,7 +107,9 @@ func (d *Dispatcher) Notify() {
 }
 
 // Cancel cancels an in-flight deploy by deployment id. Returns nil if the
-// deploy was queued (Queue.Cancel handles that path).
+// deploy was queued (Queue.Cancel handles that path). Refuses to cancel
+// during cutover (StateSwapping) because mid-cutover cancellation can
+// leave Docker Swarm and Caddy in an inconsistent state.
 func (d *Dispatcher) Cancel(ctx context.Context, deploymentID int64) error {
 	dep, err := d.db.GetDeployment(ctx, deploymentID)
 	if err != nil {
@@ -115,6 +117,9 @@ func (d *Dispatcher) Cancel(ctx context.Context, deploymentID int64) error {
 	}
 	if !dep.Status.IsActive() {
 		return ErrNotInFlight
+	}
+	if dep.Status == cobaltapi.StateSwapping {
+		return ErrCancelDuringCutover
 	}
 	d.mu.Lock()
 	cancel, ok := d.inflight[dep.ProjectID]

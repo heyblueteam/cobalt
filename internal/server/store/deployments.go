@@ -209,6 +209,37 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 	return deps, nil
 }
 
+// ActiveDeploymentForProject returns the in-flight deployment for a
+// project (status fetching/building/swapping), or ErrNotFound if none.
+// The dispatcher's invariant guarantees at most one active row per
+// project, so LIMIT 1 is sufficient.
+func (db *DB) ActiveDeploymentForProject(ctx context.Context, projectID int64) (*Deployment, error) {
+	stmt, err := rqlitehttp.NewSQLStatement(
+		`SELECT `+deploymentSelectCols+` FROM deployments
+		 WHERE project_id = ? AND status IN (?,?,?)
+		 ORDER BY number DESC LIMIT 1`,
+		projectID,
+		string(cobaltapi.StateFetching),
+		string(cobaltapi.StateBuilding),
+		string(cobaltapi.StateSwapping),
+	)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := db.Query(ctx, rqlitehttp.SQLStatements{stmt}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	return scanDeploymentRow(results[0].Values[0]), nil
+}
+
 func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(
 		`SELECT `+deploymentSelectCols+` FROM deployments

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -664,6 +665,226 @@ func TestErrorBodyShape(t *testing.T) {
 	if !strings.Contains(string(body), `"error"`) {
 		t.Errorf("error body shape: %s", string(body))
 	}
+}
+
+// --- force-cancel deployment tests ---
+
+// gatedRunner blocks every Run call on a per-id gate so a test can hold
+// a deploy in fetching/building deterministically. Mirrors the
+// recordingRunner pattern from internal/server/deploy/dispatcher_test.go,
+// duplicated here to avoid leaking deploy package internals into api.
+type gatedRunner struct {
+	mu    sync.Mutex
+	calls map[int64]struct{}
+	gate  chan struct{} // closed → release all runs
+}
+
+func newGatedRunner() *gatedRunner {
+	return &gatedRunner{
+		calls: map[int64]struct{}{},
+		gate:  make(chan struct{}),
+	}
+}
+
+func (r *gatedRunner) Run(ctx context.Context, d store.Deployment) error {
+	r.mu.Lock()
+	r.calls[d.ID] = struct{}{}
+	r.mu.Unlock()
+	select {
+	case <-r.gate:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (r *gatedRunner) sawCall(id int64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.calls[id]
+	return ok
+}
+
+// newEnvWithDispatcher returns a testEnv whose handler has a real
+// dispatcher wired up against a gated runner. Tests that exercise the
+// --force code path need this; the bare newEnv leaves Dispatcher nil.
+func newEnvWithDispatcher(t *testing.T) (*testEnv, *gatedRunner, *deploy.Dispatcher) {
+	t.Helper()
+	db := openTestDB(t)
+	q := deploy.NewQueue(db)
+	runner := newGatedRunner()
+	disp := deploy.NewDispatcher(db, runner,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		deploy.DispatcherOpts{PollInterval: 50 * time.Millisecond})
+	disp.Start(context.Background())
+	t.Cleanup(disp.Stop)
+
+	mux := http.NewServeMux()
+	h := &Handler{
+		DB:         db,
+		Queue:      q,
+		Dispatcher: disp,
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &testEnv{t: t, srv: srv, db: db, queue: q, client: srv.Client()}, runner, disp
+}
+
+// waitForStatus polls a deployment row until it reaches `want` or the
+// 2s deadline elapses. Used by the force tests to synchronize with
+// dispatcher transitions.
+func waitForStatus(t *testing.T, db *store.DB, id int64, want cobaltapi.State) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		dep, err := db.GetDeployment(context.Background(), id)
+		if err == nil && dep.Status == want {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	dep, _ := db.GetDeployment(context.Background(), id)
+	t.Fatalf("deploy %d: never reached %q (last=%q)", id, want, dep.Status)
+}
+
+// TestCreateDeployment_Force_CancelsFetchingDeploy enqueues a deploy,
+// waits for it to enter fetching, then enqueues a second with
+// --force. The first should end canceled; the second should run to
+// success once the gate is released.
+func TestCreateDeployment_Force_CancelsFetchingDeploy(t *testing.T) {
+	t.Parallel()
+	e, runner, _ := newEnvWithDispatcher(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{Commit: "old"})
+	mustStatus(t, resp, http.StatusAccepted)
+	first := decode[cobaltapi.DeploymentCreateResponse](t, resp)
+	waitForStatus(t, e.db, first.ID, cobaltapi.StateFetching)
+
+	resp = e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{
+		Commit: "new", Force: true,
+	})
+	mustStatus(t, resp, http.StatusAccepted)
+	second := decode[cobaltapi.DeploymentCreateResponse](t, resp)
+	if second.CancelledInflightId != first.ID {
+		t.Errorf("CancelledInflightId: got %d, want %d", second.CancelledInflightId, first.ID)
+	}
+
+	waitForStatus(t, e.db, first.ID, cobaltapi.StateCanceled)
+	close(runner.gate)
+	waitForStatus(t, e.db, second.ID, cobaltapi.StateSuccess)
+}
+
+// TestCreateDeployment_Force_RejectedDuringSwapping confirms the API
+// returns 409 Conflict when --force is requested against a deploy
+// already in cutover, and that the original deploy is not interrupted.
+func TestCreateDeployment_Force_RejectedDuringSwapping(t *testing.T) {
+	t.Parallel()
+	e, runner, _ := newEnvWithDispatcher(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{Commit: "old"})
+	mustStatus(t, resp, http.StatusAccepted)
+	first := decode[cobaltapi.DeploymentCreateResponse](t, resp)
+	waitForStatus(t, e.db, first.ID, cobaltapi.StateFetching)
+
+	// Manually push the row into swapping; the runner is still gated.
+	if err := e.db.SetDeploymentStatus(context.Background(), first.ID, cobaltapi.StateSwapping); err != nil {
+		t.Fatalf("set swapping: %v", err)
+	}
+
+	resp = e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{
+		Commit: "new", Force: true,
+	})
+	mustStatus(t, resp, http.StatusConflict)
+	resp.Body.Close()
+
+	// First deploy should still complete naturally.
+	close(runner.gate)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		dep, _ := e.db.GetDeployment(context.Background(), first.ID)
+		if dep.Status == cobaltapi.StateCanceled {
+			t.Fatalf("deploy was canceled despite swapping refusal: %+v", dep)
+		}
+		if dep.Status.IsTerminal() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("first deploy never reached terminal state")
+}
+
+// TestCreateDeployment_Force_OnIdleProjectJustEnqueues asserts that
+// --force on a project with no in-flight deploy behaves like a normal
+// enqueue: 202 Accepted, CancelledInflightId == 0.
+func TestCreateDeployment_Force_OnIdleProjectJustEnqueues(t *testing.T) {
+	t.Parallel()
+	e, runner, _ := newEnvWithDispatcher(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{
+		Commit: "first", Force: true,
+	})
+	mustStatus(t, resp, http.StatusAccepted)
+	d := decode[cobaltapi.DeploymentCreateResponse](t, resp)
+	if d.CancelledInflightId != 0 {
+		t.Errorf("CancelledInflightId on idle project: got %d, want 0", d.CancelledInflightId)
+	}
+
+	close(runner.gate)
+	waitForStatus(t, e.db, d.ID, cobaltapi.StateSuccess)
+	if !runner.sawCall(d.ID) {
+		t.Errorf("runner never invoked for idle-project force deploy")
+	}
+}
+
+// TestCreateDeployment_Force_BodyParses asserts that the JSON wire
+// format threads Force through correctly. A no-op for parsing
+// regressions, since other tests exercise the path end-to-end, but
+// keeps a low-cost guard against a malformed tag rename.
+func TestCreateDeployment_Force_BodyParses(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	// Dispatcher is nil here; the force branch in CreateDeployment
+	// short-circuits when the dispatcher is unset, so this just
+	// confirms the field is accepted and the row is enqueued.
+	resp := e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{
+		Commit: "x", Force: true,
+	})
+	mustStatus(t, resp, http.StatusAccepted)
+	d := decode[cobaltapi.DeploymentCreateResponse](t, resp)
+	if d.Status != cobaltapi.StateQueued {
+		t.Errorf("status: %q, want queued", d.Status)
+	}
+}
+
+// TestCancelDeployment_DuringSwapping_Returns409 confirms the safety
+// improvement to the manual cancel path: cobalt deployments cancel <id>
+// returns 409 Conflict when the target is in cutover, instead of
+// silently logging.
+func TestCancelDeployment_DuringSwapping_Returns409(t *testing.T) {
+	t.Parallel()
+	e, runner, _ := newEnvWithDispatcher(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPost, "/api/projects/api/deployments", cobaltapi.DeploymentCreateRequest{Commit: "x"})
+	mustStatus(t, resp, http.StatusAccepted)
+	d := decode[cobaltapi.DeploymentCreateResponse](t, resp)
+	waitForStatus(t, e.db, d.ID, cobaltapi.StateFetching)
+	if err := e.db.SetDeploymentStatus(context.Background(), d.ID, cobaltapi.StateSwapping); err != nil {
+		t.Fatalf("set swapping: %v", err)
+	}
+
+	resp = e.do(http.MethodPost, "/api/deployments/"+itoa(d.ID)+"/cancel", nil)
+	mustStatus(t, resp, http.StatusConflict)
+	resp.Body.Close()
+
+	close(runner.gate)
 }
 
 func itoa(n int64) string {
