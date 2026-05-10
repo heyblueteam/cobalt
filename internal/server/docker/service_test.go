@@ -216,8 +216,12 @@ func TestParseReplicas(t *testing.T) {
 		in  string
 		out int
 	}{
-		{"3/3", 3},
-		{"1/2", 1},
+		// Format is "<running>/<desired>". We return desired so that
+		// scale CLI output reflects what the operator just set, even
+		// while swarm is still draining/ramping.
+		{"3/3", 3},  // converged
+		{"1/2", 2},  // ramping up: 1 running, 2 desired
+		{"3/1", 1},  // draining: 3 running, 1 desired (regression case)
 		{"0/0", 0},
 		{"", 0},
 		{"junk", 0},

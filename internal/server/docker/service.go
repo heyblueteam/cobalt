@@ -179,12 +179,22 @@ func (c *Client) listServices(ctx context.Context, filters []string) ([]ServiceI
 	return services, nil
 }
 
-// parseReplicas pulls the numerator out of "3/3" formatted replica strings.
-// On failure, returns 0 — the caller usually treats unknown as "fall back
-// to default".
+// parseReplicas pulls the desired-count denominator out of
+// "<running>/<desired>" replica strings (e.g. "3/1" right after a
+// scale-down).
+//
+// We want desired, not running. Callers ask "how many replicas is this
+// service scaled to?" and need a stable answer that doesn't drift while
+// swarm is draining or ramping. Reading the running numerator made
+// `cobalt scale set web=1` print "web=3" immediately after a 3→1 scale
+// because docker still reported "3/1" until the two extra tasks shut
+// down.
+//
+// On failure, returns 0 — the caller usually treats unknown as "fall
+// back to default".
 func parseReplicas(s string) int {
 	if i := strings.IndexByte(s, '/'); i >= 0 {
-		s = s[:i]
+		s = s[i+1:]
 	}
 	n, _ := strconv.Atoi(strings.TrimSpace(s))
 	return n
