@@ -329,9 +329,25 @@ Examples:
 			step.OK()
 
 			// 💚 Wait for the daemon to be healthy.
+			//
+			// Auto-HTTPS Caddyfile only declares the site on
+			// {$COBALT_PUBLIC_HOST}, so a request to http://<sshHost>/healthz
+			// (by IP / different host) doesn't match any block and Caddy
+			// returns its default response — the original bug here was
+			// hitting the SSH host on plain HTTP. We probe the public host
+			// directly: HTTPS for auto-HTTPS installs (also exercises the
+			// Let's Encrypt cert provisioning), HTTP for --insecure-tls
+			// (self-signed installs use the internal Caddyfile's :80
+			// catch-all reverse_proxy). Custom-compose installs default to
+			// HTTP; operators bringing their own compose can override
+			// expectations there.
 			step = output.StartStep(output.IconHealth, "Waiting for daemon to become healthy")
-			daemonURL := fmt.Sprintf("http://%s/healthz", host)
-			if err := waitForHealthy(ctx, daemonURL, 120*time.Second); err != nil {
+			scheme := "https"
+			if insecureTLS || composeFile != "" {
+				scheme = "http"
+			}
+			daemonURL := fmt.Sprintf("%s://%s/healthz", scheme, publicHost)
+			if err := waitForHealthy(ctx, daemonURL, 180*time.Second); err != nil {
 				step.Fail(err.Error())
 				return fmt.Errorf("daemon not healthy: %w", err)
 			}
@@ -347,15 +363,21 @@ Examples:
 			step.OK()
 
 			// 💾 Save config locally.
+			//
+			// The saved Host is the *public* hostname, not the SSH host.
+			// SSH was just used to drive the install; from now on the CLI
+			// talks to the daemon over HTTPS, and the daemon's TLS cert
+			// is for the public host. Using the SSH host (often an IP)
+			// gives a TLS handshake error from cert/SNI mismatch.
 			step = output.StartStep(output.IconSave, "Saving config to ~/.cobalt/config.toml")
 			cfg := &cliconfig.Config{
 				Servers: map[string]cliconfig.Server{
-					host: {
-						Host:   host,
+					publicHost: {
+						Host:   publicHost,
 						APIKey: apiKey,
 					},
 				},
-				DefaultServer: host,
+				DefaultServer: publicHost,
 			}
 			cfgPath, err := cliconfig.DefaultPath()
 			if err != nil {
