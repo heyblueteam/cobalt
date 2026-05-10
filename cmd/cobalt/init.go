@@ -12,8 +12,10 @@ import (
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/cliconfig"
+	"github.com/heyblueteam/cobalt/internal/client"
 	"github.com/heyblueteam/cobalt/internal/output"
 	"github.com/heyblueteam/cobalt/internal/ssh"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 	"github.com/spf13/cobra"
 )
 
@@ -55,9 +57,10 @@ func newInitCmd() *cobra.Command {
 		password      string
 		localImage    string
 		insecureTLS   bool
+		noGitHubApp   bool
 	)
 
-		cmd := &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "init <user@host>",
 		Short: "Initialize cobalt on a remote server",
 		Long: `SSH into a target host, install Docker if needed, initialize Docker Swarm,
@@ -65,16 +68,16 @@ and start a cobalt stack using Docker Compose.
 
 This command will:
   1. Connect to the target host via SSH
-  2. Install Docker if not already installed
-  3. Initialize Docker Swarm if not already initialized
-  4. Create /opt/cobalt directory
-  5. Upload docker-compose.yml and start the stack
-  6. Wait for the cobalt daemon to become healthy
-  7. Create an initial API key
-  8. Save the server configuration locally
+  2. Detect the environment and confirm the public hostname
+  3. Optionally kick off the GitHub App registration flow
+  4. Install Docker if not already installed
+  5. Initialize Docker Swarm if not already initialized
+  6. Create /opt/cobalt and deploy the cobalt stack
+  7. Wait for the cobalt daemon to become healthy
+  8. Save the bootstrap API key locally
 
 Examples:
-  # Initialize on a server using default latest tag
+  # Initialize on a server (interactive)
   cobalt init root@server.blue.cc
 
   # Use a specific version and public hostname
@@ -83,21 +86,46 @@ Examples:
   # Local dev install against an IP (self-signed Caddy cert; no GitHub App webhooks)
   cobalt init root@192.168.1.100 --insecure-tls
 
+  # Unattended install (CI). --yes skips all prompts and the GitHub App handoff.
+  cobalt init root@server.blue.cc --yes --public-host cobalt.blue.cc
+
   # Use a custom compose file for air-gapped deployments
   cobalt init user@192.168.1.100 --compose-file ./my-compose.yml
-
-  # Use password authentication (not recommended, use --key or SSH agent instead)
-  cobalt init root@server.blue.cc --password mypassword
 `,
 		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			target := args[0]
 			user, host := ssh.ParseSSHURL(target)
+			assumeYes := cmd.Flag("yes").Value.String() == "true"
 
-			if publicHost == "" {
-				publicHost = host
+			ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
+			defer cancel()
+
+			// 🔌 SSH connect.
+			conn, err := dialSSH(target, user, host, keyPath, keyPassphrase, password)
+			if err != nil {
+				return err
+			}
+			defer conn.Close()
+
+			// 🔍 Detect environment and show what we're about to do.
+			env, err := detectEnv(ctx, conn, host, publicHost, insecureTLS, composeFile)
+			if err != nil {
+				return err
 			}
 
+			// 🌐 Confirm public hostname (unless --public-host was supplied).
+			if publicHost == "" {
+				answer, err := output.Input(output.IconPublicHost,
+					"Public hostname for the cobalt dashboard?",
+					env.proposedPublicHost, assumeYes)
+				if err != nil {
+					return err
+				}
+				publicHost = answer
+			}
+
+			// Re-validate TLS now that the hostname might have changed.
 			// GitHub App webhook callbacks need an HTTPS URL with a
 			// publicly-trusted certificate; an IP literal can't get one
 			// from Let's Encrypt. Refuse by default and force the operator
@@ -113,93 +141,99 @@ Examples:
 				)
 			}
 
-		ctx, cancel := context.WithTimeout(cmd.Context(), 10*time.Minute)
-		defer cancel()
-
-			fmt.Fprintf(output.Stderr, "[1/8] Connecting to %s...\n", target)
-
-			// Auth precedence: explicit flags first, then ambient SSH agent,
-			// then interactive prompt. Without this order an SSH_AUTH_SOCK in
-			// the environment silently overrides --password, which has bitten us.
-			var auth ssh.AuthMethod
+			// 🦊 Ask whether to register the GitHub App after the daemon is up.
+			//
+			// Skip the prompt + handoff entirely when:
+			//   - --no-github-app was passed, or
+			//   - --yes was passed (CI/unattended; opening a browser is
+			//     useless and printing the manifest URL into CI logs is
+			//     noise — operators wanting it should drop --yes), or
+			//   - --insecure-tls was passed (the manifest URL is
+			//     served with a self-signed cert, so our own HTTP
+			//     client can't reach it without InsecureSkipVerify, and
+			//     GitHub webhooks can't reach back either — nothing to
+			//     gain by attempting).
+			setupGitHubApp := false
+			ghOrg := ""
 			switch {
-			case keyPath != "":
-				auth = ssh.PublicKeyAuth{KeyPath: keyPath, Passphrase: keyPassphrase}
-			case password != "":
-				auth = ssh.PasswordAuth{Password: password}
+			case noGitHubApp:
+				// silent skip — operator opted out explicitly
+			case assumeYes:
+				// silent skip under --yes (matches CI default)
+			case insecureTLS:
+				fmt.Fprintf(output.Stderr,
+					"%s GitHub App skipped (--insecure-tls; webhooks need a publicly-trusted cert).\n",
+					output.IconGitHub)
 			default:
-				if socket := ssh.DefaultAgentSocket(); socket != "" {
-					if conn, err := net.Dial("unix", socket); err == nil {
-						conn.Close()
-						auth = ssh.AgentAuth{Socket: socket}
+				yes, err := output.Confirm(output.IconGitHub,
+					"Set up GitHub App now for repo deploys?",
+					true, assumeYes)
+				if err != nil {
+					return err
+				}
+				setupGitHubApp = yes
+				if setupGitHubApp {
+					ghOrg, err = output.InputOptional(output.IconGitHub,
+						"GitHub organization for the App?",
+						"leave empty for personal account", assumeYes)
+					if err != nil {
+						return err
 					}
 				}
 			}
 
-			if auth == nil {
-				p := ssh.AskPassword("SSH password")
-				auth = ssh.PasswordAuth{Password: p}
-			}
-
-			if user == "" {
-				user = "root"
-			}
-
-			client := ssh.NewClient(user, host, auth)
-			conn, err := client.Connect()
-			if err != nil {
-				return fmt.Errorf("SSH connection failed: %w", err)
-			}
-			defer conn.Close()
-
-			fmt.Fprintf(output.Stderr, "[2/8] Connected. Checking Docker installation...\n")
-
-			dockerCheck := conn.Run(ctx, "docker --version")
-			if dockerCheck.Err != nil || dockerCheck.ExitCode != 0 {
-				fmt.Fprintf(output.Stderr, "[2b/8] Docker not found. Installing Docker...\n")
-				installDocker := conn.Run(ctx, "curl -fsSL https://get.docker.com | sh")
-				if installDocker.ExitCode != 0 {
-					return fmt.Errorf("docker installation failed: %s", installDocker.Stderr)
-				}
-				fmt.Fprintf(output.Stderr, "[2b/8] Docker installed.\n")
+			// 🐳 Install Docker if needed.
+			step := output.StartStep(output.IconDocker, "Installing Docker")
+			if env.dockerInstalled {
+				step.Skip("Docker already installed")
 			} else {
-				fmt.Fprintf(output.Stderr, "[2/8] Docker found: %s", strings.TrimSpace(dockerCheck.Stdout))
-			}
-
-			fmt.Fprintf(output.Stderr, "[3/8] Checking Docker Swarm...\n")
-			swarmResult := conn.Run(ctx, "docker info --format '{{.Swarm.LocalNodeState}}'")
-			swarmState := strings.TrimSpace(swarmResult.Stdout)
-			if swarmState != "active" {
-				fmt.Fprintf(output.Stderr, "[3b/8] Docker Swarm not initialized. Initializing...\n")
-				initSwarm := conn.Run(ctx, "docker swarm init")
-				if initSwarm.ExitCode != 0 {
-					return fmt.Errorf("swarm init failed: %s", initSwarm.Stderr)
+				r := conn.Run(ctx, "curl -fsSL https://get.docker.com | sh")
+				if r.ExitCode != 0 {
+					step.Fail(strings.TrimSpace(r.Stderr))
+					return fmt.Errorf("docker installation failed: %s", r.Stderr)
 				}
-				fmt.Fprintf(output.Stderr, "[3b/8] Docker Swarm initialized.\n")
-			} else {
-				fmt.Fprintf(output.Stderr, "[3/8] Docker Swarm active.\n")
+				step.OK()
 			}
 
-			// cobalt-main is the shared overlay network every project service
+			// 🐝 Initialize swarm if needed.
+			step = output.StartStep(output.IconSwarm, "Initializing Docker Swarm")
+			if env.swarmActive {
+				step.Skip("Swarm already initialized")
+			} else {
+				r := conn.Run(ctx, "docker swarm init")
+				if r.ExitCode != 0 {
+					step.Fail(strings.TrimSpace(r.Stderr))
+					return fmt.Errorf("swarm init failed: %s", r.Stderr)
+				}
+				step.OK()
+			}
+
+			// 🕸 cobalt-main is the shared overlay network every project service
 			// gets attached to. Caddy joins it via the compose stack so it can
 			// resolve service hostnames; deploy hooks run one-shot containers
 			// here too. Must exist before `docker compose up` so the compose
 			// file's `external: true` reference resolves.
-			netCheck := conn.Run(ctx, "docker network inspect cobalt-main >/dev/null 2>&1 && echo present || docker network create --driver overlay --attachable cobalt-main")
+			step = output.StartStep(output.IconNetwork, "Ensuring cobalt-main overlay network")
+			netCheck := conn.Run(ctx,
+				"docker network inspect cobalt-main >/dev/null 2>&1 && echo present || "+
+					"docker network create --driver overlay --attachable cobalt-main")
 			if netCheck.Err != nil {
+				step.Fail(netCheck.Err.Error())
 				return fmt.Errorf("ensure cobalt-main network: %w", netCheck.Err)
 			}
+			step.OK()
 
-			// cobalt_encryption_key is a Docker Swarm secret holding the
-			// AES-256 key the daemon uses to encrypt env values at
-			// rest. The bytes live in the swarm Raft log (encrypted
-			// by Docker) and are mounted into the daemon as tmpfs at
-			// /run/secrets/cobalt_encryption_key. Backing up the
-			// cobalt-data volume yields ciphertext only; the key
-			// itself isn't on disk anywhere outside the Raft log.
+			// 🔑 cobalt_encryption_key is a Docker Swarm secret holding the
+			// AES-256 key the daemon uses to encrypt env values at rest.
+			// The bytes live in the swarm Raft log (encrypted by Docker)
+			// and are mounted into the daemon as tmpfs at
+			// /run/secrets/cobalt_encryption_key. Backing up the cobalt-data
+			// volume yields ciphertext only; the key itself isn't on disk
+			// anywhere outside the Raft log.
 			//
 			// Idempotent: reuse the existing secret on subsequent inits.
 			// Rotation is a separate operator flow.
+			step = output.StartStep(output.IconSecret, "Generating encryption key (swarm secret)")
 			secretCheck := conn.Run(ctx,
 				"if docker secret inspect cobalt_encryption_key >/dev/null 2>&1; then "+
 					"  echo present; "+
@@ -209,28 +243,28 @@ Examples:
 					"fi",
 			)
 			if secretCheck.Err != nil {
+				step.Fail(secretCheck.Err.Error())
 				return fmt.Errorf("ensure cobalt_encryption_key secret: %w", secretCheck.Err)
 			}
 			if strings.Contains(secretCheck.Stdout, "present") {
-				fmt.Fprintf(output.Stderr, "[3d/8] Encryption key (cobalt_encryption_key) present.\n")
+				step.Skip("Key already present in Raft log")
 			} else {
-				fmt.Fprintf(output.Stderr,
-					"[3d/8] Encryption key (cobalt_encryption_key) generated.\n"+
-						"        It lives in the swarm Raft log; rotate via\n"+
-						"        `docker secret create cobalt_encryption_key_v2 -` + future\n"+
-						"        cobalt admin rotate-key flow.\n")
+				step.OK()
 			}
 
 			if localImage != "" {
-				fmt.Fprintf(output.Stderr, "[3c/8] Uploading local image %s...\n", localImage)
+				step = output.StartStep(output.IconDocker, fmt.Sprintf("Uploading local image %s", localImage))
 				if err := uploadLocalImage(ctx, conn, localImage); err != nil {
+					step.Fail(err.Error())
 					return fmt.Errorf("upload local image: %w", err)
 				}
-				fmt.Fprintf(output.Stderr, "[3c/8] Image loaded on remote.\n")
+				step.OK()
 			}
 
-			fmt.Fprintf(output.Stderr, "[4/8] Creating /opt/cobalt directory...\n")
+			// 📝 Write compose / Caddyfile / .env.
+			step = output.StartStep(output.IconWriting, "Writing /opt/cobalt config")
 			if r := conn.Run(ctx, "mkdir -p /opt/cobalt"); r.Err != nil {
+				step.Fail(r.Err.Error())
 				return fmt.Errorf("create /opt/cobalt: %w", r.Err)
 			}
 
@@ -249,59 +283,71 @@ Examples:
 				image, publicHost, dataDir)
 
 			if composeFile != "" {
-				fmt.Fprintf(output.Stderr, "[5/8] Uploading custom compose file + .env: %s\n", composeFile)
 				if err := conn.ScpTo(composeFile, composePath); err != nil {
+					step.Fail(err.Error())
 					return fmt.Errorf("upload compose file: %w", err)
 				}
 				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
+					step.Fail(err.Error())
 					return fmt.Errorf("write .env: %w", err)
 				}
 			} else {
 				caddyfile := caddyfileFor(publicHost, insecureTLS)
-				tlsKind := "auto-HTTPS"
-				if caddyfile == initCaddyfileInternal {
-					tlsKind = "self-signed (tls internal)"
-				}
-				fmt.Fprintf(output.Stderr, "[5/8] Writing docker-compose.yml, Caddyfile (%s), .env...\n", tlsKind)
 				if err := writeRemoteFile(conn, composePath, initComposeTemplate); err != nil {
+					step.Fail(err.Error())
 					return fmt.Errorf("write compose file: %w", err)
 				}
 				if err := writeRemoteFile(conn, caddyfilePath, caddyfile); err != nil {
+					step.Fail(err.Error())
 					return fmt.Errorf("write Caddyfile: %w", err)
 				}
 				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
+					step.Fail(err.Error())
 					return fmt.Errorf("write .env: %w", err)
 				}
 			}
+			step.OK()
 
-			fmt.Fprintf(output.Stderr, "[6/8] Deploying cobalt swarm stack...\n")
-			// `docker stack deploy` doesn't auto-load .env files the
-			// way `docker compose up` does, so source the file into
-			// the calling shell first. set -a / set +a auto-exports
-			// every assignment without us listing the var names.
+			// 🚀 Deploy the cobalt swarm stack.
+			step = output.StartStep(output.IconDeploy, "Deploying cobalt stack")
+			// `docker stack deploy` doesn't auto-load .env files the way
+			// `docker compose up` does, so source the file into the calling
+			// shell first. set -a / set +a auto-exports every assignment
+			// without us listing the var names.
 			result := conn.Run(ctx,
 				"set -a && . /opt/cobalt/.env && set +a && "+
 					"docker stack deploy --with-registry-auth -c /opt/cobalt/docker-compose.yml cobalt",
 			)
 			if result.Err != nil {
+				step.Fail(result.Err.Error())
 				return fmt.Errorf("docker stack deploy failed: %w", result.Err)
 			}
 			if result.ExitCode != 0 {
+				step.Fail(strings.TrimSpace(result.Stderr))
 				return fmt.Errorf("docker stack deploy failed (exit %d): %s", result.ExitCode, result.Stderr)
 			}
+			step.OK()
 
-			fmt.Fprintf(output.Stderr, "[7/8] Waiting for cobalt to be healthy...\n")
+			// 💚 Wait for the daemon to be healthy.
+			step = output.StartStep(output.IconHealth, "Waiting for daemon to become healthy")
 			daemonURL := fmt.Sprintf("http://%s/healthz", host)
 			if err := waitForHealthy(ctx, daemonURL, 120*time.Second); err != nil {
+				step.Fail(err.Error())
 				return fmt.Errorf("daemon not healthy: %w", err)
 			}
+			step.OK()
 
-			fmt.Fprintf(output.Stderr, "[8/8] Reading bootstrap API key...\n")
+			// 🎟 Read the bootstrap API key from the daemon's data volume.
+			step = output.StartStep(output.IconAPIKey, "Reading bootstrap API key")
 			apiKey, err := readBootstrapKey(ctx, conn)
 			if err != nil {
+				step.Fail(err.Error())
 				return fmt.Errorf("read bootstrap key: %w", err)
 			}
+			step.OK()
 
+			// 💾 Save config locally.
+			step = output.StartStep(output.IconSave, "Saving config to ~/.cobalt/config.toml")
 			cfg := &cliconfig.Config{
 				Servers: map[string]cliconfig.Server{
 					host: {
@@ -311,14 +357,16 @@ Examples:
 				},
 				DefaultServer: host,
 			}
-
 			cfgPath, err := cliconfig.DefaultPath()
 			if err != nil {
+				step.Fail(err.Error())
 				return fmt.Errorf("config path: %w", err)
 			}
 			if err := cliconfig.Save(cfgPath, cfg); err != nil {
+				step.Fail(err.Error())
 				return fmt.Errorf("save config: %w", err)
 			}
+			step.OK()
 
 			// Now that the key is safely persisted locally, scrub it from
 			// the daemon's data volume. The daemon won't recreate the file
@@ -329,18 +377,23 @@ Examples:
 				fmt.Fprintf(output.Stderr, "  warning: could not scrub bootstrap key on remote: %v\n", err)
 			}
 
-			output.PrintLines(
-				fmt.Sprintf("✓ Cobalt initialized on %s", host),
-				fmt.Sprintf("  API key saved to %s", cfgPath),
-				"  Run 'cobalt servers' to verify connection",
-			)
+			// 🦊 GitHub App handoff (only if the operator opted in).
+			if setupGitHubApp {
+				if err := openGitHubAppFlow(ctx, cfg.Servers[host], ghOrg); err != nil {
+					fmt.Fprintf(output.Stderr, "  warning: GitHub App setup failed: %v\n", err)
+					fmt.Fprintf(output.Stderr, "  Run `cobalt github apps add` later to retry.\n")
+				}
+			}
 
+			// 🎉 Done.
+			fmt.Fprintf(output.Stderr, "\n%s Cobalt initialized at https://%s\n", output.IconDone, publicHost)
+			fmt.Fprintf(output.Stderr, "   Run `cobalt servers` to verify, or `cobalt deploy` to ship something.\n")
 			return nil
 		}),
 	}
 
 	cmd.Flags().StringVar(&composeFile, "compose-file", "", "path to custom docker-compose.yml")
-	cmd.Flags().StringVar(&publicHost, "public-host", "", "public hostname for the daemon (defaults to SSH host)")
+	cmd.Flags().StringVar(&publicHost, "public-host", "", "public hostname for the daemon (defaults to SSH host; suppresses the 🌐 prompt)")
 	cmd.Flags().StringVar(&cobaltVersion, "version", "latest", "cobalt image version to deploy")
 	cmd.Flags().StringVar(&dataDir, "data-dir", "/cobalt/data", "data directory for cobalt")
 	cmd.Flags().StringVar(&keyPath, "key", "", "path to SSH private key")
@@ -348,8 +401,130 @@ Examples:
 	cmd.Flags().StringVar(&password, "password", "", "SSH password (use interactively or via SSH agent for better security)")
 	cmd.Flags().StringVar(&localImage, "local-image", "", "upload a local docker image (docker save piped to ssh docker load) and use it instead of pulling --version from the registry")
 	cmd.Flags().BoolVar(&insecureTLS, "insecure-tls", false, "allow installing against an IP / localhost with a self-signed Caddy cert (dev only; GitHub App webhooks won't work)")
+	cmd.Flags().BoolVar(&noGitHubApp, "no-github-app", false, "skip the GitHub App registration prompt and browser handoff")
 
 	return cmd
+}
+
+// detectEnv probes the remote host for docker, swarm, and the
+// proposed public hostname, then prints the 🔍 detection summary
+// block. Returns the probed values so subsequent steps can short-
+// circuit work that's already done.
+type envState struct {
+	dockerInstalled    bool
+	swarmActive        bool
+	proposedPublicHost string
+}
+
+func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag string, insecureTLS bool, composeFile string) (envState, error) {
+	step := output.StartStep(output.IconDetect, "Detecting environment")
+
+	dockerCheck := conn.Run(ctx, "docker --version")
+	dockerInstalled := dockerCheck.Err == nil && dockerCheck.ExitCode == 0
+
+	swarmResult := conn.Run(ctx, "docker info --format '{{.Swarm.LocalNodeState}}'")
+	swarmActive := strings.TrimSpace(swarmResult.Stdout) == "active"
+
+	proposed := publicHostFlag
+	if proposed == "" {
+		proposed = sshHost
+	}
+
+	tlsLabel := "Let's Encrypt (auto-HTTPS)"
+	if insecureTLS || isIPOrLocalhost(proposed) {
+		tlsLabel = "self-signed (tls internal)"
+	}
+	if composeFile != "" {
+		tlsLabel = "(custom compose)"
+	}
+
+	dockerLabel := "not installed, will install"
+	if dockerInstalled {
+		dockerLabel = "installed (" + strings.TrimSpace(dockerCheck.Stdout) + ")"
+	}
+	swarmLabel := "not initialized, will initialize"
+	if swarmActive {
+		swarmLabel = "active"
+	}
+
+	step.Detail(output.IconPublicHost, "Public hostname:   "+proposed)
+	step.Detail(output.IconTLS, "TLS:               "+tlsLabel)
+	step.Detail(output.IconDocker, "Docker:            "+dockerLabel)
+	step.Detail(output.IconSwarm, "Swarm:             "+swarmLabel)
+	fmt.Fprintln(output.Stderr)
+	// Detection step has no checkmark — the indented detail block is
+	// the result. Print a newline to close it cleanly.
+	fmt.Fprintln(output.Stderr)
+
+	return envState{
+		dockerInstalled:    dockerInstalled,
+		swarmActive:        swarmActive,
+		proposedPublicHost: proposed,
+	}, nil
+}
+
+// dialSSH wraps the auth selection and connect into a single 🔌 step.
+// Auth precedence: explicit flags first, then ambient SSH agent, then
+// interactive prompt. Without this order an SSH_AUTH_SOCK in the
+// environment silently overrides --password, which has bitten us.
+func dialSSH(target, user, host, keyPath, keyPassphrase, password string) (*ssh.Conn, error) {
+	step := output.StartStep(output.IconSSH, "Connecting to "+target)
+
+	var auth ssh.AuthMethod
+	switch {
+	case keyPath != "":
+		auth = ssh.PublicKeyAuth{KeyPath: keyPath, Passphrase: keyPassphrase}
+	case password != "":
+		auth = ssh.PasswordAuth{Password: password}
+	default:
+		if socket := ssh.DefaultAgentSocket(); socket != "" {
+			if conn, err := net.Dial("unix", socket); err == nil {
+				conn.Close()
+				auth = ssh.AgentAuth{Socket: socket}
+			}
+		}
+	}
+
+	if auth == nil {
+		// No flag, no agent — fall back to interactive prompt. We
+		// can't ask through the step helper because the prompt needs
+		// to print before the trailing status mark.
+		step.Fail("no auth method (re-run with --key, --password, or an SSH agent)")
+		return nil, fmt.Errorf("no SSH auth method available; pass --key <path>, --password, or start ssh-agent")
+	}
+
+	if user == "" {
+		user = "root"
+	}
+
+	c := ssh.NewClient(user, host, auth)
+	conn, err := c.Connect()
+	if err != nil {
+		step.Fail(err.Error())
+		return nil, fmt.Errorf("SSH connection failed: %w", err)
+	}
+	step.OK()
+	return conn, nil
+}
+
+// openGitHubAppFlow mints a pending-app URL via the daemon and opens
+// it in the operator's browser. Best-effort — if the browser open
+// fails, the URL is printed for manual copy-paste.
+func openGitHubAppFlow(ctx context.Context, srv cliconfig.Server, org string) error {
+	c := client.New(srv)
+	resp, err := c.CreatePendingApp(ctx, cobaltapi.PendingAppCreateRequest{
+		Organization: org,
+	})
+	if err != nil {
+		return fmt.Errorf("create pending app: %w", err)
+	}
+	step := output.StartStep(output.IconBrowser, "Opening browser to register GitHub App")
+	step.OK()
+	fmt.Fprintf(output.Stderr, "   → %s\n", resp.URL)
+	if err := client.OpenBrowser(resp.URL); err != nil {
+		fmt.Fprintf(output.Stderr, "   could not open browser automatically; copy the URL above\n")
+	}
+	return nil
 }
 
 func writeRemoteFile(conn *ssh.Conn, path, content string) error {
@@ -428,15 +603,9 @@ func waitForHealthy(ctx context.Context, url string, timeout time.Duration) erro
 // deployed with `docker stack deploy` instead of `docker compose up`
 // (compose-exec by service name doesn't apply).
 func daemonExec(ctx context.Context, conn *ssh.Conn, cmd string) *ssh.Result {
-	const wrapped = "id=$(docker ps --filter label=com.docker.swarm.service.name=cobalt_cobalt -q | head -1); " +
-		"if [ -z \"$id\" ]; then echo 'cobalt_cobalt task not running' >&2; exit 1; fi; " +
-		"docker exec %q sh -c %q"
-	// We don't actually use %q here — that would force shell quoting of
-	// the inner command twice. Inline the command into a single sh -c.
 	full := "id=$(docker ps --filter label=com.docker.swarm.service.name=cobalt_cobalt -q | head -1); " +
 		"if [ -z \"$id\" ]; then echo 'cobalt_cobalt task not running' >&2; exit 1; fi; " +
 		"docker exec \"$id\" sh -c " + shellSingleQuote(cmd)
-	_ = wrapped // silence linter; comment block above documents the shape
 	return conn.Run(ctx, full)
 }
 
