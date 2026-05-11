@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -29,9 +30,14 @@ const runWriteTimeout = 10 * time.Second
 // "interactive ad-hoc usage"; longer-running workloads belong in a
 // project service, not in cobalt run.
 //
-// Declared as a var so tests can shorten it to verify cap behavior
-// without sleeping for hours.
-var runMaxLifetime = 1 * time.Hour
+// Stored as an atomic so tests can shorten the cap to verify cancel
+// behavior without sleeping for hours — and without racing the
+// http-handler goroutine that reads it on every request.
+var runMaxLifetime atomic.Int64
+
+func init() {
+	runMaxLifetime.Store(int64(1 * time.Hour))
+}
 
 // runHeartbeatInterval is the cadence of WS-protocol ping frames the
 // daemon sends each cobalt-run client. Two purposes:
@@ -54,7 +60,7 @@ const runHeartbeatInterval = 30 * time.Second
 // automatically; the handler then sees its docker.Run returning
 // because exec.Cmd cancellation kills the process.
 func newRunLifecycle(parent context.Context, conn *websocket.Conn) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithTimeout(parent, runMaxLifetime)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(runMaxLifetime.Load()))
 	go func() {
 		t := time.NewTicker(runHeartbeatInterval)
 		defer t.Stop()

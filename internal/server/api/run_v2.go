@@ -98,17 +98,21 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 					carriers.stdinW = nil
 				}
 			case cobaltapi.RunChannelResize:
-				if !tty || carriers.ptmx == nil {
+				if !tty {
 					continue
 				}
 				var p cobaltapi.RunResizePayload
 				if err := json.Unmarshal(body, &p); err != nil {
 					continue
 				}
-				_ = pty.Setsize(carriers.ptmx, &pty.Winsize{
-					Rows: p.Rows,
-					Cols: p.Cols,
-				})
+				carriers.ptmxMu.Lock()
+				if carriers.ptmx != nil {
+					_ = pty.Setsize(carriers.ptmx, &pty.Winsize{
+						Rows: p.Rows,
+						Cols: p.Cols,
+					})
+				}
+				carriers.ptmxMu.Unlock()
 			default:
 				// Unknown channel; ignore per spec (forward-compat).
 			}
@@ -183,8 +187,13 @@ type runV2Carriers struct {
 	stderrR io.ReadCloser
 
 	// ptmx is the PTY master fd (TTY mode only) — held separately so
-	// we can Setsize it on resize frames.
-	ptmx *os.File
+	// we can Setsize it on resize frames. Reads/writes of this pointer
+	// (and any pty.Setsize / Close on it) MUST hold ptmxMu — both the
+	// WS-read goroutine (resize) and closeForPumpDrain touch it, and
+	// concurrent Setsize during a Read's destroy path races on the
+	// underlying poll.FD state (caught by `go test -race`).
+	ptmx   *os.File
+	ptmxMu sync.Mutex
 
 	// closers is the full set of fds we opened, in close order.
 	closers []io.Closer
@@ -243,11 +252,31 @@ func newRunV2Carriers(tty bool) (*runV2Carriers, error) {
 // closeForPumpDrain closes the file descriptors whose closure forces
 // the output pumps to observe EOF (or, on PTY, EIO). In no-TTY mode
 // that's the parent's writer halves of stdout / stderr; in TTY mode
-// it's the PTY master.
+// it's BOTH ends of the PTY pair — closing only the master is enough
+// when the docker container is a separate process (kernel reaps the
+// slave when the child exits), but in-process tests hold the slave fd
+// open until cleanup, and on macOS a master-Read can wedge if the
+// slave is still referenced when the master is closed. Closing both
+// makes the pump's Read return deterministically in either case.
 func (c *runV2Carriers) closeForPumpDrain() {
 	c.drainOnce.Do(func() {
-		if c.ptmx != nil {
-			_ = c.ptmx.Close()
+		c.ptmxMu.Lock()
+		ptmx := c.ptmx
+		c.ptmx = nil
+		c.ptmxMu.Unlock()
+		if ptmx != nil {
+			_ = ptmx.Close()
+			// Close the slave too — when the docker container is a
+			// separate process the kernel reaps the slave on child
+			// exit, but in-process callers (and unit tests) hold the
+			// slave fd in c.closers until cleanup; on macOS a master
+			// Read can wedge if the slave is still referenced when
+			// only the master is closed.
+			for _, cl := range c.closers {
+				if f, ok := cl.(*os.File); ok && f != ptmx {
+					_ = f.Close()
+				}
+			}
 			return
 		}
 		// no-TTY: close the parent's stdout/stderr writers (the

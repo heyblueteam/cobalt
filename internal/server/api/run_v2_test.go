@@ -289,12 +289,13 @@ func TestRunV2_RealExitCodePropagated(t *testing.T) {
 }
 
 func TestNewRunLifecycle_CapCancelsContext(t *testing.T) {
-	t.Parallel()
-	// Override the package cap for the duration of this test. Save and
-	// restore so siblings see the production value.
-	original := runMaxLifetime
-	runMaxLifetime = 100 * time.Millisecond
-	defer func() { runMaxLifetime = original }()
+	// NOT t.Parallel(): we mutate the package-level cap. Other parallel
+	// tests in this package open WebSockets that invoke newRunLifecycle,
+	// and a sibling running concurrently would inherit our 100 ms cap and
+	// be torn down before its assertions complete.
+	original := runMaxLifetime.Load()
+	runMaxLifetime.Store(int64(100 * time.Millisecond))
+	defer runMaxLifetime.Store(original)
 
 	// We don't actually need a real WebSocket — newRunLifecycle only
 	// calls conn.Ping at the heartbeat cadence. A WS that hasn't been
