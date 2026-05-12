@@ -21,6 +21,7 @@ func newRootCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newInitCmd(),
+		newValidateCmd(),
 		newServerCmd(),
 		newServerUpgradeHelperCmd(),
 		newServersCmd(),
