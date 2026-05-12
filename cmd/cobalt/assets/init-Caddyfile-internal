@@ -1,7 +1,12 @@
 # Self-signed Caddyfile for dev / --insecure-tls installs. Caddy issues
-# its own internal cert for :443; GitHub App webhooks won't work against
-# this (they require a publicly-trusted certificate), but cobalt deploy
-# / domains / project routing all do.
+# its own internal-CA leaf for {$COBALT_PUBLIC_HOST} (typically an IP
+# for these installs), and `local_certs` forces project domains added
+# at runtime via the admin API to use the same internal CA — otherwise
+# they'd try (and fail) to provision a Let's Encrypt cert. default_sni
+# serves the daemon's leaf even when clients connect by raw IP and
+# send no SNI, otherwise Caddy emits a TLS internal_error alert
+# because no cert matches the (empty) SNI. GitHub App webhooks won't
+# work against any of this — they need a publicly-trusted chain.
 {
   admin unix//cobalt/caddy-socket/caddy.sock {
     origins cobalt-caddy
@@ -11,13 +16,15 @@
   servers :443 {
     name cobalt
   }
+  local_certs
+  default_sni {$COBALT_PUBLIC_HOST}
 }
 
-:80 {
+http://{$COBALT_PUBLIC_HOST} {
   reverse_proxy cobalt:8080
 }
 
-:443 {
+https://{$COBALT_PUBLIC_HOST} {
   tls internal
   reverse_proxy cobalt:8080
 }
