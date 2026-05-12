@@ -485,6 +485,75 @@ func TestOrchestrator_AfterHookFailureDoesNotRollBack(t *testing.T) {
 	}
 }
 
+// TestOrchestrator_HooksHappyPath asserts both before- and after-hooks are
+// actually invoked through the deploy flow, in the right order relative to
+// service create / Caddy swap, with extraRunParams threaded into argv.
+// The negative path is covered by TestOrchestrator_AfterHookFailureDoesNotRollBack.
+func TestOrchestrator_HooksHappyPath(t *testing.T) {
+	t.Parallel()
+	o, fdocker, _, db, project := setupOrchestrator(t)
+
+	ws := o.Preparer.(*fakePrep).ws
+	ws.Cobaltfile.Services[cobaltfile.HookDeployStartBefore] = cobaltfile.Service{
+		Type:           cobaltfile.TypeCommand,
+		Image:          "default",
+		Port:           cobaltfile.DefaultPort,
+		Command:        "echo before",
+		ExtraRunParams: "--add-host host.docker.internal:host-gateway",
+	}
+	ws.Cobaltfile.Services[cobaltfile.HookDeployStartAfter] = cobaltfile.Service{
+		Type:    cobaltfile.TypeCommand,
+		Image:   "default",
+		Port:    cobaltfile.DefaultPort,
+		Command: "echo after",
+	}
+
+	dep := enqueueAndFetch(t, db, project.ID)
+	if err := o.Run(context.Background(), dep); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	fdocker.mu.Lock()
+	defer fdocker.mu.Unlock()
+
+	idxBefore := firstCallIndex(fdocker.calls, "run --rm --name api-hook-deploy-start-before.1")
+	idxAfter := firstCallIndex(fdocker.calls, "run --rm --name api-hook-deploy-start-after.1")
+	idxCreate := firstCallIndex(fdocker.calls, "service create")
+	if idxBefore < 0 {
+		t.Fatalf("before-hook never invoked; calls=%v", fdocker.calls)
+	}
+	if idxAfter < 0 {
+		t.Fatalf("after-hook never invoked; calls=%v", fdocker.calls)
+	}
+	if idxCreate < 0 {
+		t.Fatalf("no service create; calls=%v", fdocker.calls)
+	}
+	if idxBefore >= idxCreate {
+		t.Errorf("before-hook should run before service create (before=%d, create=%d)", idxBefore, idxCreate)
+	}
+	if idxAfter <= idxCreate {
+		t.Errorf("after-hook should run after service create (after=%d, create=%d)", idxAfter, idxCreate)
+	}
+
+	// extraRunParams from the cobaltfile must reach the actual docker argv
+	// for the before-hook. The after-hook didn't set them, so don't check.
+	if !strings.Contains(fdocker.calls[idxBefore], "--add-host host.docker.internal:host-gateway") {
+		t.Errorf("before-hook missing --add-host argv: %q", fdocker.calls[idxBefore])
+	}
+}
+
+// firstCallIndex returns the index of the first recorded call with the
+// given prefix, or -1 if none. Used to assert ordering of the docker
+// shell-outs captured by orchestratorDocker.
+func firstCallIndex(calls []string, prefix string) int {
+	for i, c := range calls {
+		if strings.HasPrefix(c, prefix) {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestOrchestrator_NoWebServiceSkipsCaddy(t *testing.T) {
 	t.Parallel()
 	o, _, fcaddy, db, project := setupOrchestrator(t)
