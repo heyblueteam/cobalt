@@ -56,40 +56,7 @@ Examples:
 			if image == "" {
 				image = defaultUpgradeImageRepo + ":" + to
 			}
-
-			cl, err := newClient(cmd)
-			if err != nil {
-				return err
-			}
-
-			info, err := cl.GetMetaInfo(cmd.Context())
-			if err != nil {
-				return fmt.Errorf("preflight: %w", err)
-			}
-			targetVersion := imageTagOnly(image)
-			output.PrintLines("Current daemon version: " + info.Version)
-			output.PrintLines("Target image:           " + image)
-			if !force && targetVersion != "" && targetVersion == info.Version {
-				return fmt.Errorf("daemon is already at %s; pass --force to upgrade anyway",
-					info.Version)
-			}
-
-			u, err := cl.CreateUpgrade(cmd.Context(), cobaltapi.ServerUpgradeRequest{
-				Image: image,
-				Pull:  true,
-			})
-			if err != nil {
-				return err
-			}
-			output.PrintLines("Upgrade " + u.ID + " started")
-
-			if noFollow {
-				if output.IsJSON() {
-					output.PrintJSON(u)
-				}
-				return nil
-			}
-			return followUpgrade(cmd.Context(), cl, u.ID)
+			return runUpgrade(cmd, image, force, noFollow)
 		}),
 	}
 	cmd.Flags().String("to", "", "target version (e.g. v0.9.0); resolves to "+defaultUpgradeImageRepo+":<version>")
@@ -97,6 +64,43 @@ Examples:
 	cmd.Flags().Bool("force", false, "proceed even when the daemon is already at the target version")
 	cmd.Flags().Bool("no-follow", false, "exit immediately after triggering, without streaming the helper log")
 	return cmd
+}
+
+// runUpgrade is the shared upgrade pipeline used by `cobalt upgrade` and
+// the deprecated alias `cobalt meta upgrade`. Both surface the same
+// preflight (current vs target version), backend (POST /api/server/upgrade),
+// and follow semantics (SSE → terminal status → exit code).
+func runUpgrade(cmd *cobra.Command, image string, force, noFollow bool) error {
+	cl, err := newClient(cmd)
+	if err != nil {
+		return err
+	}
+	info, err := cl.GetMetaInfo(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("preflight: %w", err)
+	}
+	targetVersion := imageTagOnly(image)
+	output.PrintLines("Current daemon version: " + info.Version)
+	output.PrintLines("Target image:           " + image)
+	if !force && targetVersion != "" && targetVersion == info.Version {
+		return fmt.Errorf("daemon is already at %s; pass --force to upgrade anyway",
+			info.Version)
+	}
+	u, err := cl.CreateUpgrade(cmd.Context(), cobaltapi.ServerUpgradeRequest{
+		Image: image,
+		Pull:  true,
+	})
+	if err != nil {
+		return err
+	}
+	output.PrintLines("Upgrade " + u.ID + " started")
+	if noFollow {
+		if output.IsJSON() {
+			output.PrintJSON(u)
+		}
+		return nil
+	}
+	return followUpgrade(cmd.Context(), cl, u.ID)
 }
 
 // followUpgrade streams the helper log via SSE until a terminal

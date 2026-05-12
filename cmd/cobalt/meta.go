@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/heyblueteam/cobalt/internal/client"
 	"github.com/heyblueteam/cobalt/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -75,37 +74,30 @@ func formatDuration(secs int64) string {
 func newMetaUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
-		Short: "Upgrade the daemon to a new image",
-		Long: `Triggers a daemon upgrade. For v1 this is not yet implemented — the
-daemon cannot self-upgrade while running.
-
-To upgrade, manually run:
-  docker service update --image ghcr.io/heyblueteam/cobalt:<tag> cobalt
+		Short: "[DEPRECATED] Upgrade the daemon to a new image (use `cobalt upgrade`)",
+		Long: `Deprecated alias for ` + "`cobalt upgrade`" + `. Both end up calling the same
+daemon-side helper that pulls the target image, swaps the cobalt
+service, probes health, and rolls back if the new daemon doesn't
+come up within 90s. Prefer the top-level command — this alias will
+be removed once every supported install has the newer CLI.
 
 Examples:
-  cobalt meta upgrade
-  cobalt meta upgrade --image ghcr.io/heyblueteam/cobalt:v2`,
+  cobalt meta upgrade --image ghcr.io/heyblueteam/cobalt:v0.9.0
+  cobalt meta upgrade --image ghcr.io/myorg/my-fork:v1.2.3 --no-follow`,
 		RunE: runE(func(cmd *cobra.Command, _ []string) error {
-			c, err := newClient(cmd)
-			if err != nil {
-				return err
-			}
 			image, _ := cmd.Flags().GetString("image")
 			if image == "" {
-				// Stub command: exit non-zero so scripts treat "nothing
-				// happened" as an error and don't silently move on
-				// thinking the daemon was upgraded.
-				return fmt.Errorf("self-upgrade not implemented; run `docker service update --image <image> cobalt` on the daemon host")
+				return fmt.Errorf("--image is required")
 			}
-			err = c.UpgradeDaemon(cmd.Context(), client.UpgradeDaemonRequest{Image: image})
-			if err != nil {
-				return err
-			}
-			output.PrintLines("Upgrade triggered.")
-			return nil
+			force, _ := cmd.Flags().GetBool("force")
+			noFollow, _ := cmd.Flags().GetBool("no-follow")
+			output.PrintLines("Note: `cobalt meta upgrade` is deprecated — prefer `cobalt upgrade --image <ref>`.")
+			return runUpgrade(cmd, image, force, noFollow)
 		}),
 	}
-	cmd.Flags().String("image", "", "image tag to upgrade to (not yet implemented)")
+	cmd.Flags().String("image", "", "image reference to upgrade to (e.g. ghcr.io/heyblueteam/cobalt:v0.9.0)")
+	cmd.Flags().Bool("force", false, "proceed even when the daemon is already at the target version")
+	cmd.Flags().Bool("no-follow", false, "exit immediately after triggering, without streaming the helper log")
 	return cmd
 }
 
