@@ -257,6 +257,72 @@ func TestCrashLoop(t *testing.T) {
 	}
 }
 
+// TestDeployHooks: deploy the fixture's `hooks` branch and prove all
+// three things end-to-end:
+//
+//   - both hook:deploy:start:before and hook:deploy:start:after run,
+//     in the right order;
+//   - the per-project env var ($HOOK_MARKER) reaches the hook command;
+//   - the before-hook's extraRunParams (--add-host …:host-gateway)
+//     lands in the docker run argv (the hook checks /etc/hosts).
+//
+// Evidence comes from two independent channels: the deploy log (SSE)
+// for the stdout sentinels, and the shared `sentinels` volume the
+// hooks write to, served by the web container at /sentinels/*. If
+// runHook ever silently drops a Volumes/EnvVars/ExtraParams field on
+// RunOpts again, both channels go red.
+func TestDeployHooks(t *testing.T) {
+	env := RequireEnv(t)
+	base := env.requireDomainBase(t)
+
+	p := NewProjectOnBranch(t, env, "deploy-hooks", "hooks")
+
+	marker := fmt.Sprintf("e2e-hooks-%d", time.Now().UnixNano())
+	if err := p.SetEnv("HOOK_MARKER", marker); err != nil {
+		t.Fatalf("set HOOK_MARKER: %v", err)
+	}
+
+	domain := fmt.Sprintf("hooks-%d.%s", time.Now().Unix(), base)
+	if _, err := p.AddDomain(domain); err != nil {
+		t.Fatalf("add domain: %v", err)
+	}
+
+	d := p.Deploy(t)
+
+	// Channel 1: stdout sentinels in the deploy log. The before line
+	// must precede the after line; otherwise the orchestrator wired
+	// the hooks into the wrong phase.
+	log := p.FetchDeployLog(t, d.ID, 30*time.Second)
+	AssertLogContains(t, log,
+		"HOOK-BEFORE-EXTRARUNPARAMS-OK",
+		"HOOK-BEFORE-SENTINEL marker="+marker,
+		"HOOK-AFTER-SENTINEL marker="+marker,
+	)
+	iBefore := strings.Index(log, "HOOK-BEFORE-SENTINEL")
+	iAfter := strings.Index(log, "HOOK-AFTER-SENTINEL")
+	if iAfter < iBefore {
+		t.Errorf("after-hook stdout appeared before before-hook (before=%d after=%d)", iBefore, iAfter)
+	}
+
+	// Channel 2: the shared sentinels volume, served by web. Proves
+	// runHook honors cobaltfile `volumes:` and the after-hook wrote
+	// after the swap (otherwise web couldn't read after's file via
+	// the same volume).
+	url := "https://" + domain
+	if err := WaitForHTTP(url+"/sentinels/before", 200, 60*time.Second); err != nil {
+		t.Fatalf("sentinels not served: %v", err)
+	}
+	if got := MustGetBody(t, url+"/sentinels/before"); got != marker {
+		t.Errorf("/sentinels/before: got %q, want %q", got, marker)
+	}
+	if got := MustGetBody(t, url+"/sentinels/after"); got != marker {
+		t.Errorf("/sentinels/after: got %q, want %q", got, marker)
+	}
+	if got := MustGetBody(t, url+"/sentinels/before-extra-run-params"); got != "OK" {
+		t.Errorf("/sentinels/before-extra-run-params: got %q, want %q (extraRunParams not threaded into argv)", got, "OK")
+	}
+}
+
 func hasRedirect(domains []cobaltapi.Domain, from, to string) bool {
 	for _, d := range domains {
 		if d.Name == from && d.Type == cobaltapi.DomainTypeRedirect && d.RedirectTo == to {

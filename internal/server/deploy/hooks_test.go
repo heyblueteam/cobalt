@@ -147,6 +147,41 @@ func TestRunAfterHook_UsesOverrideImage(t *testing.T) {
 	}
 }
 
+func TestRunBeforeHook_ThreadsVolumes(t *testing.T) {
+	t.Parallel()
+	cf := hookCF(cobaltfile.HookDeployStartBefore, cobaltfile.Service{
+		Type:    cobaltfile.TypeCommand,
+		Image:   "default",
+		Port:    cobaltfile.DefaultPort,
+		Command: "touch /sentinels/x",
+		Volumes: []cobaltfile.Volume{
+			{Name: "sentinels", DestinationPath: "/sentinels"},
+			{Name: "data", DestinationPath: "/data"},
+		},
+	})
+	r := &fakeHookRunner{}
+	err := runBeforeHook(
+		context.Background(), r,
+		store.Project{ID: 42, Name: "api"},
+		store.Deployment{Number: 1},
+		cf, nil, io.Discard, io.Discard,
+	)
+	if err != nil {
+		t.Fatalf("runBeforeHook: %v", err)
+	}
+	if len(r.calls) != 1 {
+		t.Fatalf("calls: %d", len(r.calls))
+	}
+	want := []docker.ServiceVolume{
+		{VolumeName: "cobalt-volume-42-sentinels", DestinationPath: "/sentinels"},
+		{VolumeName: "cobalt-volume-42-data", DestinationPath: "/data"},
+	}
+	got := r.calls[0].Volumes
+	if !slices.Equal(got, want) {
+		t.Errorf("Volumes: got %+v, want %+v", got, want)
+	}
+}
+
 func TestRunHook_NoOpWhenNotDeclared(t *testing.T) {
 	t.Parallel()
 	cf := &cobaltfile.Cobaltfile{

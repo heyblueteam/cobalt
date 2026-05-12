@@ -113,6 +113,18 @@ func (p *Project) ListDomains() ([]cobaltapi.Domain, error) {
 	return p.client.ListDomains(ctx, p.Name)
 }
 
+// SetEnv upserts a single env var on the project. Does not trigger
+// a redeploy on its own — the caller's subsequent Deploy() picks up
+// the new value when the orchestrator queries env.
+func (p *Project) SetEnv(key, value string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := p.client.SetEnvVars(ctx, p.Name, cobaltapi.EnvSetRequest{
+		Vars: map[string]string{key: value},
+	})
+	return err
+}
+
 func projectName(scenario string) string {
 	slug := strings.ReplaceAll(strings.ToLower(scenario), "_", "-")
 	slug = strings.ReplaceAll(slug, "/", "-")

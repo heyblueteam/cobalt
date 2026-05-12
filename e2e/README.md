@@ -37,6 +37,7 @@ make e2e
 | `COBALT_E2E_DOMAIN_BASE`    | no       | —                             | Wildcard apex tests can register subdomains under       |
 | `COBALT_E2E_FIXTURE_REPO`   | no       | `heyblueteam/cobalt-fixture-app` | GitHub `owner/repo` of the fixture app to deploy   |
 | `COBALT_E2E_KEEP`           | no       | unset                         | If set, leave projects on the daemon after the run      |
+| `COBALT_E2E_INSECURE_TLS`   | no       | unset                         | Accept any server cert — for `cobalt init --insecure-tls` daemons |
 
 When `COBALT_E2E_HOST` is unset, every test in this package calls
 `t.Skip` — `go test ./...` stays green for contributors who haven't
@@ -58,6 +59,7 @@ inspect Caddy state, container logs, etc.
 | `TestApexWithWWW`           | yes       | apex serves; `www.<apex>` 301s to apex; both certs issued    |
 | `TestRedirectTo`            | yes       | arbitrary 301; daemon rejects redirects to non-primaries     |
 | `TestRemoveCascadesRedirects` | no      | removing a primary cascades its redirects in the same step   |
+| `TestDeployHooks`           | yes       | before+after hooks run, env+volumes+extraRunParams threaded  |
 
 ## Bringing your own host
 

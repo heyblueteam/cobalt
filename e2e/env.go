@@ -1,7 +1,10 @@
 package e2e
 
 import (
+	"crypto/tls"
+	"net/http"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/heyblueteam/cobalt/internal/cliconfig"
@@ -17,6 +20,11 @@ type Env struct {
 	FixtureRepo string
 	DomainBase  string
 	Keep        bool
+	// InsecureTLS, when true, makes the e2e HTTP probe accept any
+	// server cert. Set via COBALT_E2E_INSECURE_TLS=1 to run against
+	// a daemon initialized with `cobalt init --insecure-tls` (dev /
+	// throwaway VM with Caddy's self-signed `tls internal` chain).
+	InsecureTLS bool
 }
 
 const (
@@ -25,6 +33,7 @@ const (
 	envFixture     = "COBALT_E2E_FIXTURE_REPO"
 	envDomainBase  = "COBALT_E2E_DOMAIN_BASE"
 	envKeep        = "COBALT_E2E_KEEP"
+	envInsecureTLS = "COBALT_E2E_INSECURE_TLS"
 	defaultFixture = "heyblueteam/cobalt-fixture-app"
 )
 
@@ -49,13 +58,33 @@ func RequireEnv(t *testing.T) Env {
 	if fixture == "" {
 		fixture = defaultFixture
 	}
-	return Env{
+	e := Env{
 		Host:        host,
 		APIKey:      key,
 		FixtureRepo: fixture,
 		DomainBase:  os.Getenv(envDomainBase),
 		Keep:        os.Getenv(envKeep) != "",
+		InsecureTLS: os.Getenv(envInsecureTLS) != "",
 	}
+	applyInsecureTLS(e.InsecureTLS)
+	return e
+}
+
+// applyInsecureTLS swaps the shared HTTP probe client's transport for
+// one that skips cert verification. Done at most once per process —
+// later calls are no-ops. Only used by the e2e harness against
+// daemons running with `tls internal` (self-signed) certs.
+var insecureTLSOnce sync.Once
+
+func applyInsecureTLS(enabled bool) {
+	if !enabled {
+		return
+	}
+	insecureTLSOnce.Do(func() {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		httpClient.Transport = tr
+	})
 }
 
 // requireDomainBase skips the test when COBALT_E2E_DOMAIN_BASE is

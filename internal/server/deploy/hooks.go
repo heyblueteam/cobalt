@@ -47,6 +47,18 @@ func runHook(
 	imageTag := docker.InternalImageName(project.Name, svc.Image, dep.Number)
 	containerName := docker.HookContainerName(project.Name, hookName, dep.Number)
 
+	// Volumes the hook declares in cobaltfile get mounted with the same
+	// project-scoped naming as regular services, so a hook can share state
+	// with the app — e.g. `prisma migrate deploy` writing to the same
+	// volume the running container reads from.
+	var volumes []docker.ServiceVolume
+	for _, v := range svc.Volumes {
+		volumes = append(volumes, docker.ServiceVolume{
+			VolumeName:      docker.VolumeName(project.ID, v.Name),
+			DestinationPath: v.DestinationPath,
+		})
+	}
+
 	fmt.Fprintf(stdout, "🪝 running %s\n", hookName)
 	t0 := time.Now()
 	opts := docker.RunOpts{
@@ -59,6 +71,7 @@ func runHook(
 		Command:          []string{"sh", "-c", svc.Command},
 		EnvVars:          envVars,
 		Networks:         []string{MainNetworkName},
+		Volumes:          volumes,
 		ExtraParams:      docker.SplitParams(svc.ExtraRunParams),
 		Stdout:           stdout,
 		Stderr:           stderr,
