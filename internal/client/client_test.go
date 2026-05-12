@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -128,6 +129,69 @@ func TestClientAuthHeader(t *testing.T) {
 	if err := c.get(context.Background(), "/api/test", nil); err != nil {
 		t.Fatalf("get: %v", err)
 	}
+}
+
+func TestClient_TrustsPinnedCA(t *testing.T) {
+	// End-to-end shape: a TLS test server signed by an in-process CA
+	// hands the cert + key to httptest. Default client (no CACertPEM)
+	// must fail verification; pinning the CA's PEM must succeed.
+	caPEM, srv := newTLSServer(t)
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "https://")
+
+	t.Run("without pin", func(t *testing.T) {
+		c := New(cliconfig.Server{Host: "https://" + host, APIKey: "k"})
+		err := c.get(context.Background(), "/anything", nil)
+		if err == nil {
+			t.Fatal("expected TLS verification failure")
+		}
+		if !strings.Contains(err.Error(), "x509") && !strings.Contains(err.Error(), "tls") {
+			t.Errorf("error %q does not look like a TLS failure", err)
+		}
+	})
+
+	t.Run("with pin", func(t *testing.T) {
+		c := New(cliconfig.Server{
+			Host:      "https://" + host,
+			APIKey:    "k",
+			CACertPEM: caPEM,
+		})
+		if err := c.get(context.Background(), "/anything", nil); err != nil {
+			t.Errorf("pinned CA should accept cert: %v", err)
+		}
+	})
+
+	t.Run("invalid pem ignored", func(t *testing.T) {
+		// Garbage PEM → transportFor returns nil → DefaultTransport →
+		// verification fails as in the unpinned case. The intent: a
+		// corrupted config file shouldn't silently disable TLS by
+		// installing an empty pool that trusts nothing-and-everything.
+		c := New(cliconfig.Server{
+			Host:      "https://" + host,
+			APIKey:    "k",
+			CACertPEM: "not a cert",
+		})
+		if err := c.get(context.Background(), "/anything", nil); err == nil {
+			t.Fatal("expected TLS failure with invalid pinned PEM")
+		}
+	})
+}
+
+// newTLSServer spins up an httptest.Server with TLS using a freshly
+// minted CA + leaf. Returns the CA's PEM (what the CLI would store in
+// CACertPEM) and the server itself.
+func newTLSServer(t *testing.T) (string, *httptest.Server) {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(200)
+	}))
+	srv.StartTLS()
+	// srv.Certificate() returns the auto-generated leaf, which is
+	// self-signed — perfect for our purposes: pinning it as a "CA"
+	// makes the chain trust succeed.
+	certDER := srv.Certificate().Raw
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+	return string(pemBytes), srv
 }
 
 func TestClientURLScheme(t *testing.T) {

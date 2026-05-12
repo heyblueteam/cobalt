@@ -37,7 +37,8 @@ make e2e
 | `COBALT_E2E_DOMAIN_BASE`    | no       | —                             | Wildcard apex tests can register subdomains under       |
 | `COBALT_E2E_FIXTURE_REPO`   | no       | `heyblueteam/cobalt-fixture-app` | GitHub `owner/repo` of the fixture app to deploy   |
 | `COBALT_E2E_KEEP`           | no       | unset                         | If set, leave projects on the daemon after the run      |
-| `COBALT_E2E_INSECURE_TLS`   | no       | unset                         | Accept any server cert — for `cobalt init --insecure-tls` daemons |
+| `COBALT_E2E_INSECURE_TLS`   | no       | unset                         | Accept any server cert — fallback for `--insecure-tls` daemons; prefer `COBALT_E2E_CA_CERT_FILE` instead |
+| `COBALT_E2E_CA_CERT_FILE`   | no       | unset                         | Path to a PEM file the harness pins (real chain verification). Same cert the CLI's `~/.cobalt/config.json` stores for `--insecure-tls` daemons |
 
 When `COBALT_E2E_HOST` is unset, every test in this package calls
 `t.Skip` — `go test ./...` stays green for contributors who haven't

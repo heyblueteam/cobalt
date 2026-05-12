@@ -362,6 +362,25 @@ Examples:
 			}
 			step.OK()
 
+			// For --insecure-tls installs the daemon serves a cert
+			// signed by Caddy's local CA, which isn't in the system
+			// trust store. Pull that root cert now and stash it in
+			// cliconfig.Server.CACertPEM so the CLI can verify the
+			// chain without falling back to plain HTTP or
+			// InsecureSkipVerify. Public-CA installs skip this — their
+			// chain validates against the system pool.
+			caCertPEM := ""
+			if insecureTLS {
+				step = output.StartStep(output.IconTLS, "Trusting daemon's local CA")
+				pem, err := readCaddyRootCert(ctx, conn)
+				if err != nil {
+					step.Fail(err.Error())
+					return fmt.Errorf("read caddy root cert: %w", err)
+				}
+				caCertPEM = pem
+				step.OK()
+			}
+
 			// 💾 Save config locally.
 			//
 			// The saved Host is the *public* hostname, not the SSH host.
@@ -373,8 +392,9 @@ Examples:
 			cfg := &cliconfig.Config{
 				Servers: map[string]cliconfig.Server{
 					publicHost: {
-						Host:   publicHost,
-						APIKey: apiKey,
+						Host:      publicHost,
+						APIKey:    apiKey,
+						CACertPEM: caCertPEM,
 					},
 				},
 				DefaultServer: publicHost,
@@ -681,4 +701,44 @@ func removeBootstrapKey(ctx context.Context, conn *ssh.Conn) error {
 		return fmt.Errorf("rm bootstrap-api-key (exit %d): %s", r.ExitCode, strings.TrimSpace(r.Stderr))
 	}
 	return nil
+}
+
+// readCaddyRootCert pulls Caddy's local-CA root certificate (the one
+// it's signing the daemon's TLS leaf with, under `local_certs`) out
+// of the cobalt_caddy task so we can pin it in cliconfig.Server.
+//
+// Caddy provisions the CA on first boot — by the time the daemon is
+// healthy the file is on disk. We still retry briefly to absorb the
+// rare case where caddy is up but hasn't quite written root.crt yet.
+func readCaddyRootCert(ctx context.Context, conn *ssh.Conn) (string, error) {
+	const path = "/data/caddy/pki/authorities/local/root.crt"
+	const attempts = 10
+	var last string
+	for range attempts {
+		r := caddyExec(ctx, conn, "cat "+path)
+		if r.Err == nil && r.ExitCode == 0 && strings.Contains(r.Stdout, "BEGIN CERTIFICATE") {
+			return r.Stdout, nil
+		}
+		if r.Err != nil {
+			last = r.Err.Error()
+		} else {
+			last = strings.TrimSpace(r.Stderr)
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return "", fmt.Errorf("caddy root cert not readable after %d attempts: %s", attempts, last)
+}
+
+// caddyExec is daemonExec for the cobalt_caddy service task. Kept
+// separate so changes to the daemon's docker-exec contract don't
+// silently retarget calls meant for Caddy.
+func caddyExec(ctx context.Context, conn *ssh.Conn, cmd string) *ssh.Result {
+	full := "id=$(docker ps --filter label=com.docker.swarm.service.name=cobalt_caddy -q | head -1); " +
+		"if [ -z \"$id\" ]; then echo 'cobalt_caddy task not running' >&2; exit 1; fi; " +
+		"docker exec \"$id\" sh -c " + shellSingleQuote(cmd)
+	return conn.Run(ctx, full)
 }

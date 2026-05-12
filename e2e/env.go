@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"net/http"
 	"os"
 	"sync"
@@ -25,6 +26,14 @@ type Env struct {
 	// a daemon initialized with `cobalt init --insecure-tls` (dev /
 	// throwaway VM with Caddy's self-signed `tls internal` chain).
 	InsecureTLS bool
+	// CACertPEM is a PEM-encoded CA cert the harness's API client
+	// should trust in addition to the system pool. Sourced from
+	// COBALT_E2E_CA_CERT_FILE — typically the same root.crt the
+	// CLI's `~/.cobalt/config.json` stores for a `--insecure-tls`
+	// daemon. Distinct from InsecureTLS: pinning preserves real
+	// chain verification, whereas InsecureTLS only relaxes the
+	// probe client (curl-equivalent).
+	CACertPEM string
 }
 
 const (
@@ -34,6 +43,7 @@ const (
 	envDomainBase  = "COBALT_E2E_DOMAIN_BASE"
 	envKeep        = "COBALT_E2E_KEEP"
 	envInsecureTLS = "COBALT_E2E_INSECURE_TLS"
+	envCACertFile  = "COBALT_E2E_CA_CERT_FILE"
 	defaultFixture = "heyblueteam/cobalt-fixture-app"
 )
 
@@ -58,6 +68,14 @@ func RequireEnv(t *testing.T) Env {
 	if fixture == "" {
 		fixture = defaultFixture
 	}
+	caPEM := ""
+	if p := os.Getenv(envCACertFile); p != "" {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("%s=%q: %v", envCACertFile, p, err)
+		}
+		caPEM = string(b)
+	}
 	e := Env{
 		Host:        host,
 		APIKey:      key,
@@ -65,24 +83,40 @@ func RequireEnv(t *testing.T) Env {
 		DomainBase:  os.Getenv(envDomainBase),
 		Keep:        os.Getenv(envKeep) != "",
 		InsecureTLS: os.Getenv(envInsecureTLS) != "",
+		CACertPEM:   caPEM,
 	}
-	applyInsecureTLS(e.InsecureTLS)
+	configureProbeTLS(e)
 	return e
 }
 
-// applyInsecureTLS swaps the shared HTTP probe client's transport for
-// one that skips cert verification. Done at most once per process —
-// later calls are no-ops. Only used by the e2e harness against
-// daemons running with `tls internal` (self-signed) certs.
-var insecureTLSOnce sync.Once
+// configureProbeTLS swaps the shared HTTP probe client's transport at
+// most once per process so it trusts what the harness was told to
+// trust. Two modes; pinning wins when both are set:
+//
+//   - CACertPEM → real chain verification against a pinned CA pool
+//     (system roots + the cert in CACertPEM). Same model the CLI uses
+//     for `cobalt init --insecure-tls` daemons. Preferred.
+//   - InsecureTLS → InsecureSkipVerify. Skipped when CACertPEM is set
+//     since pinning is strictly better.
+var probeTLSOnce sync.Once
 
-func applyInsecureTLS(enabled bool) {
-	if !enabled {
+func configureProbeTLS(e Env) {
+	if e.CACertPEM == "" && !e.InsecureTLS {
 		return
 	}
-	insecureTLSOnce.Do(func() {
+	probeTLSOnce.Do(func() {
 		tr := http.DefaultTransport.(*http.Transport).Clone()
-		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		if e.CACertPEM != "" {
+			pool, err := x509.SystemCertPool()
+			if err != nil || pool == nil {
+				pool = x509.NewCertPool()
+			}
+			if pool.AppendCertsFromPEM([]byte(e.CACertPEM)) {
+				tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+			}
+		} else {
+			tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+		}
 		httpClient.Transport = tr
 	})
 }
@@ -102,7 +136,8 @@ func (e Env) requireDomainBase(t *testing.T) string {
 // Client returns a cobalt API client wired to the e2e target.
 func (e Env) Client() *client.Client {
 	return client.New(cliconfig.Server{
-		Host:   e.Host,
-		APIKey: e.APIKey,
+		Host:      e.Host,
+		APIKey:    e.APIKey,
+		CACertPEM: e.CACertPEM,
 	})
 }

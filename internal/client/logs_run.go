@@ -38,17 +38,26 @@ func (c *Client) RunWS(ctx context.Context, project, command, service string, tt
 		url += "&tty=1"
 	}
 	wsurl := "ws" + url[4:]
+	// WebSocket upgrade relies on hop-by-hop headers (Connection,
+	// Upgrade) that HTTP/2 doesn't carry, so we must dial over
+	// HTTP/1.1. Setting TLSNextProto to a non-nil empty map is the
+	// stdlib's documented opt-out for HTTP/2 negotiation.
+	tr := &http.Transport{
+		ForceAttemptHTTP2: false,
+		TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
+	}
+	// Honor a pinned CA from cliconfig.Server. For daemons installed
+	// with `--insecure-tls`, Caddy's local CA isn't in the system pool;
+	// without this the WS dial fails with x509 verification even though
+	// the regular HTTP client (configured in client.go) succeeds.
+	if pemBytes := []byte(c.server.CACertPEM); len(pemBytes) > 0 {
+		pool, err := systemPoolPlus(pemBytes)
+		if err == nil {
+			tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+		}
+	}
 	opts := &websocket.DialOptions{
-		// WebSocket upgrade relies on hop-by-hop headers (Connection,
-		// Upgrade) that HTTP/2 doesn't carry, so we must dial over
-		// HTTP/1.1. Setting TLSNextProto to a non-nil empty map is the
-		// stdlib's documented opt-out for HTTP/2 negotiation.
-		HTTPClient: &http.Client{
-			Transport: &http.Transport{
-				ForceAttemptHTTP2: false,
-				TLSNextProto:      map[string]func(string, *tls.Conn) http.RoundTripper{},
-			},
-		},
+		HTTPClient: &http.Client{Transport: tr},
 		HTTPHeader: http.Header{
 			"Authorization": {"Bearer " + c.server.APIKey},
 		},

@@ -23,6 +23,14 @@ type Server struct {
 	Host           string `json:"host"`
 	APIKey         string `json:"apiKey"`
 	CurrentProject string `json:"currentProject,omitempty"`
+	// CACertPEM is a PEM-encoded CA certificate to trust when verifying
+	// the daemon's TLS chain, in addition to the system trust store. Set
+	// at init time for `--insecure-tls` daemons (Caddy's local CA isn't
+	// in the system pool); empty for daemons with a publicly-trusted
+	// cert. Pinning the operator-installed CA here means we keep real
+	// cert verification — no MITM hole — without forcing the operator
+	// to install the cert globally.
+	CACertPEM string `json:"caCertPEM,omitempty"`
 }
 
 // DefaultPath returns the canonical ~/.cobalt/config.json path. It does not

@@ -3,6 +3,8 @@ package client
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -28,8 +30,46 @@ func (e *APIError) Error() string { return e.Message }
 func New(s cliconfig.Server) *Client {
 	return &Client{
 		server: s,
-		http:   &http.Client{Timeout: 30 * time.Second},
+		http: &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: transportFor(s),
+		},
 	}
+}
+
+// transportFor returns a transport that trusts s.CACertPEM in addition
+// to the system roots, when CACertPEM is non-empty. When empty, returns
+// nil so the http.Client falls back to DefaultTransport — matches the
+// behavior for daemons with a publicly-trusted cert.
+//
+// Pinned-CA trust (vs. InsecureSkipVerify) preserves real chain
+// verification: a tampered cert from a MITM still fails because it
+// won't chain to the pinned root.
+func transportFor(s cliconfig.Server) http.RoundTripper {
+	if s.CACertPEM == "" {
+		return nil
+	}
+	pool, err := systemPoolPlus([]byte(s.CACertPEM))
+	if err != nil {
+		return nil
+	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+	return tr
+}
+
+// systemPoolPlus returns the system CA pool with extra PEM appended.
+// Used by both the regular HTTP client and the WebSocket dial path so
+// they share one definition of "what to trust".
+func systemPoolPlus(extraPEM []byte) (*x509.CertPool, error) {
+	pool, err := x509.SystemCertPool()
+	if err != nil || pool == nil {
+		pool = x509.NewCertPool()
+	}
+	if !pool.AppendCertsFromPEM(extraPEM) {
+		return nil, fmt.Errorf("client: no valid PEM blocks in supplied CA cert")
+	}
+	return pool, nil
 }
 
 func (c *Client) baseURL() string {
