@@ -39,6 +39,24 @@ func caddyfileFor(publicHost string, insecureTLS bool) string {
 	return initCaddyfileAutoHTTPS
 }
 
+// caddyfileForInit returns the Caddyfile body to write to /opt/cobalt/Caddyfile
+// during `cobalt init`, or "" when the operator opted out via --no-caddyfile.
+//
+// Why this isn't gated on --compose-file: the embedded compose template
+// bind-mounts /opt/cobalt/Caddyfile, and operators who pass a custom compose
+// almost always start from a near-identical variant that keeps the same
+// mount (e.g. they only changed port bindings). Skipping the Caddyfile in
+// that path produces a Rejected restart loop on cobalt_caddy with
+// "bind source path does not exist". Writing it by default is harmless when
+// the operator's compose doesn't mount it; --no-caddyfile is the explicit
+// opt-out for operators who really do replace the Caddy setup wholesale.
+func caddyfileForInit(noCaddyfile bool, publicHost string, insecureTLS bool) string {
+	if noCaddyfile {
+		return ""
+	}
+	return caddyfileFor(publicHost, insecureTLS)
+}
+
 func isIPOrLocalhost(host string) bool {
 	if host == "" || host == "localhost" {
 		return true
@@ -58,6 +76,7 @@ func newInitCmd() *cobra.Command {
 		localImage    string
 		insecureTLS   bool
 		noGitHubApp   bool
+		noCaddyfile   bool
 	)
 
 	cmd := &cobra.Command{
@@ -91,6 +110,9 @@ Examples:
 
   # Use a custom compose file for air-gapped deployments
   cobalt init user@192.168.1.100 --compose-file ./my-compose.yml
+
+  # Custom compose + custom Caddy setup (skip writing /opt/cobalt/Caddyfile)
+  cobalt init user@192.168.1.100 --compose-file ./my-compose.yml --no-caddyfile
 `,
 		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
@@ -109,7 +131,7 @@ Examples:
 			defer conn.Close()
 
 			// 🔍 Detect environment and show what we're about to do.
-			env, err := detectEnv(ctx, conn, host, publicHost, insecureTLS, composeFile)
+			env, err := detectEnv(ctx, conn, host, publicHost, insecureTLS, composeFile, noCaddyfile)
 			if err != nil {
 				return err
 			}
@@ -272,9 +294,6 @@ Examples:
 			caddyfilePath := "/opt/cobalt/Caddyfile"
 			envPath := "/opt/cobalt/.env"
 
-			// .env is always written so substitutions resolve even when a
-			// custom compose is supplied. Variables a custom compose doesn't
-			// reference are harmless.
 			image := fmt.Sprintf("ghcr.io/heyblueteam/cobalt:%s", cobaltVersion)
 			if localImage != "" {
 				image = localImage
@@ -282,29 +301,35 @@ Examples:
 			envContent := fmt.Sprintf("COBALT_IMAGE=%s\nCOBALT_PUBLIC_HOST=%s\nCOBALT_DATA_DIR=%s\n",
 				image, publicHost, dataDir)
 
+			// Compose: operator's file via scp, otherwise the embedded template.
 			if composeFile != "" {
 				if err := conn.ScpTo(composeFile, composePath); err != nil {
 					step.Fail(err.Error())
 					return fmt.Errorf("upload compose file: %w", err)
 				}
-				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
-					step.Fail(err.Error())
-					return fmt.Errorf("write .env: %w", err)
-				}
 			} else {
-				caddyfile := caddyfileFor(publicHost, insecureTLS)
 				if err := writeRemoteFile(conn, composePath, initComposeTemplate); err != nil {
 					step.Fail(err.Error())
 					return fmt.Errorf("write compose file: %w", err)
 				}
+			}
+
+			// Caddyfile written by default — including the --compose-file path,
+			// because the embedded compose template (and most operator variants
+			// of it) bind-mount /opt/cobalt/Caddyfile. Opt out with --no-caddyfile.
+			if caddyfile := caddyfileForInit(noCaddyfile, publicHost, insecureTLS); caddyfile != "" {
 				if err := writeRemoteFile(conn, caddyfilePath, caddyfile); err != nil {
 					step.Fail(err.Error())
 					return fmt.Errorf("write Caddyfile: %w", err)
 				}
-				if err := writeRemoteFile(conn, envPath, envContent); err != nil {
-					step.Fail(err.Error())
-					return fmt.Errorf("write .env: %w", err)
-				}
+			}
+
+			// .env always written so substitutions in either the embedded or
+			// operator-supplied compose resolve. Vars the compose doesn't use
+			// are harmless.
+			if err := writeRemoteFile(conn, envPath, envContent); err != nil {
+				step.Fail(err.Error())
+				return fmt.Errorf("write .env: %w", err)
 			}
 			step.OK()
 
@@ -444,6 +469,7 @@ Examples:
 	cmd.Flags().StringVar(&localImage, "local-image", "", "upload a local docker image (docker save piped to ssh docker load) and use it instead of pulling --version from the registry")
 	cmd.Flags().BoolVar(&insecureTLS, "insecure-tls", false, "allow installing against an IP / localhost with a self-signed Caddy cert (dev only; GitHub App webhooks won't work)")
 	cmd.Flags().BoolVar(&noGitHubApp, "no-github-app", false, "skip the GitHub App registration prompt and browser handoff")
+	cmd.Flags().BoolVar(&noCaddyfile, "no-caddyfile", false, "skip writing /opt/cobalt/Caddyfile (only useful with --compose-file when the operator's compose doesn't mount it)")
 
 	return cmd
 }
@@ -458,7 +484,7 @@ type envState struct {
 	proposedPublicHost string
 }
 
-func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag string, insecureTLS bool, composeFile string) (envState, error) {
+func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag string, insecureTLS bool, composeFile string, noCaddyfile bool) (envState, error) {
 	step := output.StartStep(output.IconDetect, "Detecting environment")
 
 	dockerCheck := conn.Run(ctx, "docker --version")
@@ -476,8 +502,11 @@ func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag stri
 	if insecureTLS || isIPOrLocalhost(proposed) {
 		tlsLabel = "self-signed (tls internal)"
 	}
-	if composeFile != "" {
-		tlsLabel = "(custom compose)"
+	// --no-caddyfile means we won't write /opt/cobalt/Caddyfile, so the
+	// Caddyfile shape this label describes is moot — the operator owns
+	// TLS termination via their own compose / config.
+	if composeFile != "" && noCaddyfile {
+		tlsLabel = "(custom compose, no Caddyfile)"
 	}
 
 	dockerLabel := "not installed, will install"
