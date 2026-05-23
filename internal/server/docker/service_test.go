@@ -23,7 +23,7 @@ func TestCreateService_FullArgs(t *testing.T) {
 		PublishedPorts: []PublishedPort{
 			{PublishedAs: 80, FromContainerPort: 3000, Protocol: "tcp"},
 		},
-		Networks:          []string{"cobalt-project-api-3"},
+		Networks:          []NetworkAttachment{{Name: "cobalt-project-api-3"}},
 		Replicas:          2,
 		HealthCommand:     "curl -f http://localhost:3000/healthz",
 		HealthStartPeriod: 10 * time.Minute,
@@ -122,6 +122,160 @@ func TestCreateService_NoHealthFlag(t *testing.T) {
 	for _, w := range []string{"--health-cmd", "--health-start-period", "--health-start-interval"} {
 		if argHas(args, w) {
 			t.Errorf("unexpected %q in %v", w, args)
+		}
+	}
+}
+
+// TestCreateService_NetworkWithAlias verifies that a NetworkAttachment
+// with a non-empty Alias renders as `--network name=<net>,alias=<alias>`,
+// the docker syntax that registers a per-network DNS alias for the
+// service. This is the load-bearing case: cross-project env vars like
+// `REDIS_HOST=redis-redis` depend on swarm DNS resolving the alias.
+func TestCreateService_NetworkWithAlias(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "redis", ServiceName: "redis", DeploymentNumber: 1,
+		Image: "redis/redis-stack:7.4.0-v8",
+		Networks: []NetworkAttachment{
+			{Name: "cobalt-project-redis-1", Alias: "redis"},
+			{Name: "cobalt-main", Alias: "redis-redis"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+
+	if !argSequence(args, "--network", "name=cobalt-project-redis-1,alias=redis") {
+		t.Errorf("per-deploy alias missing: %v", args)
+	}
+	if !argSequence(args, "--network", "name=cobalt-main,alias=redis-redis") {
+		t.Errorf("cobalt-main alias missing: %v", args)
+	}
+}
+
+// TestCreateService_NetworkWithoutAlias verifies that a NetworkAttachment
+// with an empty Alias renders as the bare `--network <net>` form, matching
+// the pre-alias behavior for any caller that doesn't need DNS aliasing.
+func TestCreateService_NetworkWithoutAlias(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "api", ServiceName: "web", DeploymentNumber: 3,
+		Image: "img:1",
+		Networks: []NetworkAttachment{
+			{Name: "cobalt-project-api-3"}, // no alias
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+
+	if !argSequence(args, "--network", "cobalt-project-api-3") {
+		t.Errorf("bare network missing: %v", args)
+	}
+	// Defensive: the comma-form must NOT appear when alias is empty.
+	for _, a := range args {
+		if a == "name=cobalt-project-api-3,alias=" {
+			t.Errorf("empty alias rendered with trailing comma: %v", args)
+		}
+	}
+}
+
+// TestCreateService_NetworkMixed proves the renderer makes per-attachment
+// decisions (bare vs name+alias) independently when both forms coexist in
+// the same Networks slice. Without this, a caller with one network needing
+// an alias and another not might silently render both the same way.
+func TestCreateService_NetworkMixed(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "api", ServiceName: "web", DeploymentNumber: 3,
+		Image: "img:1",
+		Networks: []NetworkAttachment{
+			{Name: "cobalt-project-api-3", Alias: "web"},
+			{Name: "cobalt-main"}, // no alias
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+
+	if !argSequence(args, "--network", "name=cobalt-project-api-3,alias=web") {
+		t.Errorf("aliased entry: %v", args)
+	}
+	if !argSequence(args, "--network", "cobalt-main") {
+		t.Errorf("bare entry: %v", args)
+	}
+}
+
+// TestCreateService_NetworkOrderPreserved asserts the rendered --network
+// flags appear in the same order callers provided. Network order can
+// matter for downstream tooling (first-network primary), and silent
+// reordering would be a footgun.
+func TestCreateService_NetworkOrderPreserved(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "api", ServiceName: "web", DeploymentNumber: 1,
+		Image: "img:1",
+		Networks: []NetworkAttachment{
+			{Name: "first", Alias: "alpha"},
+			{Name: "second", Alias: "beta"},
+			{Name: "third"}, // bare
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+
+	// Find each --network's argument index and check ordering.
+	var idx []int
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "--network" {
+			idx = append(idx, i+1)
+		}
+	}
+	if len(idx) != 3 {
+		t.Fatalf("expected 3 --network args, got %d: %v", len(idx), args)
+	}
+	if args[idx[0]] != "name=first,alias=alpha" {
+		t.Errorf("[0] %s", args[idx[0]])
+	}
+	if args[idx[1]] != "name=second,alias=beta" {
+		t.Errorf("[1] %s", args[idx[1]])
+	}
+	if args[idx[2]] != "third" {
+		t.Errorf("[2] %s", args[idx[2]])
+	}
+}
+
+// TestCreateService_NetworkFlagValue exercises the pure renderer directly
+// so an alias bug (e.g. forgetting the `name=` prefix, or omitting the
+// alias entirely) shows up here even if the higher-level test happens to
+// pass for unrelated reasons.
+func TestNetworkFlagValue(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		in   NetworkAttachment
+		want string
+	}{
+		{NetworkAttachment{Name: "n"}, "n"},
+		{NetworkAttachment{Name: "n", Alias: ""}, "n"},
+		{NetworkAttachment{Name: "cobalt-main", Alias: "redis-redis"}, "name=cobalt-main,alias=redis-redis"},
+		{NetworkAttachment{Name: "n", Alias: "with-hyphens-here"}, "name=n,alias=with-hyphens-here"},
+	}
+	for _, c := range cases {
+		if got := networkFlagValue(c.in); got != c.want {
+			t.Errorf("networkFlagValue(%+v) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

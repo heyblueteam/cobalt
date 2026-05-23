@@ -117,6 +117,17 @@ func runsAsService(s cobaltfile.Service) bool {
 // serviceCreateOpts translates a BuiltService into the docker package's
 // ServiceCreateOpts, attaching the per-deployment network plus cobalt-main
 // so cross-service hooks and exposedInternally references resolve.
+//
+// Network aliases mirror disco's behavior:
+//   - per-deployment network → alias = service name (e.g. `web`), so other
+//     services within the same project can reach this one by its short
+//     name regardless of deployment number.
+//   - cobalt-main → if exposedInternally, alias = `{project}-{service}`
+//     (e.g. `redis-redis`) — the stable cross-project hostname that
+//     callers like api's `REDIS_HOST` rely on. Otherwise the alias is the
+//     service's full deployment-numbered name, which keeps the
+//     "every service has an alias on every network" invariant for any
+//     future reconciler / inspection tooling.
 func serviceCreateOpts(
 	project store.Project,
 	dep store.Deployment,
@@ -132,9 +143,12 @@ func serviceCreateOpts(
 		Image:            b.ImageTag,
 		Command:          b.Service.Command,
 		EnvVars:          envVars,
-		Networks:         []string{deploymentNetwork, MainNetworkName},
-		Replicas:         1,
-		ExtraParams:      docker.SplitParams(b.Service.ExtraSwarmParams),
+		Networks: []docker.NetworkAttachment{
+			{Name: deploymentNetwork, Alias: b.Name},
+			{Name: MainNetworkName, Alias: mainNetAlias(project, b, dep)},
+		},
+		Replicas:    1,
+		ExtraParams: docker.SplitParams(b.Service.ExtraSwarmParams),
 	}
 	if b.Service.Health != nil && b.Service.Health.Command != "" {
 		opts.HealthCommand = b.Service.Health.Command
@@ -153,4 +167,19 @@ func serviceCreateOpts(
 		})
 	}
 	return opts
+}
+
+// mainNetAlias returns the DNS alias a service should answer to on the
+// shared cobalt-main overlay. When the service opts into cross-project
+// reachability via `exposedInternally`, the alias is the stable short form
+// `{project}-{service}` — what env vars like `REDIS_HOST=redis-redis`
+// resolve against. Otherwise the alias is the service's full
+// deployment-numbered name, keeping the alias field non-empty so any
+// future tooling that reads `docker service inspect ... .Aliases` sees a
+// uniform shape across all cobalt-managed services.
+func mainNetAlias(project store.Project, b BuiltService, dep store.Deployment) string {
+	if b.Service.ExposedInternally {
+		return project.Name + "-" + b.Name
+	}
+	return docker.ServiceName(project.Name, dep.Number, b.Name)
 }

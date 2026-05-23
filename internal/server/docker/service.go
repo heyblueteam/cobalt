@@ -22,6 +22,23 @@ type ServiceVolume struct {
 	DestinationPath string
 }
 
+// NetworkAttachment binds a swarm service to an overlay network with an
+// optional DNS alias. An empty Alias renders as `--network <Name>`; a
+// non-empty Alias renders as `--network name=<Name>,alias=<Alias>`, which
+// gives the service a stable hostname on that network independent of its
+// swarm service name. Other services on the same network can resolve the
+// alias via Docker's embedded DNS.
+//
+// Aliases matter for cross-project references (e.g. api connecting to
+// `redis-redis:6379`) and within-project short names (e.g. api's web
+// service reaching `worker` instead of `api-3-worker`). The alias survives
+// across deployments — the swarm service name (which includes the
+// deployment number) does not.
+type NetworkAttachment struct {
+	Name  string
+	Alias string // optional
+}
+
 // ServiceCreateOpts describes a `docker service create` invocation.
 type ServiceCreateOpts struct {
 	ProjectID        int64
@@ -32,11 +49,11 @@ type ServiceCreateOpts struct {
 	Command          string
 	EnvVars          map[string]string
 	PublishedPorts   []PublishedPort
-	Networks         []string // network names; first one is primary
-	Replicas         int      // 0 means use docker default (1)
-	HealthCommand    string   // optional; sets --health-cmd
-	HealthStartPeriod time.Duration // defaults to 5 minutes
-	HealthInterval    time.Duration // defaults to 3 seconds
+	Networks         []NetworkAttachment // first one is primary
+	Replicas         int                 // 0 means use docker default (1)
+	HealthCommand    string              // optional; sets --health-cmd
+	HealthStartPeriod time.Duration      // defaults to 5 minutes
+	HealthInterval    time.Duration      // defaults to 3 seconds
 	Volumes          []ServiceVolume
 	ExtraParams      []string // pre-split, e.g. via SplitParams(extraSwarmParams)
 }
@@ -70,7 +87,7 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 	}
 
 	for _, n := range opts.Networks {
-		args = append(args, "--network", n)
+		args = append(args, "--network", networkFlagValue(n))
 	}
 	for _, p := range opts.PublishedPorts {
 		proto := p.Protocol
@@ -270,6 +287,17 @@ func (c *Client) taskStates(ctx context.Context, serviceName string) ([]string, 
 		states = append(states, state)
 	}
 	return states, nil
+}
+
+// networkFlagValue renders a NetworkAttachment as the string passed to
+// `--network`. When the alias is empty we emit the bare network name; with
+// an alias we use docker's name=,alias= form so the service registers a
+// per-network DNS alias.
+func networkFlagValue(n NetworkAttachment) string {
+	if n.Alias == "" {
+		return n.Name
+	}
+	return "name=" + n.Name + ",alias=" + n.Alias
 }
 
 func sortedKeys(m map[string]string) []string {
