@@ -178,14 +178,57 @@ func TestValidate_CronServiceNeedsCommand(t *testing.T) {
 	mustContain(t, err, "requires a command")
 }
 
-func TestValidate_UnknownImageReference(t *testing.T) {
+// TestValidate_PrebuiltImageReference proves we accept a service whose
+// image string is NOT a key in `cf.Images` — it's a pre-built docker
+// registry reference (e.g. `postgres:14-alpine`, `redis/redis-stack:7.4.0-v8`).
+// Matches disco's resolution rule in utils/docker.py:1218-1228: "in
+// disco_file.images? build it. else? pass through to docker pull." A bad
+// ref surfaces at deploy time, not at parse time.
+func TestValidate_PrebuiltImageReference(t *testing.T) {
 	t.Parallel()
 	src := `{
         "version": "1.0",
-        "services": {"web": {"image": "ghost"}}
+        "services": {"web": {"image": "postgres:14-alpine"}}
     }`
-	_, err := Parse([]byte(src))
-	mustContain(t, err, "unknown image")
+	if _, err := Parse([]byte(src)); err != nil {
+		t.Errorf("pre-built image reference should be accepted: %v", err)
+	}
+}
+
+// TestValidate_PrebuiltImageReference_WithRegistryPath covers the
+// org/repo:tag shape (full registry path with a slash) — distinct from
+// the library-image shape (`postgres:14-alpine`). We treat both
+// identically.
+func TestValidate_PrebuiltImageReference_WithRegistryPath(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"redis": {"image": "redis/redis-stack:7.4.0-v8"}}
+    }`
+	if _, err := Parse([]byte(src)); err != nil {
+		t.Errorf("registry/org image reference should be accepted: %v", err)
+	}
+}
+
+// TestValidate_EmptyImageFilledByDefaults documents the
+// belt-and-braces: an explicit `image: ""` goes through applyDefaults,
+// gets backfilled to `DefaultImageName`, and validation passes. We don't
+// surface an error for this because it's unreachable in the Parse flow
+// (defaults always run first) and matching disco's parse-time
+// permissiveness is the point of this whole change.
+func TestValidate_EmptyImageFilledByDefaults(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"web": {"image": ""}}
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("empty image should be backfilled, not error: %v", err)
+	}
+	if got := cf.Services["web"].Image; got != DefaultImageName {
+		t.Errorf("web.Image = %q, want backfilled %q", got, DefaultImageName)
+	}
 }
 
 func TestValidate_StaticServiceCanReferenceMissingImage(t *testing.T) {

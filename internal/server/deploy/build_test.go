@@ -177,22 +177,105 @@ func TestBuilder_PropagatesEnvSecrets(t *testing.T) {
 	}
 }
 
-func TestBuilder_UnknownImageErrors(t *testing.T) {
+// TestBuilder_PrebuiltImageSkipsBuild proves that when `svc.Image` is
+// NOT a key in `cf.Images`, the builder treats it as a pre-built docker
+// registry reference: no docker build is invoked, and the resulting
+// BuiltService.ImageTag is the verbatim image string. Matches disco's
+// resolution rule in utils/docker.py:1218-1228.
+//
+// Real-world this covers projects like `redis` (uses
+// `redis/redis-stack:7.4.0-v8`), `dozzle`, `grafana`, and the postgres
+// /clickhouse /redis sub-services of `openpanel` and `plunk`.
+func TestBuilder_PrebuiltImageSkipsBuild(t *testing.T) {
 	t.Parallel()
 	cf := &cobaltfile.Cobaltfile{
-		Version:  "1.0",
-		Services: map[string]cobaltfile.Service{"web": {Image: "ghost", Port: 8000}},
-		// images map missing "ghost"
+		Version: "1.0",
+		Services: map[string]cobaltfile.Service{
+			"redis": {
+				Type:  cobaltfile.TypeContainer,
+				Image: "redis/redis-stack:7.4.0-v8",
+				Port:  6379,
+			},
+		},
+		// no Images map entry — image is a pre-built ref
 	}
-	b := NewBuilder(&fakeImageBuilder{}, &fakeEnv{}, "")
-	_, err := b.Build(context.Background(),
-		store.Project{Name: "x"},
+	d := &fakeImageBuilder{}
+	b := NewBuilder(d, &fakeEnv{}, "")
+	out, err := b.Build(context.Background(),
+		store.Project{ID: 1, Name: "redis"},
 		store.Deployment{Number: 1},
 		&Workspace{Cobaltfile: cf},
 		nil,
 	)
-	if err == nil {
-		t.Error("expected error")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(d.calls) != 0 {
+		t.Errorf("expected 0 docker builds for pre-built image, got %d", len(d.calls))
+	}
+	if len(out) != 1 {
+		t.Fatalf("expected 1 BuiltService, got %d", len(out))
+	}
+	if out[0].ImageTag != "redis/redis-stack:7.4.0-v8" {
+		t.Errorf("ImageTag = %q, want verbatim pre-built ref %q", out[0].ImageTag, "redis/redis-stack:7.4.0-v8")
+	}
+}
+
+// TestBuilder_MixedPrebuiltAndBuilt covers the multi-service shape used
+// by openpanel and plunk: some services use pre-built images
+// (postgres:14-alpine, redis:7.2.5-alpine), others use repo-built ones
+// (clickhouse/Dockerfile). The builder must build only the
+// repo-Dockerfile images and pass the pre-built refs through unchanged.
+func TestBuilder_MixedPrebuiltAndBuilt(t *testing.T) {
+	t.Parallel()
+	cf := &cobaltfile.Cobaltfile{
+		Version: "1.0",
+		Services: map[string]cobaltfile.Service{
+			"postgres":   {Type: cobaltfile.TypeContainer, Image: "postgres:14-alpine", Port: 5432},
+			"redis":      {Type: cobaltfile.TypeContainer, Image: "redis:7.2.5-alpine", Port: 6379},
+			"clickhouse": {Type: cobaltfile.TypeContainer, Image: "clickhouse", Port: 8123},
+			"web":        {Type: cobaltfile.TypeContainer, Image: "web", Port: 80},
+		},
+		Images: map[string]cobaltfile.Image{
+			"clickhouse": {Dockerfile: "clickhouse/Dockerfile", Context: "clickhouse"},
+			"web":        {Dockerfile: "caddy/Dockerfile", Context: "caddy"},
+		},
+	}
+	d := &fakeImageBuilder{}
+	b := NewBuilder(d, &fakeEnv{}, "")
+	out, err := b.Build(context.Background(),
+		store.Project{ID: 1, Name: "openpanel"},
+		store.Deployment{Number: 2},
+		&Workspace{Cobaltfile: cf},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(d.calls) != 2 {
+		t.Errorf("expected 2 docker builds (clickhouse + web), got %d", len(d.calls))
+	}
+
+	// Each BuiltService must carry the right ImageTag — pre-built refs
+	// pass through verbatim; repo-built services get the cobalt-tagged
+	// build output (whatever the fake builder returned).
+	got := map[string]string{}
+	for _, b := range out {
+		got[b.Name] = b.ImageTag
+	}
+	wantPrebuilt := map[string]string{
+		"postgres": "postgres:14-alpine",
+		"redis":    "redis:7.2.5-alpine",
+	}
+	for name, want := range wantPrebuilt {
+		if got[name] != want {
+			t.Errorf("%s ImageTag = %q, want pre-built %q", name, got[name], want)
+		}
+	}
+	for _, name := range []string{"clickhouse", "web"} {
+		if got[name] == "" || got[name] == "clickhouse" || got[name] == "web" {
+			t.Errorf("%s ImageTag = %q, want a cobalt-tagged built image (not the source name)", name, got[name])
+		}
 	}
 }
 

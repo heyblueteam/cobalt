@@ -74,7 +74,13 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 		cacheDir = filepath.Join(b.dataDir, "buildkit-cache", strconv.FormatInt(project.ID, 10))
 	}
 
-	// Build each unique image only once.
+	// Build each unique image only once. Mirrors disco's resolution
+	// (utils/docker.py:1218-1228): if `svc.Image` matches a key in
+	// `cf.Images`, build from the Dockerfile spec under that key;
+	// otherwise treat `svc.Image` as a pre-built registry reference
+	// (e.g. `redis/redis-stack:7.4.0-v8`) and skip the build entirely.
+	// `BuiltService.ImageTag` ends up either as the built tag or the
+	// verbatim pre-built reference — same downstream consumer either way.
 	tagByImage := map[string]string{}
 	for _, svc := range ws.Cobaltfile.Services {
 		if !needsBuild(svc) {
@@ -85,7 +91,16 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 		}
 		img, ok := ws.Cobaltfile.Images[svc.Image]
 		if !ok {
-			return nil, fmt.Errorf("deploy.Build: service references unknown image %q", svc.Image)
+			// Pre-built registry reference — no Dockerfile to build.
+			// The image string is passed through to the BuiltService
+			// ImageTag below; `docker service create --image <ref>` will
+			// `docker pull` it on first use. A bogus ref surfaces as a
+			// pull error at deploy time.
+			tagByImage[svc.Image] = svc.Image
+			if out != nil {
+				fmt.Fprintf(out, "📦 using pre-built image %q (no Dockerfile in repo)\n", svc.Image)
+			}
+			continue
 		}
 
 		if out != nil {

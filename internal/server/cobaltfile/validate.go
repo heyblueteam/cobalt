@@ -40,18 +40,20 @@ func (cf *Cobaltfile) Validate() error {
 		}
 	}
 
-	// Every service that references an image must reference one that exists.
-	for name, s := range cf.Services {
-		if !needsImage(s) {
-			continue
-		}
-		if _, ok := cf.Images[s.Image]; !ok {
-			return fmt.Errorf(
-				"cobaltfile: service %q references unknown image %q",
-				name, s.Image,
-			)
-		}
-	}
+	// Image-reference validation: intentionally none. We don't require
+	// `s.Image` to be a key in `cf.Images` — that would reject pre-built
+	// docker registry references (e.g. `redis/redis-stack:7.4.0-v8`,
+	// `postgres:14-alpine`) which disco supports and many real
+	// cobaltfiles rely on. Matches disco's resolution in
+	// utils/docker.py:1218-1228: "in disco_file.images? build it. else?
+	// docker pull it." The builder makes the same distinction. A bogus
+	// pre-built ref surfaces as a `docker pull` failure at deploy time,
+	// which is loud and well-localized — better than a parser error
+	// blocking valid cobaltfiles.
+	//
+	// `s.Image` being empty is also fine here: applyDefaults() always
+	// backfills it with `DefaultImageName` for services that need an
+	// image, so we never see empty in practice.
 
 	return nil
 }
@@ -117,19 +119,6 @@ func validateService(name string, s Service) error {
 		return fmt.Errorf("cobaltfile: service %q health.command is required when health is set", name)
 	}
 	return nil
-}
-
-// needsImage reports whether a service will actually try to build/run from
-// an image (vs. e.g. a static-only service whose output Caddy serves
-// directly, or a service that overrides with its own build command).
-func needsImage(s Service) bool {
-	if s.Build != "" {
-		return false
-	}
-	if s.Type == TypeStatic && s.Command == "" {
-		return false
-	}
-	return true
 }
 
 // cronField matches a single field of a 5-field cron expression.
