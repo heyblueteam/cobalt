@@ -35,11 +35,19 @@ type SwapStore interface {
 
 // commitCaddySwap performs the Caddy cutover for a project.
 //
-// If the cobaltfile has no `web` service, returns nil (only-crons project).
-// If web is type=container: VerifyServeService swaps + verifies upstream.
-// If web is type=static or generator: ServeStaticSite swaps Caddy to
-// file_server. (Static-site verification is best-effort: we just verify
-// the route exists; we don't deeply check the file_server config.)
+// Short-circuits when:
+//   - The cobaltfile has no `web` service (only-crons project), OR
+//   - The `web` service is exposedInternally=true — reached by other
+//     cobalt projects via cobalt-main DNS alias, never via Caddy. There
+//     is no project route to PATCH; trying anyway would fail with
+//     `unknown object ID cobalt-project-handler-N`.
+//
+// Otherwise:
+//   - web is type=container: VerifyServeService swaps + verifies upstream.
+//   - web is type=static or generator: ServeStaticSite swaps Caddy to
+//     file_server. (Static-site verification is best-effort: we just
+//     verify the route exists; we don't deeply check the file_server
+//     config.)
 func commitCaddySwap(
 	ctx context.Context,
 	cy SwapCaddy,
@@ -49,7 +57,7 @@ func commitCaddySwap(
 	cf *cobaltfile.Cobaltfile,
 ) error {
 	web, ok := cf.Services["web"]
-	if !ok {
+	if !ok || web.ExposedInternally {
 		return nil
 	}
 
@@ -100,7 +108,10 @@ func revertCaddySwap(
 		return
 	}
 	web, ok := cf.Services["web"]
-	if !ok {
+	if !ok || web.ExposedInternally {
+		// No public Caddy route for this project — nothing to revert.
+		// Mirrors the commitCaddySwap carve-out: exposedInternally web
+		// services have no Caddy state to undo.
 		return
 	}
 	switch web.Type {

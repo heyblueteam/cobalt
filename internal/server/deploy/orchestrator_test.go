@@ -349,21 +349,29 @@ func TestOrchestrator_RejectsWebDeployWithNoDomains(t *testing.T) {
 	}
 }
 
-// TestOrchestrator_ExposedInternallyWebSkipsDomainCheck proves that a
-// project whose `web` service is marked `exposedInternally: true` can
-// deploy WITHOUT any domain attached. Such services are deliberately
-// internal-only — other projects reach them via the cobalt-main DNS
-// alias `{project}-{service}`, never via Caddy / a public domain. The
-// preflight that gates public web services on a domain must not apply
-// here.
+// TestOrchestrator_ExposedInternallyWebDeploysWithoutDomain proves that
+// a project whose `web` service is marked `exposedInternally: true` can
+// deploy end-to-end WITHOUT any domain attached. Such services are
+// deliberately internal-only — other projects reach them via the
+// cobalt-main DNS alias `{project}-{service}`, never via Caddy / a
+// public domain.
 //
-// Without this carve-out, internal-only services (geocoder, search
-// indexers, internal APIs) can't deploy at all unless their operator
-// attaches a placeholder domain that Caddy then retries-and-fails to
-// ACME-issue.
-func TestOrchestrator_ExposedInternallyWebSkipsDomainCheck(t *testing.T) {
+// The deploy must:
+//   - pass the preflight (the orchestrator carve-out)
+//   - run service create (deploy proceeded past preflight)
+//   - SKIP the Caddy swap (the swap.go carve-out — otherwise PATCH
+//     fails with "unknown object ID cobalt-project-handler-N")
+//   - finish without error
+//
+// Asserting `err == nil` is the load-bearing check: a previous version
+// of this test accepted "any deploy error is fine" which masked the
+// swap-side gap — preflight loosened, swap still tried to PATCH a route
+// that didn't exist, deploy died with a confusing post-build error.
+// Trade-clear-preflight-error-for-confusing-mid-deploy-error is the
+// exact regression we're guarding against.
+func TestOrchestrator_ExposedInternallyWebDeploysWithoutDomain(t *testing.T) {
 	t.Parallel()
-	o, _, _, db, project := setupOrchestrator(t)
+	o, fdocker, fcaddy, db, project := setupOrchestrator(t)
 
 	// Strip the domain seeded by setupOrchestrator so the preflight
 	// would normally fail.
@@ -380,11 +388,22 @@ func TestOrchestrator_ExposedInternallyWebSkipsDomainCheck(t *testing.T) {
 
 	dep := enqueueAndFetch(t, db, project.ID)
 	if err := o.Run(context.Background(), dep); err != nil {
-		if strings.Contains(err.Error(), "no domains attached") {
-			t.Fatalf("exposedInternally web should not require a domain; got: %v", err)
-		}
-		// Any other deploy error (e.g. fake builder returns nothing) is
-		// fine — we only assert the preflight didn't reject us.
+		t.Fatalf("expected clean deploy for exposedInternally web with no domain, got: %v", err)
+	}
+
+	// Service create must have happened — proves the deploy got past
+	// the preflight and actually ran the build/start path.
+	if !fdocker.hasCall("service create") {
+		t.Error("expected service create call (deploy did not run past preflight)")
+	}
+
+	// Caddy must NOT have been swapped — the project has no public
+	// route, so no PATCH should have been attempted.
+	fcaddy.mu.Lock()
+	upstream := fcaddy.upstreams[project.ID]
+	fcaddy.mu.Unlock()
+	if upstream != "" {
+		t.Errorf("expected no Caddy swap for exposedInternally web; got upstream %q", upstream)
 	}
 }
 
