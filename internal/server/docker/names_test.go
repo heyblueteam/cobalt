@@ -90,6 +90,12 @@ func TestShellSplit(t *testing.T) {
 		{"quoted_concat", `a'b c'd`, []string{"ab cd"}},
 		// Empty quoted segments produce empty tokens.
 		{"empty_single_quote", `a '' b`, []string{"a", "", "b"}},
+		// Trailing backslash at end-of-input has no next char to escape;
+		// fall through to default and write the `\` literally. Matches
+		// shlex's non-POSIX mode (POSIX would error). Pinned by test so
+		// a future "fix" doesn't silently change behavior.
+		{"trailing_backslash_unquoted", `foo\`, []string{`foo\`}},
+		{"trailing_backslash_inside_double_quote", `"foo\`, []string{`foo\`}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
