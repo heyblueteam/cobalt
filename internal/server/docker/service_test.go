@@ -71,11 +71,13 @@ func TestCreateService_FullArgs(t *testing.T) {
 	}
 
 	// Image and command are positional and come after all flags.
-	if args[len(args)-2] != "cobalt/project-api-default:3" {
+	// Command is shell-split, so "node server.js" becomes ["node", "server.js"]:
+	// image at -3, command tokens at -2 and -1.
+	if args[len(args)-3] != "cobalt/project-api-default:3" {
 		t.Errorf("image position wrong: %v", args)
 	}
-	if args[len(args)-1] != "node server.js" {
-		t.Errorf("command position wrong: %v", args)
+	if args[len(args)-2] != "node" || args[len(args)-1] != "server.js" {
+		t.Errorf("command tokens wrong: got [%s %s], want [node server.js]", args[len(args)-2], args[len(args)-1])
 	}
 
 	// Env vars must be present in alphabetical key order.
@@ -277,6 +279,99 @@ func TestNetworkFlagValue(t *testing.T) {
 		if got := networkFlagValue(c.in); got != c.want {
 			t.Errorf("networkFlagValue(%+v) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestCreateService_CommandShellSplit proves the command string is
+// shell-split into individual argv tokens, not passed as a single literal
+// argument. Without this, docker would interpret the whole string as the
+// binary path and exit immediately — the failure mode that hit
+// openpanel-redis with `command: redis-server --maxmemory-policy noeviction`.
+func TestCreateService_CommandShellSplit(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "openpanel", ServiceName: "redis", DeploymentNumber: 1,
+		Image:   "redis:7.2.5-alpine",
+		Command: "redis-server --maxmemory-policy noeviction",
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+
+	// The image must be followed by THREE tokens (redis-server, --maxmemory-policy, noeviction),
+	// not a single concatenated string.
+	for i, a := range args {
+		if a == "redis:7.2.5-alpine" {
+			if i+3 >= len(args) {
+				t.Fatalf("expected 3 command tokens after image, got %v", args[i:])
+			}
+			if args[i+1] != "redis-server" || args[i+2] != "--maxmemory-policy" || args[i+3] != "noeviction" {
+				t.Errorf("command tokens after image: got %v, want [redis-server --maxmemory-policy noeviction]", args[i+1:i+4])
+			}
+			return
+		}
+	}
+	t.Fatalf("image not found in args: %v", args)
+}
+
+// TestCreateService_CommandWithSingleQuotes covers the openpanel-api
+// shape: `sh -c 'multi-word command with operators'`. Single quotes must
+// preserve embedded whitespace + operators so the whole quoted segment
+// reaches docker as one argv element.
+func TestCreateService_CommandWithSingleQuotes(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "openpanel", ServiceName: "api", DeploymentNumber: 1,
+		Image:   "lindesvard/openpanel-api:2",
+		Command: "sh -c 'CI=true pnpm -r run migrate:deploy && pnpm start'",
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+
+	for i, a := range args {
+		if a == "lindesvard/openpanel-api:2" {
+			if i+3 >= len(args) {
+				t.Fatalf("expected 3 command tokens after image, got %v", args[i:])
+			}
+			if args[i+1] != "sh" || args[i+2] != "-c" {
+				t.Errorf("expected [sh -c ...], got %v", args[i+1:i+3])
+			}
+			if args[i+3] != "CI=true pnpm -r run migrate:deploy && pnpm start" {
+				t.Errorf("single-quoted segment lost shape: got %q", args[i+3])
+			}
+			return
+		}
+	}
+	t.Fatalf("image not found in args: %v", args)
+}
+
+// TestCreateService_EmptyCommandOmitted documents the existing behavior
+// that an empty command field doesn't add any positional arg after the
+// image — the container's Dockerfile CMD is used. Most cobaltfiles
+// don't set command at all.
+func TestCreateService_EmptyCommandOmitted(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.CreateService(context.Background(), ServiceCreateOpts{
+		ProjectName: "api", ServiceName: "web", DeploymentNumber: 1,
+		Image: "ghcr.io/some/image:1",
+		// no Command
+	})
+	if err != nil {
+		t.Fatalf("CreateService: %v", err)
+	}
+	args := r.lastCall().Args
+	// Image must be the last argv element (no command tokens follow).
+	if args[len(args)-1] != "ghcr.io/some/image:1" {
+		t.Errorf("expected image as last arg, got %v", args[len(args)-3:])
 	}
 }
 

@@ -232,3 +232,99 @@ func SplitParams(s string) []string {
 	}
 	return parts
 }
+
+// ShellSplit parses a command string into argv the way a shell would —
+// whitespace separates tokens, but single and double quotes hold their
+// contents together (including embedded whitespace) and backslash escapes
+// the next character.
+//
+// Why this exists: cobaltfile `command:` strings need shell-like parsing
+// because operators write them in shell syntax. Examples:
+//
+//	"redis-server --maxmemory-policy noeviction"
+//	    → ["redis-server", "--maxmemory-policy", "noeviction"]
+//
+//	"sh -c 'CI=true pnpm migrate:deploy && pnpm start'"
+//	    → ["sh", "-c", "CI=true pnpm migrate:deploy && pnpm start"]
+//
+// `strings.Fields` (what SplitParams uses) splits on every whitespace,
+// which mangles the second case into ten broken tokens. `docker service
+// create <image> <opts.Command>` passing the whole string as one arg is
+// also wrong — docker treats it as Cmd[0], i.e. a single binary literally
+// named "redis-server --maxmemory-policy noeviction", which exits with
+// "executable file not found".
+//
+// Matches disco's behavior (utils/docker.py uses Python's shlex.split).
+// Handles: bare words, single quotes, double quotes, backslash escapes
+// outside quotes, backslash escapes inside double quotes (per POSIX:
+// inside single quotes, backslashes are literal). Does NOT handle env
+// var expansion ($FOO) — that's a shell feature, not a parser feature;
+// callers wanting variable expansion should use `sh -c '...'`.
+func ShellSplit(s string) []string {
+	var out []string
+	var cur strings.Builder
+	inToken := false
+
+	const (
+		none      = 0
+		singleQ   = 1
+		doubleQ   = 2
+	)
+	state := none
+
+	flush := func() {
+		if inToken {
+			out = append(out, cur.String())
+			cur.Reset()
+			inToken = false
+		}
+	}
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch state {
+		case none:
+			switch {
+			case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+				flush()
+			case c == '\'':
+				inToken = true
+				state = singleQ
+			case c == '"':
+				inToken = true
+				state = doubleQ
+			case c == '\\' && i+1 < len(s):
+				inToken = true
+				cur.WriteByte(s[i+1])
+				i++
+			default:
+				inToken = true
+				cur.WriteByte(c)
+			}
+		case singleQ:
+			// Inside single quotes nothing is special — not even backslash.
+			if c == '\'' {
+				state = none
+			} else {
+				cur.WriteByte(c)
+			}
+		case doubleQ:
+			switch {
+			case c == '"':
+				state = none
+			case c == '\\' && i+1 < len(s):
+				// Inside double quotes, backslash escapes only $ ` " \ and
+				// newline (POSIX). Outside those, it's literal. We're
+				// conservative: always treat as escape so callers don't get
+				// surprised, since cobalt commands aren't shell-evaluated
+				// anyway (no $var, no backtick).
+				cur.WriteByte(s[i+1])
+				i++
+			default:
+				cur.WriteByte(c)
+			}
+		}
+	}
+	flush()
+	return out
+}
