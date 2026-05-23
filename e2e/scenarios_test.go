@@ -323,6 +323,77 @@ func TestDeployHooks(t *testing.T) {
 	}
 }
 
+// TestExposedInternallyAlias proves that a service declared with
+// `exposedInternally: true` is reachable via the stable
+// `{project}-{service}` DNS alias on cobalt-main. This is the
+// load-bearing contract for cross-project env vars like api's
+// `REDIS_HOST=redis-redis` after the Disco → Cobalt cutover.
+//
+// Fixture: branch `alias-internal` declares
+//   - web   (container, port 3000)
+//   - alpha (container, port 3000, exposedInternally: true)
+//   - hook:deploy:start:after (command, runs on cobalt-main, probes
+//     $EXPECTED_ALPHA_HOST via nc -z and wget)
+//
+// The hook is per-deploy ephemeral and attaches only to cobalt-main —
+// the same network any cross-project caller would resolve over — so
+// a passing probe is direct evidence the alias works for real
+// callers, not just for the renderer.
+//
+// Note: after-hook failures are NON-FATAL in the orchestrator (it
+// logs 🚨 but still marks the deploy successful), so this test
+// asserts on log sentinels (ALIAS-TCP-OK + ALIAS-HTTP-OK) rather
+// than deploy status. A broken alias surfaces as a missing OK
+// sentinel; a NXDOMAIN or unreachable endpoint surfaces as the
+// matching *-FAIL sentinel.
+//
+// Failure modes caught:
+//   - Docker rejects `--network name=,alias=` syntax → service
+//     create fails → deploy fails before reaching the hook (deploy
+//     status not success, test fails in Deploy()).
+//   - mainNetAlias regression → alias not registered → nc -z misses
+//     → ALIAS-TCP-FAIL in log.
+//   - Alias registered but pointing at a dead endpoint → nc may
+//     succeed but wget fails → ALIAS-HTTP-FAIL in log.
+//
+// What this does NOT cover: cross-project resolution explicitly.
+// Both services live in one project for fixture-setup simplicity —
+// the alias-resolution code path on cobalt-main is identical
+// regardless of which project the caller belongs to (swarm's
+// embedded DNS doesn't have a project concept). If we ever add
+// project-scoped DNS, this test will need a second project.
+func TestExposedInternallyAlias(t *testing.T) {
+	env := RequireEnv(t)
+
+	p := NewProjectOnBranch(t, env, "exposed-alias", "alias-internal")
+
+	// Project name is per-run (e.g. e2e-exposed-alias-1716480000),
+	// so the hook can't hardcode the alias hostname. Thread it
+	// through as an env var the after-hook references.
+	expected := p.Name + "-alpha"
+	if err := p.SetEnv("EXPECTED_ALPHA_HOST", expected); err != nil {
+		t.Fatalf("set EXPECTED_ALPHA_HOST: %v", err)
+	}
+
+	d := p.Deploy(t)
+
+	log := p.FetchDeployLog(t, d.ID, 30*time.Second)
+	AssertLogContains(t, log,
+		"ALIAS-PROBE host="+expected,
+		"ALIAS-TCP-OK",
+		"ALIAS-HTTP-OK",
+	)
+	// Belt-and-suspenders: explicit error if either *-FAIL sentinel
+	// shows up. AssertLogContains would already fail above on the
+	// missing OK, but naming the failure mode helps triage.
+	if strings.Contains(log, "ALIAS-TCP-FAIL") {
+		t.Errorf("after-hook reported TCP failure for alias %q — alias not registered on cobalt-main, or alpha not listening", expected)
+	}
+	if strings.Contains(log, "ALIAS-HTTP-FAIL") {
+		t.Errorf("after-hook reached the alias %q on TCP but HTTP probe failed — alias may resolve to wrong endpoint", expected)
+	}
+}
+
 func hasRedirect(domains []cobaltapi.Domain, from, to string) bool {
 	for _, d := range domains {
 		if d.Name == from && d.Type == cobaltapi.DomainTypeRedirect && d.RedirectTo == to {
