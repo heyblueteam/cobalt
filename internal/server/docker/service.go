@@ -124,9 +124,12 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 	}
 	args = append(args, opts.ExtraParams...)
 	args = append(args, opts.Image)
-	if opts.Command != "" {
-		args = append(args, opts.Command)
-	}
+	// Shell-split the command so multi-arg commands work as operators
+	// expect. Passing opts.Command as a single argv string makes docker
+	// treat it as a literal binary path, which exits immediately with
+	// "executable file not found in $PATH". See ShellSplit in build.go
+	// for the parsing rules and rationale.
+	args = append(args, ShellSplit(opts.Command)...)
 
 	return c.run(ctx, args...)
 }

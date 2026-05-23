@@ -49,6 +49,76 @@ func TestSplitParams(t *testing.T) {
 	}
 }
 
+// TestShellSplit covers cobaltfile `command:` parsing. Cobaltfiles
+// describe commands in shell syntax (single & double quotes, escapes)
+// because operators write them that way. Without shell-aware splitting,
+// commands like `sh -c 'A && B'` are mangled into ten tokens, or commands
+// like `redis-server --maxmemory-policy noeviction` are passed to docker
+// as a single binary literal — which exits with "executable file not found".
+//
+// Disco parity: utils/docker.py uses Python's shlex.split for the same
+// purpose.
+func TestShellSplit(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		// Trivial cases.
+		{"empty", "", nil},
+		{"whitespace_only", "   \t\n  ", nil},
+		{"single_token", "redis-server", []string{"redis-server"}},
+		// Bare-word commands (the common cobaltfile shape).
+		{"flag_with_value", "redis-server --maxmemory-policy noeviction",
+			[]string{"redis-server", "--maxmemory-policy", "noeviction"}},
+		{"collapses_whitespace", "  redis-server   --maxmemory-policy   noeviction  ",
+			[]string{"redis-server", "--maxmemory-policy", "noeviction"}},
+		// Single-quoted: contents are literal, no escape interpretation.
+		{"single_quoted_keeps_spaces", "sh -c 'pnpm migrate:deploy && pnpm start'",
+			[]string{"sh", "-c", "pnpm migrate:deploy && pnpm start"}},
+		{"single_quoted_with_env_assignment", "sh -c 'CI=true pnpm -r run migrate:deploy && pnpm start'",
+			[]string{"sh", "-c", "CI=true pnpm -r run migrate:deploy && pnpm start"}},
+		{"single_quoted_with_backslash_literal", `echo 'a\b'`, []string{"echo", `a\b`}},
+		// Double-quoted: contents kept together but backslash escapes work.
+		{"double_quoted_keeps_spaces", `sh -c "echo hello world"`,
+			[]string{"sh", "-c", "echo hello world"}},
+		{"double_quoted_escape", `echo "a\"b"`, []string{"echo", `a"b`}},
+		// Backslash outside quotes — escape the next char.
+		{"backslash_escape_space", `a\ b`, []string{"a b"}},
+		// Mixed: token concatenation across quote modes.
+		{"quoted_concat", `a'b c'd`, []string{"ab cd"}},
+		// Empty quoted segments produce empty tokens.
+		{"empty_single_quote", `a '' b`, []string{"a", "", "b"}},
+		// Trailing backslash at end-of-input has no next char to escape;
+		// fall through to default and write the `\` literally. Matches
+		// shlex's non-POSIX mode (POSIX would error). Pinned by test so
+		// a future "fix" doesn't silently change behavior.
+		{"trailing_backslash_unquoted", `foo\`, []string{`foo\`}},
+		{"trailing_backslash_inside_double_quote", `"foo\`, []string{`foo\`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ShellSplit(tc.in)
+			if !slicesEqual(got, tc.want) {
+				t.Errorf("ShellSplit(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestLabels(t *testing.T) {
 	t.Parallel()
 	got := serviceLabels(7, "api", "web", 3)
