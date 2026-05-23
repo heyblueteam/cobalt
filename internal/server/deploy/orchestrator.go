@@ -128,13 +128,19 @@ func (o *Orchestrator) Run(ctx context.Context, dep store.Deployment) (err error
 	// check the deploy builds the image, starts services, then dies at
 	// the swap step with a confusing `unknown object ID
 	// cobalt-project-handler-N`. Fail early with an actionable error.
-	if _, hasWeb := ws.Cobaltfile.Services["web"]; hasWeb {
+	//
+	// Exception: `exposedInternally: true` web services are
+	// deliberately internal-only — other projects reach them via the
+	// cobalt-main DNS alias `{project}-{service}`, never via Caddy /
+	// a public domain. The swap step is skipped for these too, so the
+	// "no domain → broken swap" rationale doesn't apply.
+	if web, hasWeb := ws.Cobaltfile.Services["web"]; hasWeb && !web.ExposedInternally {
 		domains, err := o.DB.ListDomainsForProject(ctx, project.ID)
 		if err != nil {
 			return fmt.Errorf("deploy: list domains: %w", err)
 		}
 		if len(domains) == 0 {
-			return fmt.Errorf("deploy: project %q has a web service but no domains attached; add one with `cobalt domains add <name>` and redeploy", project.Name)
+			return fmt.Errorf("deploy: project %q has a public web service but no domains attached; add one with `cobalt domains add <name>` and redeploy, or set `exposedInternally: true` on the service if it's reached only by other cobalt projects", project.Name)
 		}
 	}
 

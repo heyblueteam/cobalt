@@ -349,6 +349,67 @@ func TestOrchestrator_RejectsWebDeployWithNoDomains(t *testing.T) {
 	}
 }
 
+// TestOrchestrator_ExposedInternallyWebSkipsDomainCheck proves that a
+// project whose `web` service is marked `exposedInternally: true` can
+// deploy WITHOUT any domain attached. Such services are deliberately
+// internal-only — other projects reach them via the cobalt-main DNS
+// alias `{project}-{service}`, never via Caddy / a public domain. The
+// preflight that gates public web services on a domain must not apply
+// here.
+//
+// Without this carve-out, internal-only services (geocoder, search
+// indexers, internal APIs) can't deploy at all unless their operator
+// attaches a placeholder domain that Caddy then retries-and-fails to
+// ACME-issue.
+func TestOrchestrator_ExposedInternallyWebSkipsDomainCheck(t *testing.T) {
+	t.Parallel()
+	o, _, _, db, project := setupOrchestrator(t)
+
+	// Strip the domain seeded by setupOrchestrator so the preflight
+	// would normally fail.
+	if err := db.RemoveDomain(context.Background(), project.ID, "api.example.com"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the workspace's web service exposed-internally — same shape
+	// as a geocoder / internal API project's cobaltfile.
+	ws := o.Preparer.(*fakePrep).ws
+	web := ws.Cobaltfile.Services["web"]
+	web.ExposedInternally = true
+	ws.Cobaltfile.Services["web"] = web
+
+	dep := enqueueAndFetch(t, db, project.ID)
+	if err := o.Run(context.Background(), dep); err != nil {
+		if strings.Contains(err.Error(), "no domains attached") {
+			t.Fatalf("exposedInternally web should not require a domain; got: %v", err)
+		}
+		// Any other deploy error (e.g. fake builder returns nothing) is
+		// fine — we only assert the preflight didn't reject us.
+	}
+}
+
+// TestOrchestrator_PublicWebStillRequiresDomain pins the inverse: an
+// exposedInternally=false (the default) web service without any domain
+// MUST still error at preflight. Sanity check that the carve-out above
+// didn't accidentally loosen the public-web case.
+func TestOrchestrator_PublicWebStillRequiresDomain(t *testing.T) {
+	t.Parallel()
+	o, _, _, db, project := setupOrchestrator(t)
+	if err := db.RemoveDomain(context.Background(), project.ID, "api.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	// Workspace's web service is exposedInternally=false by default.
+
+	dep := enqueueAndFetch(t, db, project.ID)
+	err := o.Run(context.Background(), dep)
+	if err == nil {
+		t.Fatal("expected error for public web with no domain")
+	}
+	if !strings.Contains(err.Error(), "no domains attached") {
+		t.Errorf("error %q does not mention domains", err)
+	}
+}
+
 // TestOrchestrator_FailureWritesErrorToDeployLog asserts that when a
 // deploy fails, the cause shows up in the deploy log so operators can
 // see it via `cobalt deployments output` without shell access to the
