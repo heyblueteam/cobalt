@@ -118,3 +118,26 @@ func TestInitCommand_ComposeFileExample(t *testing.T) {
 		t.Errorf("expected --no-caddyfile in help: %s", got)
 	}
 }
+
+// TestInitCommand_NoCaddyfileRequiresComposeFile guards against the footgun
+// of passing --no-caddyfile alone: the embedded compose template bind-mounts
+// /opt/cobalt/Caddyfile, so suppressing the write reproduces the exact
+// crash-loop this PR is fixing. The RunE preflight should reject it.
+func TestInitCommand_NoCaddyfileRequiresComposeFile(t *testing.T) {
+	root := newRootCmd()
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(&buf)
+	oldStderr := output.Stderr
+	output.Stderr = &bytes.Buffer{}
+	defer func() { output.Stderr = oldStderr }()
+
+	root.SetArgs([]string{"init", "root@example.com", "--no-caddyfile", "--yes"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatalf("expected --no-caddyfile without --compose-file to error, got nil")
+	}
+	if !contains(err.Error(), "--no-caddyfile requires --compose-file") {
+		t.Errorf("expected error to mention --no-caddyfile requires --compose-file; got %v", err)
+	}
+}

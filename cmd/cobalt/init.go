@@ -116,6 +116,14 @@ Examples:
 `,
 		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
+			// --no-caddyfile only makes sense alongside --compose-file: the
+			// embedded compose template bind-mounts /opt/cobalt/Caddyfile, so
+			// suppressing the write on the default path reproduces the exact
+			// crash-loop this command fix was meant to prevent.
+			if noCaddyfile && composeFile == "" {
+				return fmt.Errorf("--no-caddyfile requires --compose-file (the embedded compose template bind-mounts /opt/cobalt/Caddyfile)")
+			}
+
 			target := args[0]
 			user, host := ssh.ParseSSHURL(target)
 			assumeYes := cmd.Flag("yes").Value.String() == "true"
