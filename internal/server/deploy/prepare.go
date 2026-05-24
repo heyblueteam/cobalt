@@ -149,21 +149,32 @@ func (p *gitPreparer) Prepare(ctx context.Context, project store.Project, dep st
 	if dep.CobaltfileOverride != nil && *dep.CobaltfileOverride != "" {
 		override = *dep.CobaltfileOverride
 	}
-	cf, err := loadCobaltfile(repoDir, override)
+	// Project.Path scopes everything downstream — cobalt.json location,
+	// Dockerfile resolution, build context. Empty Path == repo root.
+	// The Workspace.Path returned here IS the project root from the
+	// build's perspective; the build phase joins Image.Dockerfile and
+	// Image.Context relative to it, unaware of whether the project
+	// lives at the repo root or in a subtree.
+	projectRoot := filepath.Join(repoDir, project.Path)
+	cf, err := loadCobaltfile(projectRoot, override)
 	if err != nil {
 		return nil, err
 	}
-	return &Workspace{Path: repoDir, Cobaltfile: cf, Commit: commit}, nil
+	return &Workspace{Path: projectRoot, Cobaltfile: cf, Commit: commit}, nil
 }
 
 // loadCobaltfile prefers an inline override (when --file was used at
-// deploy time), otherwise reads cobalt.json from the repo root, otherwise
+// deploy time), otherwise reads cobalt.json from `projectRoot`, otherwise
 // returns the default cobaltfile.
-func loadCobaltfile(repoDir, override string) (*cobaltfile.Cobaltfile, error) {
+//
+// `projectRoot` is the deploy's project root — `<repo>` for projects at
+// the repo root (Project.Path == ""), or `<repo>/<Project.Path>` for
+// monorepo sub-deployments.
+func loadCobaltfile(projectRoot, override string) (*cobaltfile.Cobaltfile, error) {
 	if override != "" {
 		return cobaltfile.Parse([]byte(override))
 	}
-	return cobaltfile.ParseFile(filepath.Join(repoDir, "cobalt.json"))
+	return cobaltfile.ParseFile(filepath.Join(projectRoot, "cobalt.json"))
 }
 
 // isGitRepo reports whether dir is an existing git working tree (has a

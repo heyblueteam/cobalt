@@ -117,6 +117,109 @@ func TestDeleteProject(t *testing.T) {
 	}
 }
 
+// TestProject_PathRoundTrip proves the optional repo sub-path stored at
+// create time round-trips through every retrieval path (GetByID,
+// GetByName, ListProjects). All four queries SELECT projects use the
+// same scanProjectRow helper, but the column order is independently
+// declared in each SELECT — drift between them would be caught here.
+func TestProject_PathRoundTrip(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateProject(ctx, Project{
+		Name: "monorepo-api", GithubRepo: "acme/monorepo", Branch: "main",
+		Path: "services/api",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	t.Run("GetByID", func(t *testing.T) {
+		p, err := db.GetProjectByID(ctx, id)
+		if err != nil {
+			t.Fatalf("GetByID: %v", err)
+		}
+		if p.Path != "services/api" {
+			t.Errorf("Path = %q, want %q", p.Path, "services/api")
+		}
+	})
+
+	t.Run("GetByName", func(t *testing.T) {
+		p, err := db.GetProjectByName(ctx, "monorepo-api")
+		if err != nil {
+			t.Fatalf("GetByName: %v", err)
+		}
+		if p.Path != "services/api" {
+			t.Errorf("Path = %q, want %q", p.Path, "services/api")
+		}
+	})
+
+	t.Run("ListProjects", func(t *testing.T) {
+		all, err := db.ListProjects(ctx)
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		var found *Project
+		for i := range all {
+			if all[i].ID == id {
+				found = &all[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Fatal("created project not in list")
+		}
+		if found.Path != "services/api" {
+			t.Errorf("Path = %q, want %q", found.Path, "services/api")
+		}
+	})
+}
+
+// TestProject_EmptyPathIsRepoRoot proves the default — every existing
+// project (created before this column existed, or by callers that don't
+// set Path) sees an empty string back. The migration's DEFAULT '' on
+// the column is what makes this work; this test catches accidental
+// regression to NULL or a bogus default.
+func TestProject_EmptyPathIsRepoRoot(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateProject(ctx, Project{
+		Name: "root-project", GithubRepo: "acme/root", Branch: "main",
+		// Path intentionally omitted
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	p, err := db.GetProjectByID(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if p.Path != "" {
+		t.Errorf("Path = %q, want empty (repo root)", p.Path)
+	}
+}
+
+// TestCreateProject_RejectsInvalidPath ensures path validation runs at
+// the store boundary, not just at the API layer. A direct
+// store.CreateProject call (e.g. from an internal job, a future
+// import command, a migration script) gets the same shape rules.
+func TestCreateProject_RejectsInvalidPath(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	_, err := db.CreateProject(ctx, Project{
+		Name: "bad", GithubRepo: "acme/x", Branch: "main",
+		Path: "/absolute",
+	})
+	if err == nil {
+		t.Fatal("expected error for absolute path")
+	}
+}
+
 func TestActiveDeploymentNumbers(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

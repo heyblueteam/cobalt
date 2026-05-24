@@ -187,6 +187,61 @@ func TestProjectsAddMissingGitHub(t *testing.T) {
 	}
 }
 
+// TestProjectsAddWithPath proves the new --path flag is parsed by the
+// CLI and serialized into the ProjectCreateRequest body. Real-world
+// usage: monorepos where one repo hosts multiple cobalt projects.
+func TestProjectsAddWithPath(t *testing.T) {
+	api := newMockAPI()
+	defer api.close()
+
+	api.respond(&cobaltapi.Project{
+		ID: 1, Name: "api", GithubRepo: "acme/monorepo", Branch: "main", Path: "services/api",
+	})
+
+	if err := api.configPath(t); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newRootCmd()
+	root.SetArgs([]string{
+		"projects", "add", "api",
+		"--github", "acme/monorepo",
+		"--path", "services/api",
+	})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !contains(string(api.lastBody), `"path":"services/api"`) {
+		t.Errorf("request body missing path field: %s", string(api.lastBody))
+	}
+}
+
+// TestProjectsAddRejectsAbsolutePath proves the CLI validates --path
+// client-side before sending. Catches the bad input before a round-trip
+// to the server.
+func TestProjectsAddRejectsAbsolutePath(t *testing.T) {
+	api := newMockAPI()
+	defer api.close()
+
+	if err := api.configPath(t); err != nil {
+		t.Fatal(err)
+	}
+
+	root := newRootCmd()
+	root.SetArgs([]string{
+		"projects", "add", "api",
+		"--github", "acme/api",
+		"--path", "/absolute",
+	})
+	err := root.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("expected validation error for absolute path")
+	}
+	if api.callCount != 0 {
+		t.Errorf("expected no API call (validation should reject locally), got %d", api.callCount)
+	}
+}
+
 func TestProjectsAddWithDomain(t *testing.T) {
 	api := newMockAPI()
 	defer api.close()

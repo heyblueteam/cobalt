@@ -74,11 +74,15 @@ func newProjectsAddCmd() *cobra.Command {
 		Long: `Creates a new project on the cobalt server.
 
 Requires --github with an owner/repo pair. Optionally attach a domain at creation
-time with --domain.
+time with --domain. For monorepos where one repo hosts multiple projects, use
+--path to point the deploy at a sub-directory; the cobalt.json and Dockerfile
+contexts are resolved relative to ` + "`<repo>/<path>`" + `.
 
 Examples:
-  cobalt projects add api --github heyblueteam/api
-  cobalt projects add web --github heyblueteam/web --branch develop --domain web.blue.cc`,
+  cobalt projects add api --github acme/api
+  cobalt projects add web --github acme/web --branch develop --domain web.example.com
+  cobalt projects add api --github acme/monorepo --path api --domain api.example.com
+  cobalt projects add web --github acme/monorepo --path services/web`,
 		Args:  cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			srv, err := resolveServer(cmd)
@@ -93,10 +97,15 @@ Examples:
 			if err := validator.ValidateGitHubRepo(gh); err != nil {
 				return err
 			}
+			subdir := cmd.Flag("path").Value.String()
+			if err := validator.ValidateProjectPath(subdir); err != nil {
+				return err
+			}
 			req := cobaltapi.ProjectCreateRequest{
 				Name:       cname,
 				GithubRepo: gh,
 				Branch:     cmd.Flag("branch").Value.String(),
+				Path:       subdir,
 				Domain:     cmd.Flag("domain").Value.String(),
 			}
 			cl := client.New(srv)
@@ -110,6 +119,7 @@ Examples:
 	}
 	cmd.Flags().String("github", "", "github repo as owner/repo (required)")
 	cmd.Flags().String("branch", "main", "git branch to deploy")
+	cmd.Flags().String("path", "", "sub-directory inside the repo (default: repo root)")
 	cmd.Flags().String("domain", "", "first domain to attach (optional)")
 	return cmd
 }
