@@ -259,6 +259,84 @@ func TestPreparer_HonorsCobaltfileOverride(t *testing.T) {
 	}
 }
 
+// TestPreparer_ReadsCobaltfileFromProjectPath proves that a project
+// with a non-empty Path resolves its cobalt.json under that sub-path
+// inside the cloned repo. The returned Workspace.Path points at the
+// project root (`<repo>/<path>`) so the build phase joins Dockerfile +
+// Context relative to that, not the repo root — making monorepo
+// sub-deploys work transparently.
+//
+// Failure modes guarded against:
+//   - Preparer reads `<repo>/cobalt.json` instead of `<repo>/<path>/cobalt.json`
+//     → returns the wrong cobaltfile (or default if none exists at root)
+//   - Workspace.Path points at the repo root → Build resolves Dockerfile
+//     paths against the wrong tree
+func TestPreparer_ReadsCobaltfileFromProjectPath(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	g := newFakeGit()
+	g.stdout["rev-parse"] = "abc"
+	tok := &fakeTokenProvider{tok: github.InstallationToken{Token: "x", ExpiresAt: time.Now().Add(time.Hour)}}
+
+	repoDir := filepath.Join(dir, "projects", "monorepo", "repo")
+	_ = os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755)
+	// Cobaltfile at the root would be picked up if Path were ignored —
+	// give it a distinguishing port so the test catches that bug.
+	_ = os.WriteFile(filepath.Join(repoDir, "cobalt.json"),
+		[]byte(`{"version":"1.0","services":{"web":{"port":1111}}}`), 0o644)
+	// The "real" cobaltfile is under services/api/.
+	subdir := filepath.Join(repoDir, "services", "api")
+	_ = os.MkdirAll(subdir, 0o755)
+	_ = os.WriteFile(filepath.Join(subdir, "cobalt.json"),
+		[]byte(`{"version":"1.0","services":{"web":{"port":4000}}}`), 0o644)
+
+	p := NewPreparer(dir, tok, g)
+	ws, err := p.Prepare(context.Background(),
+		store.Project{Name: "monorepo", GithubRepo: "h/monorepo", Branch: "main", Path: "services/api"},
+		store.Deployment{},
+	)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if got := ws.Cobaltfile.Services["web"].Port; got != 4000 {
+		t.Errorf("Cobaltfile.Services[web].Port = %d, want 4000 (subdir cobalt.json) — got %d would indicate root cobalt.json was read", got, got)
+	}
+	if !strings.HasSuffix(ws.Path, filepath.Join("services", "api")) {
+		t.Errorf("Workspace.Path = %q, want suffix services/api so the build resolves Dockerfile relative to the subdir", ws.Path)
+	}
+}
+
+// TestPreparer_EmptyPathIsRepoRoot pins the no-regression case: a
+// project with empty Path keeps the old behavior — Workspace.Path is
+// the repo root and the root cobalt.json is read.
+func TestPreparer_EmptyPathIsRepoRoot(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	g := newFakeGit()
+	g.stdout["rev-parse"] = "abc"
+	tok := &fakeTokenProvider{tok: github.InstallationToken{Token: "x", ExpiresAt: time.Now().Add(time.Hour)}}
+
+	repoDir := filepath.Join(dir, "projects", "api", "repo")
+	_ = os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755)
+	_ = os.WriteFile(filepath.Join(repoDir, "cobalt.json"),
+		[]byte(`{"version":"1.0","services":{"web":{"port":3000}}}`), 0o644)
+
+	p := NewPreparer(dir, tok, g)
+	ws, err := p.Prepare(context.Background(),
+		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"}, // no Path
+		store.Deployment{},
+	)
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if ws.Path != repoDir {
+		t.Errorf("Workspace.Path = %q, want repo root %q", ws.Path, repoDir)
+	}
+	if got := ws.Cobaltfile.Services["web"].Port; got != 3000 {
+		t.Errorf("Cobaltfile port = %d, want 3000", got)
+	}
+}
+
 func TestPreparer_PropagatesTokenError(t *testing.T) {
 	t.Parallel()
 	tok := &fakeTokenProvider{err: errors.New("no token")}

@@ -49,6 +49,7 @@ func (db *DB) InitSchema(ctx context.Context) error {
 			name                          TEXT NOT NULL UNIQUE,
 			github_repo                   TEXT NOT NULL,
 			branch                        TEXT NOT NULL,
+			path                          TEXT NOT NULL DEFAULT '',
 			github_app_installation_id    INTEGER,
 			created_at                    INTEGER NOT NULL,
 			updated_at                    INTEGER NOT NULL

@@ -13,21 +13,30 @@ import (
 var _ *sql.DB = nil // enforce that we don't accidentally use database/sql
 
 // Project is a row from the projects table.
+//
+// Path is an optional sub-path inside the repo where the project's
+// cobalt.json + Dockerfile contexts live. Empty means repo root, which
+// is the original (and most common) shape. A non-empty Path lets one
+// repo host multiple deployments — useful for monorepos where, e.g.,
+// `api/` and `app-next/` ship as separate cobalt projects from a
+// single GitHub repo. See `pkg/cobaltapi/validator.ValidateProjectPath`
+// for the shape rules.
 type Project struct {
-	ID                       int64
-	Name                     string
-	GithubRepo               string
-	Branch                   string
-	GithubAppInstallationID  sql.NullInt64
-	CreatedAt                int64
-	UpdatedAt                int64
+	ID                      int64
+	Name                    string
+	GithubRepo              string
+	Branch                  string
+	Path                    string
+	GithubAppInstallationID sql.NullInt64
+	CreatedAt               int64
+	UpdatedAt               int64
 }
 
 // ListProjects returns every project, ordered by name.
 func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(`
-        SELECT id, name, github_repo, branch, github_app_installation_id,
-               created_at, updated_at
+        SELECT id, name, github_repo, branch, path,
+               github_app_installation_id, created_at, updated_at
         FROM projects
         ORDER BY name
     `)
@@ -47,17 +56,7 @@ func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 	}
 	out := make([]Project, 0, len(results[0].Values))
 	for _, row := range results[0].Values {
-		var p Project
-		p.ID = toInt64(row[0])
-		p.Name = toString(row[1])
-		p.GithubRepo = toString(row[2])
-		p.Branch = toString(row[3])
-		if row[4] != nil {
-			p.GithubAppInstallationID = sql.NullInt64{Int64: toInt64(row[4]), Valid: true}
-		}
-		p.CreatedAt = toInt64(row[5])
-		p.UpdatedAt = toInt64(row[6])
-		out = append(out, p)
+		out = append(out, scanProjectRow(row))
 	}
 	return out, nil
 }
@@ -66,8 +65,8 @@ func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 // ErrNotFound if no row matches.
 func (db *DB) GetProjectByID(ctx context.Context, id int64) (*Project, error) {
 	resp, err := db.QuerySingle(ctx, `
-        SELECT id, name, github_repo, branch, github_app_installation_id,
-               created_at, updated_at
+        SELECT id, name, github_repo, branch, path,
+               github_app_installation_id, created_at, updated_at
         FROM projects WHERE id = ?
     `, id)
 	if err != nil {
@@ -80,17 +79,7 @@ func (db *DB) GetProjectByID(ctx context.Context, id int64) (*Project, error) {
 	if len(results) == 0 || len(results[0].Values) == 0 {
 		return nil, ErrNotFound
 	}
-	row := results[0].Values[0]
-	var p Project
-	p.ID = toInt64(row[0])
-	p.Name = toString(row[1])
-	p.GithubRepo = toString(row[2])
-	p.Branch = toString(row[3])
-	if row[4] != nil {
-		p.GithubAppInstallationID = sql.NullInt64{Int64: toInt64(row[4]), Valid: true}
-	}
-	p.CreatedAt = toInt64(row[5])
-	p.UpdatedAt = toInt64(row[6])
+	p := scanProjectRow(results[0].Values[0])
 	return &p, nil
 }
 
@@ -98,8 +87,8 @@ func (db *DB) GetProjectByID(ctx context.Context, id int64) (*Project, error) {
 // Returns ErrNotFound if no row matches.
 func (db *DB) GetProjectByName(ctx context.Context, name string) (*Project, error) {
 	resp, err := db.QuerySingle(ctx, `
-        SELECT id, name, github_repo, branch, github_app_installation_id,
-               created_at, updated_at
+        SELECT id, name, github_repo, branch, path,
+               github_app_installation_id, created_at, updated_at
         FROM projects WHERE name = ?
     `, name)
 	if err != nil {
@@ -112,17 +101,7 @@ func (db *DB) GetProjectByName(ctx context.Context, name string) (*Project, erro
 	if len(results) == 0 || len(results[0].Values) == 0 {
 		return nil, ErrNotFound
 	}
-	row := results[0].Values[0]
-	var p Project
-	p.ID = toInt64(row[0])
-	p.Name = toString(row[1])
-	p.GithubRepo = toString(row[2])
-	p.Branch = toString(row[3])
-	if row[4] != nil {
-		p.GithubAppInstallationID = sql.NullInt64{Int64: toInt64(row[4]), Valid: true}
-	}
-	p.CreatedAt = toInt64(row[5])
-	p.UpdatedAt = toInt64(row[6])
+	p := scanProjectRow(results[0].Values[0])
 	return &p, nil
 }
 
@@ -131,10 +110,13 @@ func (db *DB) CreateProject(ctx context.Context, p Project) (int64, error) {
 	if err := validator.ValidateProjectName(p.Name); err != nil {
 		return 0, err
 	}
+	if err := validator.ValidateProjectPath(p.Path); err != nil {
+		return 0, err
+	}
 	resp, err := db.ExecuteSingle(ctx, `
-        INSERT INTO projects (name, github_repo, branch, github_app_installation_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
-    `, p.Name, p.GithubRepo, p.Branch, p.GithubAppInstallationID)
+        INSERT INTO projects (name, github_repo, branch, path, github_app_installation_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+    `, p.Name, p.GithubRepo, p.Branch, p.Path, p.GithubAppInstallationID)
 	if err != nil {
 		if isUniqueConstraintErr(err) {
 			return 0, ErrProjectNameTaken
@@ -151,6 +133,24 @@ func (db *DB) CreateProject(ctx context.Context, p Project) (int64, error) {
 		return 0, errors.New(resp.Results[0].Error)
 	}
 	return resp.Results[0].LastInsertID, nil
+}
+
+// scanProjectRow centralizes column-order knowledge so the four
+// queries that SELECT projects stay in sync when columns are added.
+// Column order MUST match the SELECT in every caller above.
+func scanProjectRow(row []any) Project {
+	var p Project
+	p.ID = toInt64(row[0])
+	p.Name = toString(row[1])
+	p.GithubRepo = toString(row[2])
+	p.Branch = toString(row[3])
+	p.Path = toString(row[4])
+	if row[5] != nil {
+		p.GithubAppInstallationID = sql.NullInt64{Int64: toInt64(row[5]), Valid: true}
+	}
+	p.CreatedAt = toInt64(row[6])
+	p.UpdatedAt = toInt64(row[7])
+	return p
 }
 
 // RenameProject updates a project's display name. Caller is responsible

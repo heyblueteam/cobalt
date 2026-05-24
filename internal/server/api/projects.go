@@ -10,6 +10,7 @@ import (
 
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // ListProjects implements GET /api/projects. Bare array response.
@@ -52,6 +53,7 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		Name:       req.Name,
 		GithubRepo: req.GithubRepo,
 		Branch:     req.Branch,
+		Path:       req.Path,
 	})
 	if err != nil {
 		h.Log.Error("api: create project", "error", err)
@@ -184,6 +186,7 @@ func projectToAPI(p store.Project) cobaltapi.Project {
 		Name:       p.Name,
 		GithubRepo: p.GithubRepo,
 		Branch:     p.Branch,
+		Path:       p.Path,
 		CreatedAt:  p.CreatedAt,
 		UpdatedAt:  p.UpdatedAt,
 	}
@@ -216,6 +219,9 @@ func validateProjectCreate(req cobaltapi.ProjectCreateRequest) error {
 	}
 	if req.Branch == "" {
 		return errProjectBranchRequired
+	}
+	if err := validator.ValidateProjectPath(req.Path); err != nil {
+		return err
 	}
 	if req.Domain != "" && strings.ContainsAny(req.Domain, " \t/") {
 		return errProjectDomainInvalid
