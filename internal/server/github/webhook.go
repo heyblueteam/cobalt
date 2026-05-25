@@ -49,12 +49,57 @@ func VerifySignature(webhookSecret string, body []byte, signatureHeader string) 
 // PushEvent is the subset of GitHub's push event we use. Full schema:
 // https://docs.github.com/en/webhooks/webhook-events-and-payloads#push
 type PushEvent struct {
-	Ref        string             `json:"ref"`        // refs/heads/main
-	Before     string             `json:"before"`     // 40-hex previous tip
-	After      string             `json:"after"`      // 40-hex new tip
-	Deleted    bool               `json:"deleted"`    // branch-delete
+	Ref        string             `json:"ref"`     // refs/heads/main
+	Before     string             `json:"before"`  // 40-hex previous tip
+	After      string             `json:"after"`   // 40-hex new tip
+	Deleted    bool               `json:"deleted"` // branch-delete
 	Repository PushRepository     `json:"repository"`
 	Installation *PushInstallation `json:"installation,omitempty"`
+	// Commits is up to 20 commits from the push. GitHub truncates
+	// larger pushes — when that happens we cannot reliably tell which
+	// paths were touched and must fall back to "redeploy everything".
+	Commits []PushCommit `json:"commits"`
+}
+
+// PushCommit is one commit in a push payload, narrowed to the file
+// lists we use for path-filtered dispatch.
+type PushCommit struct {
+	Added    []string `json:"added"`
+	Removed  []string `json:"removed"`
+	Modified []string `json:"modified"`
+}
+
+// TouchesPath reports whether any commit in this push touched a file
+// inside `subdir`. An empty subdir means "repo root" — always touched.
+//
+// Conservative: if we can't tell (no commits listed, or the push
+// appears truncated at GitHub's 20-commit cap), returns true so we
+// don't skip a deploy on incomplete information. A redundant deploy is
+// cheaper than a skipped one.
+func (p PushEvent) TouchesPath(subdir string) bool {
+	if subdir == "" {
+		return true
+	}
+	// GitHub truncates commits[] at 20. We can't see what we can't see,
+	// so treat any push at-or-over the cap as "might have touched it".
+	if len(p.Commits) == 0 || len(p.Commits) >= 20 {
+		return true
+	}
+	prefix := subdir + "/"
+	touched := func(files []string) bool {
+		for _, f := range files {
+			if f == subdir || strings.HasPrefix(f, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range p.Commits {
+		if touched(c.Added) || touched(c.Removed) || touched(c.Modified) {
+			return true
+		}
+	}
+	return false
 }
 
 // Branch returns the branch name from Ref ("refs/heads/<branch>"), or ""

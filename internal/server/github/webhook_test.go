@@ -166,3 +166,144 @@ func TestParseInstallationRepositories(t *testing.T) {
 		t.Errorf("added: %+v", ev.RepositoriesAdded)
 	}
 }
+
+// TestPushEvent_TouchesPath covers the path-filtered dispatch helper.
+// The conservative cases (no commits, truncated push) MUST return true
+// — skipping a deploy on incomplete information would be a regression
+// vs the pre-monorepo behavior of always deploying.
+func TestPushEvent_TouchesPath(t *testing.T) {
+	t.Parallel()
+
+	mk := func(commits ...PushCommit) PushEvent {
+		return PushEvent{Commits: commits}
+	}
+
+	cases := []struct {
+		name string
+		ev   PushEvent
+		path string
+		want bool
+	}{
+		{
+			name: "empty_path_is_repo_root_always_touched",
+			ev:   mk(PushCommit{Modified: []string{"README.md"}}),
+			path: "",
+			want: true,
+		},
+		{
+			name: "modified_under_subdir",
+			ev:   mk(PushCommit{Modified: []string{"services/api/main.go"}}),
+			path: "services/api",
+			want: true,
+		},
+		{
+			name: "added_under_subdir",
+			ev:   mk(PushCommit{Added: []string{"api/new.go"}}),
+			path: "api",
+			want: true,
+		},
+		{
+			name: "removed_under_subdir",
+			ev:   mk(PushCommit{Removed: []string{"api/old.go"}}),
+			path: "api",
+			want: true,
+		},
+		{
+			name: "sibling_subdir_not_touched",
+			ev:   mk(PushCommit{Modified: []string{"web/index.ts"}}),
+			path: "api",
+			want: false,
+		},
+		{
+			name: "prefix_match_only_at_segment_boundary",
+			// "apiary/foo" must NOT match path "api". Without the
+			// trailing-slash check this would be a false positive.
+			ev:   mk(PushCommit{Modified: []string{"apiary/foo.go"}}),
+			path: "api",
+			want: false,
+		},
+		{
+			name: "exact_path_match_as_a_file",
+			// edge: a file literally named "api" at repo root, with
+			// path == "api". Treat as touched — we don't have enough
+			// signal to distinguish "the project lives in dir api/"
+			// from "edited the file named api", and the conservative
+			// answer is deploy.
+			ev:   mk(PushCommit{Modified: []string{"api"}}),
+			path: "api",
+			want: true,
+		},
+		{
+			name: "multiple_commits_one_touches",
+			ev: mk(
+				PushCommit{Modified: []string{"web/x.ts"}},
+				PushCommit{Modified: []string{"api/y.go"}},
+			),
+			path: "api",
+			want: true,
+		},
+		{
+			name: "no_commits_falls_back_to_deploy",
+			// Defensive: empty commits[] could be an event shape we
+			// haven't seen. Deploy rather than silently skip.
+			ev:   mk(),
+			path: "api",
+			want: true,
+		},
+		{
+			name: "twenty_commits_treated_as_truncated",
+			// GitHub caps commits[] at 20 in the push payload. We
+			// can't see past that, so deploy.
+			ev: PushEvent{Commits: func() []PushCommit {
+				out := make([]PushCommit, 20)
+				for i := range out {
+					out[i] = PushCommit{Modified: []string{"web/x.ts"}}
+				}
+				return out
+			}()},
+			path: "api",
+			want: true,
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.ev.TouchesPath(c.path); got != c.want {
+				t.Errorf("TouchesPath(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+// TestParsePush_DecodesCommits pins that the commits[] file lists are
+// extracted from a representative GitHub push payload. If GitHub
+// renames these fields (unlikely — they're stable) this would catch it.
+func TestParsePush_DecodesCommits(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+		"ref": "refs/heads/main",
+		"after": "abc",
+		"repository": {"id": 1, "full_name": "acme/monorepo"},
+		"commits": [
+			{"added": ["api/new.go"], "removed": [], "modified": ["api/main.go"]},
+			{"added": [], "removed": ["web/old.ts"], "modified": []}
+		]
+	}`)
+	ev, err := ParsePush(body)
+	if err != nil {
+		t.Fatalf("ParsePush: %v", err)
+	}
+	if len(ev.Commits) != 2 {
+		t.Fatalf("Commits: got %d, want 2", len(ev.Commits))
+	}
+	if !ev.TouchesPath("api") {
+		t.Error("expected api/ to be touched")
+	}
+	if !ev.TouchesPath("web") {
+		t.Error("expected web/ to be touched (removed file)")
+	}
+	if ev.TouchesPath("docs") {
+		t.Error("expected docs/ untouched")
+	}
+}
+

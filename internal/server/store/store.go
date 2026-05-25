@@ -179,6 +179,7 @@ func (db *DB) InitSchema(ctx context.Context) error {
 		`ALTER TABLE command_runs ADD COLUMN tty INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE deployments ADD COLUMN rollback_of INTEGER REFERENCES deployments(id)`,
 		`ALTER TABLE domains ADD COLUMN redirect_to TEXT`,
+		`ALTER TABLE projects ADD COLUMN path TEXT NOT NULL DEFAULT ''`,
 	} {
 		_, _ = db.Execute(ctx, rqlitehttp.NewSQLStatementsFromStrings([]string{alter}), nil)
 	}

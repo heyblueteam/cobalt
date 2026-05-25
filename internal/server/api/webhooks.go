@@ -102,17 +102,29 @@ func (h *Handler) handlePush(ctx context.Context, body []byte, _ int64) {
 		h.Log.Error("webhook: find projects", "error", err)
 		return
 	}
+	enqueued := 0
 	for _, p := range projects {
+		// Monorepo case: if the project is scoped to a sub-path and no
+		// file under that sub-path was touched by this push, skip.
+		// TouchesPath is conservative — it returns true when the push
+		// is truncated (>=20 commits) or has no commits listed, so we
+		// never skip on incomplete information.
+		if !ev.TouchesPath(p.Path) {
+			h.Log.Info("webhook: skip deploy (path not touched)",
+				"project", p.Name, "path", p.Path, "commit", ev.After)
+			continue
+		}
 		req := deploy.EnqueueRequest{ProjectID: p.ID, CommitSHA: ev.After}
 		id, _, err := h.Queue.Enqueue(ctx, req)
 		if err != nil {
 			h.Log.Error("webhook: enqueue", "project", p.Name, "error", err)
 			continue
 		}
+		enqueued++
 		h.Log.Info("webhook: deploy enqueued",
 			"project", p.Name, "commit", ev.After, "deployment_id", id)
 	}
-	if len(projects) > 0 && h.Dispatcher != nil {
+	if enqueued > 0 && h.Dispatcher != nil {
 		h.Dispatcher.Notify()
 	}
 }

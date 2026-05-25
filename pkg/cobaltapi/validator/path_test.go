@@ -9,9 +9,9 @@ import (
 func TestValidateProjectPath(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name      string
-		in        string
-		wantErr   bool
+		name       string
+		in         string
+		wantErr    bool
 		wantSubstr string
 	}{
 		// Valid.
