@@ -74,6 +74,12 @@ func validateService(name string, s Service) error {
 	if s.Timeout < 0 {
 		return fmt.Errorf("cobaltfile: service %q timeout %d must be non-negative", name, s.Timeout)
 	}
+	if s.MinReplicas < 0 {
+		return fmt.Errorf("cobaltfile: service %q minReplicas %d must be non-negative", name, s.MinReplicas)
+	}
+	if s.MinReplicas > 0 && s.Type != TypeContainer {
+		return fmt.Errorf("cobaltfile: service %q minReplicas only valid for type=container (got %q)", name, s.Type)
+	}
 	if s.Type == TypeCron {
 		if err := validateCronSchedule(s.Schedule); err != nil {
 			return fmt.Errorf("cobaltfile: service %q schedule: %w", name, err)

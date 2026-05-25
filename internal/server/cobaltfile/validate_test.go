@@ -75,6 +75,46 @@ func TestValidate_PortRange(t *testing.T) {
 	}
 }
 
+func TestValidate_MinReplicasNegative(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"web": {"minReplicas": -1}}
+    }`
+	_, err := Parse([]byte(src))
+	mustContain(t, err, "minReplicas")
+}
+
+func TestValidate_MinReplicasContainerOnly(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"worker": {
+            "type": "cron",
+            "schedule": "* * * * *",
+            "command": "echo hi",
+            "minReplicas": 2
+        }}
+    }`
+	_, err := Parse([]byte(src))
+	mustContain(t, err, "minReplicas only valid for type=container")
+}
+
+func TestValidate_MinReplicasAccepted(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"web": {"minReplicas": 4}}
+    }`
+	cf, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cf.Services["web"].MinReplicas; got != 4 {
+		t.Errorf("MinReplicas = %d, want 4", got)
+	}
+}
+
 func TestValidate_PublishedPortRange(t *testing.T) {
 	t.Parallel()
 	src := `{

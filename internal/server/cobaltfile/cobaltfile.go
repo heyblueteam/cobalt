@@ -89,6 +89,13 @@ type Service struct {
 	Health            *Health         `json:"health,omitempty"`
 	ExtraSwarmParams  string          `json:"extraSwarmParams,omitempty"`
 	ExtraRunParams    string          `json:"extraRunParams,omitempty"`
+	// MinReplicas is the baseline replica count a new deployment of this
+	// container service starts with. Zero means "use docker's default of
+	// 1". `cobalt scale set` can still raise the count above the floor for
+	// the current deployment, but the next deploy starts fresh from
+	// MinReplicas — so this is how you encode "api needs 4 to survive prod
+	// load" in the repo rather than only in operator memory.
+	MinReplicas int `json:"minReplicas,omitempty"`
 }
 
 // Image describes how to build a docker image.

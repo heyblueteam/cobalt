@@ -83,7 +83,7 @@ the aggregate so the file stays parseable.
 | Command | v1 | Notes |
 |---|---|---|
 | `cobalt scale get --project <p>` | YES | Show current replicas per service |
-| `cobalt scale set --project <p> web=3 [worker=2 ...]` | YES | Set replica counts |
+| `cobalt scale set --project <p> web=3 [worker=2 ...]` | YES | Set replica counts (current deployment only — for a persistent floor across deploys, set `minReplicas` in `cobalt.json`) |
 
 ## github
 

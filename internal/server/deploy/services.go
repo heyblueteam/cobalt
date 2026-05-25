@@ -75,7 +75,7 @@ func waitHealthyAll(
 			first = false
 		}
 		name := docker.ServiceName(project.Name, dep.Number, b.Name)
-		replicas := 1 // cobaltfile services don't expose replica count yet; default 1
+		replicas := replicaCount(b.Service)
 		t0 := time.Now()
 		if err := d.WaitForServiceHealthy(ctx, name, replicas, HealthcheckTimeout); err != nil {
 			return fmt.Errorf("deploy: wait healthy %q: %w", b.Name, err)
@@ -96,6 +96,16 @@ func stopServices(ctx context.Context, d ServiceDocker, names []string) error {
 		}
 	}
 	return firstErr
+}
+
+// replicaCount returns the replica count a new deployment of s should be
+// created with. Falls back to 1 when minReplicas is unset, matching
+// docker's default and preserving prior behavior.
+func replicaCount(s cobaltfile.Service) int {
+	if s.MinReplicas > 0 {
+		return s.MinReplicas
+	}
+	return 1
 }
 
 // runsAsService reports whether a cobaltfile service should be started as
@@ -147,7 +157,7 @@ func serviceCreateOpts(
 			{Name: deploymentNetwork, Alias: b.Name},
 			{Name: MainNetworkName, Alias: mainNetAlias(project, b, dep)},
 		},
-		Replicas:    1,
+		Replicas:    replicaCount(b.Service),
 		ExtraParams: docker.SplitParams(b.Service.ExtraSwarmParams),
 	}
 	if b.Service.Health != nil && b.Service.Health.Command != "" {
