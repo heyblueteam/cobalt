@@ -1,12 +1,51 @@
 package deploy
 
 import (
+	"context"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
+
+type serviceDockerFake struct {
+	created        []docker.ServiceCreateOpts
+	healthChecks   []healthCheckCall
+	removed        []string
+	services       []docker.ServiceInfo
+	createErr      error
+	healthCheckErr error
+	removeErr      error
+	listErr        error
+}
+
+type healthCheckCall struct {
+	name     string
+	replicas int
+	timeout  time.Duration
+}
+
+func (f *serviceDockerFake) CreateService(_ context.Context, opts docker.ServiceCreateOpts) error {
+	f.created = append(f.created, opts)
+	return f.createErr
+}
+
+func (f *serviceDockerFake) WaitForServiceHealthy(_ context.Context, name string, replicas int, timeout time.Duration) error {
+	f.healthChecks = append(f.healthChecks, healthCheckCall{name: name, replicas: replicas, timeout: timeout})
+	return f.healthCheckErr
+}
+
+func (f *serviceDockerFake) RemoveService(_ context.Context, name string) error {
+	f.removed = append(f.removed, name)
+	return f.removeErr
+}
+
+func (f *serviceDockerFake) ListServicesForDeployment(_ context.Context, _ int64, _ int) ([]docker.ServiceInfo, error) {
+	return f.services, f.listErr
+}
 
 // findAttachment returns the NetworkAttachment matching name, or fails the
 // test if absent. Centralizes the "ordering is implementation detail, but
@@ -141,6 +180,70 @@ func TestServiceCreateOpts_AttachesBothNetworks(t *testing.T) {
 	}
 	if opts.Networks[1].Name != MainNetworkName {
 		t.Errorf("Networks[1] = %q, want cobalt-main second", opts.Networks[1].Name)
+	}
+}
+
+func TestServiceCreateOpts_UsesMinReplicas(t *testing.T) {
+	t.Parallel()
+	project := store.Project{ID: 1, Name: "api"}
+	dep := store.Deployment{Number: 1}
+	b := BuiltService{
+		Name: "web",
+		Service: cobaltfile.Service{
+			MinReplicas: 4,
+		},
+	}
+
+	opts := serviceCreateOpts(project, dep, b, nil, "cobalt-project-api-1")
+
+	if opts.Replicas != 4 {
+		t.Errorf("Replicas = %d, want 4", opts.Replicas)
+	}
+}
+
+func TestServiceCreateOpts_DefaultsReplicasToOne(t *testing.T) {
+	t.Parallel()
+	project := store.Project{ID: 1, Name: "api"}
+	dep := store.Deployment{Number: 1}
+	b := BuiltService{Name: "web"}
+
+	opts := serviceCreateOpts(project, dep, b, nil, "cobalt-project-api-1")
+
+	if opts.Replicas != 1 {
+		t.Errorf("Replicas = %d, want 1", opts.Replicas)
+	}
+}
+
+func TestWaitHealthyAll_UsesMinReplicas(t *testing.T) {
+	t.Parallel()
+	project := store.Project{ID: 1, Name: "api"}
+	dep := store.Deployment{Number: 3}
+	d := &serviceDockerFake{}
+	built := []BuiltService{
+		{
+			Name: "web",
+			Service: cobaltfile.Service{
+				Type:        cobaltfile.TypeContainer,
+				MinReplicas: 4,
+			},
+		},
+	}
+
+	if err := waitHealthyAll(context.Background(), d, project, dep, built, io.Discard); err != nil {
+		t.Fatalf("waitHealthyAll: %v", err)
+	}
+	if len(d.healthChecks) != 1 {
+		t.Fatalf("health checks = %d, want 1", len(d.healthChecks))
+	}
+	got := d.healthChecks[0]
+	if got.name != "api-3-web" {
+		t.Errorf("health check name = %q, want api-3-web", got.name)
+	}
+	if got.replicas != 4 {
+		t.Errorf("health check replicas = %d, want 4", got.replicas)
+	}
+	if got.timeout != HealthcheckTimeout {
+		t.Errorf("health check timeout = %s, want %s", got.timeout, HealthcheckTimeout)
 	}
 }
 
