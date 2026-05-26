@@ -21,11 +21,10 @@ func ptrString(s string) *string { return &s }
 // fakeGit records every git invocation and lets tests inject canned
 // stdout / errors per command.
 type fakeGit struct {
-	mu      sync.Mutex
-	calls   [][]string
-	stdout  map[string]string
-	errs    map[string]error
-	repoDir string
+	mu     sync.Mutex
+	calls  [][]string
+	stdout map[string]string
+	errs   map[string]error
 }
 
 func newFakeGit() *fakeGit {
@@ -141,7 +140,8 @@ func TestPreparer_ExistingRepoFetches(t *testing.T) {
 	tok := &fakeTokenProvider{tok: github.InstallationToken{Token: "x", ExpiresAt: time.Now().Add(time.Hour)}}
 	p := NewPreparer(dir, tok, g)
 
-	_, err := p.Prepare(context.Background(),
+	_, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"},
 		store.Deployment{},
 	)
@@ -174,7 +174,8 @@ func TestPreparer_HonorsCommitOverride(t *testing.T) {
 		[]byte(`{"version":"1.0","services":{"web":{}}}`), 0o644)
 
 	p := NewPreparer(dir, tok, g)
-	_, err := p.Prepare(context.Background(),
+	_, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"},
 		store.Deployment{CommitSHA: ptrString("specific-sha")},
 	)
@@ -213,7 +214,8 @@ func TestPreparer_PublicRepoUsesAnonymousURL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := p.Prepare(context.Background(),
+	if _, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "api", GithubRepo: "public/repo", Branch: "main"},
 		store.Deployment{},
 	); err != nil {
@@ -247,7 +249,8 @@ func TestPreparer_HonorsCobaltfileOverride(t *testing.T) {
 		[]byte(`{"version":"1.0","services":{"web":{"port":4000}}}`), 0o644)
 
 	p := NewPreparer(dir, tok, g)
-	ws, err := p.Prepare(context.Background(),
+	ws, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"},
 		store.Deployment{CobaltfileOverride: ptrString(`{"version":"1.0","services":{"web":{"port":9999}}}`)},
 	)
@@ -291,7 +294,8 @@ func TestPreparer_ReadsCobaltfileFromProjectPath(t *testing.T) {
 		[]byte(`{"version":"1.0","services":{"web":{"port":4000}}}`), 0o644)
 
 	p := NewPreparer(dir, tok, g)
-	ws, err := p.Prepare(context.Background(),
+	ws, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "monorepo", GithubRepo: "h/monorepo", Branch: "main", Path: "services/api"},
 		store.Deployment{},
 	)
@@ -322,7 +326,8 @@ func TestPreparer_EmptyPathIsRepoRoot(t *testing.T) {
 		[]byte(`{"version":"1.0","services":{"web":{"port":3000}}}`), 0o644)
 
 	p := NewPreparer(dir, tok, g)
-	ws, err := p.Prepare(context.Background(),
+	ws, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api", Branch: "main"}, // no Path
 		store.Deployment{},
 	)
@@ -341,7 +346,8 @@ func TestPreparer_PropagatesTokenError(t *testing.T) {
 	t.Parallel()
 	tok := &fakeTokenProvider{err: errors.New("no token")}
 	p := NewPreparer(t.TempDir(), tok, newFakeGit())
-	_, err := p.Prepare(context.Background(),
+	_, err := p.Prepare(
+		context.Background(),
 		store.Project{Name: "api", GithubRepo: "h/api"},
 		store.Deployment{},
 	)

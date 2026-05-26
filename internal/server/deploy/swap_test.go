@@ -16,16 +16,16 @@ import (
 // fakeSwapCaddy records every call so swap tests can assert exact
 // dispatch (container path vs static-site path vs no-op).
 type fakeSwapCaddy struct {
-	mu                sync.Mutex
-	setDomainsCalls   int
-	setDomainsArgs    [][]string
-	verifyCalls       []verifyCall
-	serveSvcCalls     []serveSvcCall
-	staticCalls       []staticCall
-	setDomainsErr     error
-	verifyErr         error
-	serveSvcErr       error
-	staticErr         error
+	mu              sync.Mutex
+	setDomainsCalls int
+	setDomainsArgs  [][]string
+	verifyCalls     []verifyCall
+	serveSvcCalls   []serveSvcCall
+	staticCalls     []staticCall
+	setDomainsErr   error
+	verifyErr       error
+	serveSvcErr     error
+	staticErr       error
 }
 
 type verifyCall struct {
@@ -84,6 +84,7 @@ type fakeSwapStore struct {
 func (f *fakeSwapStore) ListPrimaryDomainsForProject(_ context.Context, _ int64) ([]string, error) {
 	return f.primaryDomains, f.primaryErr
 }
+
 func (f *fakeSwapStore) GetLastSuccessfulDeployment(_ context.Context, _ int64) (*store.Deployment, error) {
 	return f.lastSuccess, f.lastSuccessErr
 }

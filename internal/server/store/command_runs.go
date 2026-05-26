@@ -35,7 +35,8 @@ func (db *DB) CreateCommandRun(ctx context.Context, projectID, apikeyID int64, s
 	if tty {
 		tt = 1
 	}
-	resp, err := db.ExecuteSingle(ctx,
+	resp, err := db.ExecuteSingle(
+		ctx,
 		`INSERT INTO command_runs (project_id, apikey_id, service, command, status, tty, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))`,
 		projectID, apikeyID, service, command, CommandRunStatusRunning, tt,
@@ -52,7 +53,8 @@ func (db *DB) CreateCommandRun(ctx context.Context, projectID, apikeyID int64, s
 // FinishCommandRun records the run's exit code and flips status to
 // "finished". Idempotent: a second call just overwrites the columns.
 func (db *DB) FinishCommandRun(ctx context.Context, id int64, exitCode int) error {
-	_, err := db.ExecuteSingle(ctx,
+	_, err := db.ExecuteSingle(
+		ctx,
 		`UPDATE command_runs SET status = ?, exit_code = ?, finished_at = strftime('%s', 'now') WHERE id = ?`,
 		CommandRunStatusFinished, exitCode, id,
 	)
@@ -65,7 +67,8 @@ func (db *DB) ListCommandRunsForProject(ctx context.Context, projectID int64, li
 	if limit <= 0 {
 		limit = 50
 	}
-	resp, err := db.QuerySingle(ctx,
+	resp, err := db.QuerySingle(
+		ctx,
 		`SELECT id, project_id, COALESCE(apikey_id, 0), COALESCE(service, ''), command,
 		        status, COALESCE(exit_code, 0), tty, created_at, COALESCE(finished_at, 0)
 		 FROM command_runs WHERE project_id = ?

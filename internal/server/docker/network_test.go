@@ -64,7 +64,8 @@ func TestConnectNetwork(t *testing.T) {
 func TestListNetworksForProject_Parses(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("network ls --filter label=cobalt.project.id=7",
+	r.answerStdout(
+		"network ls --filter label=cobalt.project.id=7",
 		"cobalt-project-api-3\n"+
 			"cobalt-project-api-4\n"+
 			"cobalt-project-api-7\n",
@@ -90,7 +91,8 @@ func TestListNetworksForProject_Parses(t *testing.T) {
 func TestListNetworksForProject_HyphenatedProjectName(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("network ls --filter label=cobalt.project.id=42",
+	r.answerStdout(
+		"network ls --filter label=cobalt.project.id=42",
 		"cobalt-project-dev-api-501\n"+
 			"cobalt-project-dev-api-502\n",
 	)
@@ -115,7 +117,8 @@ func TestListNetworksForProject_HyphenatedProjectName(t *testing.T) {
 func TestListNetworksForProject_SkipsNonMatching(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("network ls --filter label=cobalt.project.id=7",
+	r.answerStdout(
+		"network ls --filter label=cobalt.project.id=7",
 		"cobalt-project-api-3\n"+
 			"cobalt-project-api-notanumber\n"+ // bad suffix
 			"cobalt-other-api-5\n"+ // wrong prefix

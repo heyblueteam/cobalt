@@ -40,14 +40,16 @@ Examples:
 			noFollow, _ := cmd.Flags().GetBool("no-follow")
 
 			if to > 0 {
-				if err := confirm(cmd,
+				if err := confirm(
+					cmd,
 					fmt.Sprintf("Roll project %q back to deployment #%d?",
 						pc.WrapProject(), to),
 				); err != nil {
 					return err
 				}
 			} else {
-				if err := confirm(cmd,
+				if err := confirm(
+					cmd,
 					fmt.Sprintf("Roll project %q back to the previous successful deployment?",
 						pc.WrapProject()),
 				); err != nil {

@@ -36,9 +36,3 @@ func OpenDeployLog(dataDir, projectName string, deploymentNumber int) (io.WriteC
 	}
 	return f, nil
 }
-
-// nopCloser wraps an io.Writer and provides a no-op Close. Used by the
-// orchestrator when callers (tests) supply their own writer.
-type nopCloser struct{ io.Writer }
-
-func (nopCloser) Close() error { return nil }

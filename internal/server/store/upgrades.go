@@ -57,7 +57,8 @@ func (db *DB) CreateUpgrade(ctx context.Context, u Upgrade) error {
 	if u.StartedAt == 0 {
 		u.StartedAt = time.Now().Unix()
 	}
-	resp, err := db.ExecuteSingle(ctx,
+	resp, err := db.ExecuteSingle(
+		ctx,
 		`INSERT INTO upgrades (id, target_image, target_version, from_version, status, log_path, started_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		u.ID, u.TargetImage, u.TargetVersion, u.FromVersion, u.Status, u.LogPath, u.StartedAt,

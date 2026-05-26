@@ -70,19 +70,29 @@ func TestShellSplit(t *testing.T) {
 		{"whitespace_only", "   \t\n  ", nil},
 		{"single_token", "redis-server", []string{"redis-server"}},
 		// Bare-word commands (the common cobaltfile shape).
-		{"flag_with_value", "redis-server --maxmemory-policy noeviction",
-			[]string{"redis-server", "--maxmemory-policy", "noeviction"}},
-		{"collapses_whitespace", "  redis-server   --maxmemory-policy   noeviction  ",
-			[]string{"redis-server", "--maxmemory-policy", "noeviction"}},
+		{
+			"flag_with_value", "redis-server --maxmemory-policy noeviction",
+			[]string{"redis-server", "--maxmemory-policy", "noeviction"},
+		},
+		{
+			"collapses_whitespace", "  redis-server   --maxmemory-policy   noeviction  ",
+			[]string{"redis-server", "--maxmemory-policy", "noeviction"},
+		},
 		// Single-quoted: contents are literal, no escape interpretation.
-		{"single_quoted_keeps_spaces", "sh -c 'pnpm migrate:deploy && pnpm start'",
-			[]string{"sh", "-c", "pnpm migrate:deploy && pnpm start"}},
-		{"single_quoted_with_env_assignment", "sh -c 'CI=true pnpm -r run migrate:deploy && pnpm start'",
-			[]string{"sh", "-c", "CI=true pnpm -r run migrate:deploy && pnpm start"}},
+		{
+			"single_quoted_keeps_spaces", "sh -c 'pnpm migrate:deploy && pnpm start'",
+			[]string{"sh", "-c", "pnpm migrate:deploy && pnpm start"},
+		},
+		{
+			"single_quoted_with_env_assignment", "sh -c 'CI=true pnpm -r run migrate:deploy && pnpm start'",
+			[]string{"sh", "-c", "CI=true pnpm -r run migrate:deploy && pnpm start"},
+		},
 		{"single_quoted_with_backslash_literal", `echo 'a\b'`, []string{"echo", `a\b`}},
 		// Double-quoted: contents kept together but backslash escapes work.
-		{"double_quoted_keeps_spaces", `sh -c "echo hello world"`,
-			[]string{"sh", "-c", "echo hello world"}},
+		{
+			"double_quoted_keeps_spaces", `sh -c "echo hello world"`,
+			[]string{"sh", "-c", "echo hello world"},
+		},
 		{"double_quoted_escape", `echo "a\"b"`, []string{"echo", `a"b`}},
 		// Backslash outside quotes — escape the next char.
 		{"backslash_escape_space", `a\ b`, []string{"a b"}},

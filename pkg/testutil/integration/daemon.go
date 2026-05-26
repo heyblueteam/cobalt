@@ -17,11 +17,11 @@ import (
 )
 
 type DaemonOptions struct {
-	CaddyAdminURL  string
-	DockerHost     string
-	NetworkName    string
-	BinaryPath     string
-	Port           int
+	CaddyAdminURL string
+	DockerHost    string
+	NetworkName   string
+	BinaryPath    string
+	Port          int
 }
 
 const defaultDaemonPort = 8080
@@ -69,7 +69,8 @@ func StartDaemon(ctx context.Context, t testing.TB, opts DaemonOptions) (baseURL
 
 	run("network", "create", "-d", "bridge", networkName)
 
-	run("run", "-d",
+	run(
+		"run", "-d",
 		"--name", containerName,
 		"--network", networkName,
 		"--hostname", "cobalt",
@@ -109,7 +110,8 @@ func buildBinary(ctx context.Context, t testing.TB) string {
 	tmpDir := t.TempDir()
 	outPath := filepath.Join(tmpDir, "cobalt")
 
-	cmd := exec.CommandContext(ctx, "go", "build",
+	cmd := exec.CommandContext(
+		ctx, "go", "build",
 		"-o", outPath,
 		"github.com/heyblueteam/cobalt/cmd/cobalt",
 	)

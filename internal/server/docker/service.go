@@ -41,21 +41,21 @@ type NetworkAttachment struct {
 
 // ServiceCreateOpts describes a `docker service create` invocation.
 type ServiceCreateOpts struct {
-	ProjectID        int64
-	ProjectName      string
-	ServiceName      string
-	DeploymentNumber int
-	Image            string
-	Command          string
-	EnvVars          map[string]string
-	PublishedPorts   []PublishedPort
-	Networks         []NetworkAttachment // first one is primary
-	Replicas         int                 // 0 means use docker default (1)
-	HealthCommand    string              // optional; sets --health-cmd
-	HealthStartPeriod time.Duration      // defaults to 5 minutes
-	HealthInterval    time.Duration      // defaults to 3 seconds
-	Volumes          []ServiceVolume
-	ExtraParams      []string // pre-split, e.g. via SplitParams(extraSwarmParams)
+	ProjectID         int64
+	ProjectName       string
+	ServiceName       string
+	DeploymentNumber  int
+	Image             string
+	Command           string
+	EnvVars           map[string]string
+	PublishedPorts    []PublishedPort
+	Networks          []NetworkAttachment // first one is primary
+	Replicas          int                 // 0 means use docker default (1)
+	HealthCommand     string              // optional; sets --health-cmd
+	HealthStartPeriod time.Duration       // defaults to 5 minutes
+	HealthInterval    time.Duration       // defaults to 3 seconds
+	Volumes           []ServiceVolume
+	ExtraParams       []string // pre-split, e.g. via SplitParams(extraSwarmParams)
 }
 
 // CreateService creates a swarm service with the cobalt label set, env
@@ -94,13 +94,15 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 		if proto == "" {
 			proto = "tcp"
 		}
-		args = append(args,
+		args = append(
+			args,
 			"--publish",
 			fmt.Sprintf("published=%d,target=%d,protocol=%s", p.PublishedAs, p.FromContainerPort, proto),
 		)
 	}
 	for _, v := range opts.Volumes {
-		args = append(args, "--mount",
+		args = append(
+			args, "--mount",
 			fmt.Sprintf("type=volume,source=%s,destination=%s", v.VolumeName, v.DestinationPath),
 		)
 	}
@@ -116,7 +118,8 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 		if interval == 0 {
 			interval = 3 * time.Second
 		}
-		args = append(args,
+		args = append(
+			args,
 			"--health-cmd", opts.HealthCommand,
 			"--health-start-period", durationFlag(startPeriod),
 			"--health-start-interval", durationFlag(interval),
@@ -264,7 +267,8 @@ func (c *Client) WaitForServiceReady(ctx context.Context, name string, replicas 
 }
 
 func (c *Client) taskStates(ctx context.Context, serviceName string) ([]string, error) {
-	out, err := c.output(ctx,
+	out, err := c.output(
+		ctx,
 		"service", "ps", serviceName,
 		"--no-trunc",
 		"--format", "{{.CurrentState}}",

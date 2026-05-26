@@ -306,4 +306,3 @@ func TestParsePush_DecodesCommits(t *testing.T) {
 		t.Error("expected docs/ untouched")
 	}
 }
-

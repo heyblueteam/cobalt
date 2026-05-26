@@ -69,7 +69,8 @@ func TestWaitForServiceHealthy_FallsBackWhenContainerLookupFails(t *testing.T) {
 func TestWaitForServiceHealthy_FailFastOnShutdowns(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("service ps api-7-web",
+	r.answerStdout(
+		"service ps api-7-web",
 		`{"current_state":"Shutdown 1 minute ago"}`+"\n"+
 			`{"current_state":"Failed 30 seconds ago"}`+"\n"+
 			`{"current_state":"Rejected 10 seconds ago"}`+"\n",
@@ -85,7 +86,8 @@ func TestWaitForServiceHealthy_FailFastOnShutdowns(t *testing.T) {
 func TestWaitForServiceHealthy_TimeoutWhenNotRunning(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("service ps api-7-web",
+	r.answerStdout(
+		"service ps api-7-web",
 		`{"current_state":"Pending 1 second ago"}`+"\n",
 	)
 	r.answerStdout("ps --filter label=com.docker.swarm.service.name=api-7-web", "")
@@ -99,7 +101,8 @@ func TestWaitForServiceHealthy_TimeoutWhenNotRunning(t *testing.T) {
 func TestWaitForServiceHealthy_RespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("service ps api-7-web",
+	r.answerStdout(
+		"service ps api-7-web",
 		`{"current_state":"Pending 1 second ago"}`+"\n",
 	)
 	r.answerStdout("ps --filter label=com.docker.swarm.service.name=api-7-web", "")

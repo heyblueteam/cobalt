@@ -99,7 +99,8 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	args = append(args, "--secret", "id=.env,env=COBALT_DOT_ENV")
 
 	if opts.CacheDir != "" {
-		args = append(args,
+		args = append(
+			args,
 			"--cache-from", "type=local,src="+opts.CacheDir,
 			"--cache-to", "type=local,dest="+opts.CacheDir+",mode=max",
 		)
@@ -266,9 +267,9 @@ func ShellSplit(s string) []string {
 	inToken := false
 
 	const (
-		none      = 0
-		singleQ   = 1
-		doubleQ   = 2
+		none    = 0
+		singleQ = 1
+		doubleQ = 2
 	)
 	state := none
 

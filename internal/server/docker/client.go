@@ -147,7 +147,8 @@ func (c *Client) EnsureBuildxBuilder(ctx context.Context) error {
 	if err := c.run(ctx, "buildx", "inspect", BuildxBuilderName); err == nil {
 		return nil
 	}
-	return c.run(ctx, "buildx", "create",
+	return c.run(
+		ctx, "buildx", "create",
 		"--name", BuildxBuilderName,
 		"--driver", "docker-container",
 		"--bootstrap",

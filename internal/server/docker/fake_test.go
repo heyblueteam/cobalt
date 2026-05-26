@@ -2,7 +2,6 @@ package docker
 
 import (
 	"context"
-	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -146,10 +145,3 @@ outer:
 type staticErr string
 
 func (e staticErr) Error() string { return string(e) }
-
-// dockerNotFoundErr mimics what shell-out errors look like for "no such
-// service" so isNotFound returns true.
-const dockerNotFoundErr = staticErr("Error: No such service: foo")
-
-// errorf is a small helper for building test-only errors.
-func errorf(format string, a ...any) error { return fmt.Errorf(format, a...) }

@@ -4,7 +4,7 @@ package cobaltapi
 // intentionally absent — it's only ever returned in the
 // APIKeyCreateResponse the server sends back from POST /api/apikeys.
 type APIKey struct {
-	ID         int64 `json:"id"`
+	ID         int64  `json:"id"`
 	Name       string `json:"name"`
 	CreatedAt  int64  `json:"createdAt"`
 	LastUsedAt int64  `json:"lastUsedAt,omitempty"`

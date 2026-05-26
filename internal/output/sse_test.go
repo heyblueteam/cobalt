@@ -14,8 +14,10 @@ func TestIsContextCanceled(t *testing.T) {
 		{"nil", nil, false},
 		{"unrelated", errors.New("oops"), false},
 		{"context canceled", errors.New("Get \"...\": context canceled"), true},
-		{"deadline exceeded (cancellation alias from net/http)",
-			errors.New("read sse stream: context deadline exceeded (Client.Timeout or context cancellation while reading body)"), true},
+		{
+			"deadline exceeded (cancellation alias from net/http)",
+			errors.New("read sse stream: context deadline exceeded (Client.Timeout or context cancellation while reading body)"), true,
+		},
 		{"closed conn", errors.New("read tcp 1.2.3.4: use of closed network connection"), true},
 		{"capitalized canceled", errors.New("operation Canceled"), true},
 	}

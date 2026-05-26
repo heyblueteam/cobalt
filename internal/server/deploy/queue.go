@@ -36,7 +36,8 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (id int64, numb
 		cobaltfileOverride = req.CobaltfileOverride
 	}
 
-	resp, err := q.db.ExecuteSingle(ctx, `
+	resp, err := q.db.ExecuteSingle(
+		ctx, `
         INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, cobaltfile_override, created_at)
         VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
     `, req.ProjectID, number, string(cobaltapi.StateQueued),
@@ -103,13 +104,6 @@ func (q *Queue) Cancel(ctx context.Context, deploymentID int64) (cancelInFlight 
 	default:
 		return false, fmt.Errorf("deploy: unknown status %q", d.Status)
 	}
-}
-
-func nullableString(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
 
 func boolToInt(b bool) int {

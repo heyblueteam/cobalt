@@ -84,7 +84,7 @@ Examples:
   cobalt projects add web --github acme/web --branch develop --domain web.example.com
   cobalt projects add api --github acme/monorepo --path api --domain api.example.com
   cobalt projects add web --github acme/monorepo --path services/web`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			srv, err := resolveServer(cmd)
 			if err != nil {
@@ -136,7 +136,7 @@ confirmation prompt.
 
 Examples:
   cobalt projects remove staging-app --yes`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if err := confirm(cmd, "Remove project \""+name+"\"?"); err != nil {
@@ -238,7 +238,7 @@ display name changes. Use --yes to skip the confirmation prompt.
 
 Examples:
   cobalt projects rename api api-v2 --yes`,
-		Args:  cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			oldName, newName := args[0], args[1]
 			if err := validator.ValidateProjectName(newName); err != nil {

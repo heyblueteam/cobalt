@@ -8,7 +8,8 @@ import (
 func TestListInternalImages_Parses(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("image ls",
+	r.answerStdout(
+		"image ls",
 		"cobalt/project-api-default:3\tsha256-aaa\n"+
 			"cobalt/project-api-default:4\tsha256-bbb\n"+
 			"cobalt/project-api-worker:3\tsha256-ccc\n",
@@ -32,7 +33,8 @@ func TestListInternalImages_Parses(t *testing.T) {
 func TestListInternalImages_SkipsMalformed(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("image ls",
+	r.answerStdout(
+		"image ls",
 		"cobalt/project-api-default:latest\tid1\n"+ // non-numeric tag → skip
 			"cobalt/project-api-default\tid2\n"+ // no tag → skip
 			"cobalt/project-api-default:5\tid3\n",

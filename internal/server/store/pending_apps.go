@@ -20,7 +20,8 @@ func (db *DB) CreatePendingApp(ctx context.Context, organization string, expires
 	if err != nil {
 		return 0, "", fmt.Errorf("store: pending app state: %w", err)
 	}
-	resp, err := db.ExecuteSingle(ctx,
+	resp, err := db.ExecuteSingle(
+		ctx,
 		`INSERT INTO pending_github_apps (state, organization, created_at, expires_at)
 		 VALUES (?, ?, strftime('%s', 'now'), ?)`,
 		state, organization, expiresAtUnix,
@@ -36,7 +37,8 @@ func (db *DB) CreatePendingApp(ctx context.Context, organization string, expires
 }
 
 func (db *DB) GetPendingApp(ctx context.Context, id int64) (*PendingApp, error) {
-	resp, err := db.QuerySingle(ctx,
+	resp, err := db.QuerySingle(
+		ctx,
 		`SELECT id, state, organization, created_at, expires_at
 		 FROM pending_github_apps WHERE id = ?`,
 		id,
@@ -59,7 +61,8 @@ func (db *DB) GetPendingApp(ctx context.Context, id int64) (*PendingApp, error) 
 }
 
 func (db *DB) DeletePendingApp(ctx context.Context, id int64) error {
-	resp, err := db.ExecuteSingle(ctx,
+	resp, err := db.ExecuteSingle(
+		ctx,
 		`DELETE FROM pending_github_apps WHERE id = ?`,
 		id,
 	)
@@ -73,7 +76,8 @@ func (db *DB) DeletePendingApp(ctx context.Context, id int64) error {
 }
 
 func (db *DB) DeleteExpiredPendingApps(ctx context.Context, nowUnix int64) (int64, error) {
-	resp, err := db.ExecuteSingle(ctx,
+	resp, err := db.ExecuteSingle(
+		ctx,
 		`DELETE FROM pending_github_apps WHERE expires_at <= ? AND expires_at > 0`,
 		nowUnix,
 	)

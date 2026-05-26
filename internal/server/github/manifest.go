@@ -11,17 +11,17 @@ import (
 // ConvertedApp is the response shape of GitHub's manifest-conversion
 // endpoint. It contains everything we need to persist a new App.
 type ConvertedApp struct {
-	ID            int64               `json:"id"`
-	Slug          string              `json:"slug"`
-	Name          string              `json:"name"`
-	HTMLURL       string              `json:"html_url"`
-	Owner         ConvertedAppOwner   `json:"owner"`
-	WebhookSecret string              `json:"webhook_secret"`
-	PEM           string              `json:"pem"`            // RSA private key
-	ClientID      string              `json:"client_id"`
-	ClientSecret  string              `json:"client_secret"`
-	Permissions   map[string]string   `json:"permissions"`
-	Events        []string            `json:"events"`
+	ID            int64             `json:"id"`
+	Slug          string            `json:"slug"`
+	Name          string            `json:"name"`
+	HTMLURL       string            `json:"html_url"`
+	Owner         ConvertedAppOwner `json:"owner"`
+	WebhookSecret string            `json:"webhook_secret"`
+	PEM           string            `json:"pem"` // RSA private key
+	ClientID      string            `json:"client_id"`
+	ClientSecret  string            `json:"client_secret"`
+	Permissions   map[string]string `json:"permissions"`
+	Events        []string          `json:"events"`
 }
 
 // ConvertedAppOwner is the owner block in a manifest-conversion response.
@@ -61,14 +61,14 @@ func InstallationsURL(htmlURL string, ownerID int64, ownerType string) string {
 // registration flow. The user submits this via a form on a GitHub page;
 // GitHub then redirects back to our callback URL with a code.
 type Manifest struct {
-	Name        string              `json:"name"`
-	URL         string              `json:"url"`               // App's homepage; we point at the daemon's host
-	HookAttrs   ManifestHookAttrs   `json:"hook_attributes"`
-	RedirectURL string              `json:"redirect_url"`      // where GitHub redirects after creation
-	Public      bool                `json:"public"`            // we always set false
-	Events      []string            `json:"default_events"`    // ["push"]
-	Permissions map[string]string   `json:"default_permissions"` // {"contents":"read"}
-	SetupURL    string              `json:"setup_url,omitempty"`
+	Name        string            `json:"name"`
+	URL         string            `json:"url"` // App's homepage; we point at the daemon's host
+	HookAttrs   ManifestHookAttrs `json:"hook_attributes"`
+	RedirectURL string            `json:"redirect_url"`        // where GitHub redirects after creation
+	Public      bool              `json:"public"`              // we always set false
+	Events      []string          `json:"default_events"`      // ["push"]
+	Permissions map[string]string `json:"default_permissions"` // {"contents":"read"}
+	SetupURL    string            `json:"setup_url,omitempty"`
 }
 
 // ManifestHookAttrs is the webhook configuration GitHub will install.

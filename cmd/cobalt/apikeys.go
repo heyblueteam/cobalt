@@ -75,7 +75,7 @@ immediately because cobalt only stores the hash and cannot recover it.
 Examples:
   cobalt apikeys create prod-key
   cobalt apikeys create prod-key | pbcopy`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(cmd)
 			if err != nil {
@@ -107,7 +107,7 @@ Use --yes to skip the confirmation prompt.
 
 Examples:
   cobalt apikeys remove 1 --yes`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			if err := confirm(cmd, "Remove API key "+args[0]+"?"); err != nil {
 				return err

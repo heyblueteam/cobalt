@@ -49,7 +49,8 @@ func statusOf(t *testing.T, db *store.DB, id int64) cobaltapi.State {
 
 func TestRecoverOnBoot_NoActiveIsNoop(t *testing.T) {
 	t.Parallel()
-	db, _, ids := recoveryHarness(t,
+	db, _, ids := recoveryHarness(
+		t,
 		cobaltapi.StateSuccess,
 		cobaltapi.StateFailed,
 		cobaltapi.StateCanceled,
@@ -85,7 +86,8 @@ func TestRecoverOnBoot_QueuedIsLeftAlone(t *testing.T) {
 // dispatcher could have left mid-flight must end up failed.
 func TestRecoverOnBoot_MarksAllActiveStatesFailed(t *testing.T) {
 	t.Parallel()
-	db, _, ids := recoveryHarness(t,
+	db, _, ids := recoveryHarness(
+		t,
 		cobaltapi.StateFetching,
 		cobaltapi.StateBuilding,
 		cobaltapi.StateSwapping,
@@ -126,7 +128,8 @@ func TestRecoverOnBoot_StampsFinishedAt(t *testing.T) {
 // building, or swapping).
 func TestRecoverOnBoot_LogsContainPreviousStatus(t *testing.T) {
 	t.Parallel()
-	db, _, _ := recoveryHarness(t,
+	db, _, _ := recoveryHarness(
+		t,
 		cobaltapi.StateBuilding,
 		cobaltapi.StateSwapping,
 	)
@@ -168,7 +171,8 @@ func TestRecoverOnBoot_NilLoggerOK(t *testing.T) {
 // some queued (waiting), some mid-flight. Only mid-flight transitions.
 func TestRecoverOnBoot_MixedBatch(t *testing.T) {
 	t.Parallel()
-	db, _, ids := recoveryHarness(t,
+	db, _, ids := recoveryHarness(
+		t,
 		cobaltapi.StateSuccess,  // 0 — keep
 		cobaltapi.StateQueued,   // 1 — keep (dispatcher will pick up)
 		cobaltapi.StateFetching, // 2 — fail

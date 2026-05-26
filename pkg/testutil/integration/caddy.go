@@ -28,7 +28,8 @@ func StartCaddy(ctx context.Context, t testing.TB, networkName string) (adminBas
 
 	const name = "cobalt-test-caddy"
 	run("rm", "-f", name)
-	run("run", "-d",
+	run(
+		"run", "-d",
 		"--name", name,
 		"--network", networkName,
 		"caddy:3-alpine",

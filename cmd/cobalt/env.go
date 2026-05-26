@@ -222,7 +222,7 @@ containers immediately.
 Examples:
   cobalt env remove FOO --project api --yes
   cobalt env remove FOO --project api --yes --redeploy`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			key := args[0]
 			if err := validator.ValidateEnvKey(key); err != nil {

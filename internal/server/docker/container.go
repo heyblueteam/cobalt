@@ -53,7 +53,8 @@ func (c *Client) Run(ctx context.Context, opts RunOpts) error {
 		args = append(args, "--network", n)
 	}
 	for _, v := range opts.Volumes {
-		args = append(args, "--mount",
+		args = append(
+			args, "--mount",
 			fmt.Sprintf("type=volume,source=%s,destination=%s", v.VolumeName, v.DestinationPath),
 		)
 	}
@@ -130,7 +131,8 @@ func (c *Client) RunDetached(ctx context.Context, opts DetachedRunOpts) (string,
 // unique (typically com.docker.swarm.service.name).
 func (c *Client) FindContainerByLabel(ctx context.Context, label string) (string, error) {
 	var stdout strings.Builder
-	if err := c.runner.Run(ctx,
+	if err := c.runner.Run(
+		ctx,
 		[]string{"ps", "--filter", "label=" + label, "--format", "{{.Names}}"},
 		nil, &stdout, io.Discard,
 	); err != nil {
@@ -153,10 +155,13 @@ func (c *Client) FindContainerByLabel(ctx context.Context, label string) (string
 // for the upgrade audit trail).
 func (c *Client) InspectServiceImage(ctx context.Context, name string) (string, error) {
 	var stdout strings.Builder
-	if err := c.runner.Run(ctx,
-		[]string{"service", "inspect",
+	if err := c.runner.Run(
+		ctx,
+		[]string{
+			"service", "inspect",
 			"--format", "{{.Spec.TaskTemplate.ContainerSpec.Image}}",
-			name},
+			name,
+		},
 		nil, &stdout, io.Discard,
 	); err != nil {
 		return "", err
@@ -200,4 +205,3 @@ func (c *Client) ContainerExists(ctx context.Context, name string) (bool, error)
 	}
 	return len(out) > 0, nil
 }
-

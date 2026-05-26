@@ -19,9 +19,9 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 		Dockerfile:       "Dockerfile",
 		Context:          "src",
 		EnvSecrets: map[string]string{
-			"API_KEY":  "k",
-			"DB_URL":   "u",
-			"AAA":      "a",
+			"API_KEY": "k",
+			"DB_URL":  "u",
+			"AAA":     "a",
 		},
 		NoCache: true,
 	})

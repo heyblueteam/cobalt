@@ -322,10 +322,10 @@ func TestRecoverOnBoot(t *testing.T) {
 		id   int64
 		want cobaltapi.State
 	}{
-		{queuedID, cobaltapi.StateQueued},     // untouched
-		{buildingID, cobaltapi.StateFailed},   // recovered
-		{swappingID, cobaltapi.StateFailed},   // recovered (crashed mid-cutover)
-		{successID, cobaltapi.StateSuccess},  // untouched
+		{queuedID, cobaltapi.StateQueued},   // untouched
+		{buildingID, cobaltapi.StateFailed}, // recovered
+		{swappingID, cobaltapi.StateFailed}, // recovered (crashed mid-cutover)
+		{successID, cobaltapi.StateSuccess}, // untouched
 	}
 	for _, c := range cases {
 		dep, err := db.GetDeployment(ctx, c.id)

@@ -43,7 +43,8 @@ func Logger(log *slog.Logger) func(http.Handler) http.Handler {
 			start := time.Now()
 			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(sw, r)
-			log.LogAttrs(r.Context(), slog.LevelInfo, "request",
+			log.LogAttrs(
+				r.Context(), slog.LevelInfo, "request",
 				slog.String("method", r.Method),
 				slog.String("path", r.URL.Path),
 				slog.Int("status", sw.status),
@@ -59,7 +60,8 @@ func Recover(log *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rv := recover(); rv != nil {
-					log.LogAttrs(r.Context(), slog.LevelError, "panic",
+					log.LogAttrs(
+						r.Context(), slog.LevelError, "panic",
 						slog.Any("recovered", rv),
 						slog.String("stack", string(debug.Stack())),
 						slog.String("request_id", RequestIDFrom(r.Context())),

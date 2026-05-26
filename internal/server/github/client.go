@@ -45,9 +45,9 @@ func NewClientWithBaseURL(baseURL string, httpClient *http.Client) *Client {
 type auth int
 
 const (
-	authNone auth = iota
-	authJWT       // Authorization: Bearer <jwt>; for app-level requests
-	authToken     // Authorization: token <installation-token>; for installation-level requests
+	authNone  auth = iota
+	authJWT        // Authorization: Bearer <jwt>; for app-level requests
+	authToken      // Authorization: token <installation-token>; for installation-level requests
 )
 
 // do issues an authenticated request and decodes the response. credential

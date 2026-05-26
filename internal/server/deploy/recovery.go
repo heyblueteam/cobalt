@@ -29,7 +29,8 @@ func RecoverOnBoot(ctx context.Context, db *store.DB, log *slog.Logger) error {
 				"deployment_id", d.ID, "previous_status", d.Status, "error", err)
 			continue
 		}
-		log.Warn("recovery: marked failed",
+		log.Warn(
+			"recovery: marked failed",
 			"deployment_id", d.ID,
 			"project_id", d.ProjectID,
 			"previous_status", d.Status,

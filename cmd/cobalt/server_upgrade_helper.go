@@ -129,7 +129,8 @@ func (h *upgradeHelper) run(ctx context.Context) error {
 	// (Swarm tracks the previous spec on its own), but logging it
 	// makes the upgrade audit trail useful.
 	if h.rollbackImage == "" {
-		out, err := h.runDockerCapture(ctx,
+		out, err := h.runDockerCapture(
+			ctx,
 			"service", "inspect", h.serviceName,
 			"--format", "{{.Spec.TaskTemplate.ContainerSpec.Image}}",
 		)
@@ -149,7 +150,8 @@ func (h *upgradeHelper) run(ctx context.Context) error {
 	// new task starts. The daemon API is briefly unavailable; the
 	// post-update probe handles that.
 	h.logf("🔄 swapping %s to %s", h.serviceName, h.targetImage)
-	if err := h.runDockerStreaming(ctx,
+	if err := h.runDockerStreaming(
+		ctx,
 		"service", "update",
 		"--image", h.targetImage,
 		// Wait for swarm to settle. Without this, `service update`

@@ -25,6 +25,7 @@ type fakeReconcileStore struct {
 func (f *fakeReconcileStore) ListProjects(_ context.Context) ([]store.Project, error) {
 	return f.projects, f.listErr
 }
+
 func (f *fakeReconcileStore) GetLastSuccessfulDeployment(_ context.Context, projectID int64) (*store.Deployment, error) {
 	d := f.lastByID[projectID]
 	if d == nil {
@@ -32,6 +33,7 @@ func (f *fakeReconcileStore) GetLastSuccessfulDeployment(_ context.Context, proj
 	}
 	return d, nil
 }
+
 func (f *fakeReconcileStore) ListPrimaryDomainsForProject(_ context.Context, projectID int64) ([]string, error) {
 	return f.domains[projectID], f.domainsErr
 }
@@ -41,10 +43,10 @@ func (f *fakeReconcileStore) ListPrimaryDomainsForProject(_ context.Context, pro
 type fakeReconcileCaddy struct {
 	mu sync.Mutex
 
-	routeExists   map[int64]bool
+	routeExists    map[int64]bool
 	routeExistsErr error
-	upstream      map[int64]string
-	domainsErr    error
+	upstream       map[int64]string
+	domainsErr     error
 
 	addCalls    []int64
 	serveCalls  []serveServiceCall
@@ -79,6 +81,7 @@ func (f *fakeReconcileCaddy) ProjectRouteExists(_ context.Context, id int64) (bo
 	defer f.mu.Unlock()
 	return f.routeExists[id], f.routeExistsErr
 }
+
 func (f *fakeReconcileCaddy) AddProjectRoute(_ context.Context, id int64, _ []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -86,11 +89,13 @@ func (f *fakeReconcileCaddy) AddProjectRoute(_ context.Context, id int64, _ []st
 	f.routeExists[id] = true
 	return nil
 }
+
 func (f *fakeReconcileCaddy) CurrentUpstream(_ context.Context, id int64) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.upstream[id], nil
 }
+
 func (f *fakeReconcileCaddy) ServeService(_ context.Context, id int64, container string, port int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -98,12 +103,14 @@ func (f *fakeReconcileCaddy) ServeService(_ context.Context, id int64, container
 	f.upstream[id] = container
 	return nil
 }
+
 func (f *fakeReconcileCaddy) ServeStaticSite(_ context.Context, id int64, name string, n int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.staticCalls = append(f.staticCalls, serveStaticCall{id, name, n})
 	return nil
 }
+
 func (f *fakeReconcileCaddy) SetDomainsForProject(_ context.Context, id int64, domains []string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -122,7 +129,6 @@ func mustCobaltfileJSON(t *testing.T, cf *cobaltfile.Cobaltfile) string {
 	return string(b)
 }
 
-
 // --- tests ---
 
 func TestReconcile_NoCorrectionWhenInSync(t *testing.T) {
@@ -137,8 +143,10 @@ func TestReconcile_NoCorrectionWhenInSync(t *testing.T) {
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"api.example.com"}},
 	}
@@ -170,8 +178,10 @@ func TestReconcile_PatchesUpstreamOnDrift(t *testing.T) {
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"api.example.com"}},
 	}
@@ -209,8 +219,10 @@ func TestReconcile_RecreatesMissingRoute(t *testing.T) {
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"api.example.com"}},
 	}
@@ -245,8 +257,10 @@ func TestReconcile_StaticSiteRecreatesViaServeStaticSite(t *testing.T) {
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "blog"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 4, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 4, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"blog.example.com"}},
 	}
@@ -277,8 +291,10 @@ func TestReconcile_StaticSiteSkipsDriftCheck(t *testing.T) {
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "blog"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 4, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 4, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"blog.example.com"}},
 	}
@@ -335,8 +351,10 @@ func TestReconcile_NoDomainsSkips(t *testing.T) {
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		// no domains
 	}
@@ -352,16 +370,20 @@ func TestReconcile_NoWebServiceSkipsCaddy(t *testing.T) {
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
-			"nightly": {Type: cobaltfile.TypeCron, Image: "default", Port: cobaltfile.DefaultPort,
-				Schedule: "0 0 * * *", Command: "node nightly.js"},
+			"nightly": {
+				Type: cobaltfile.TypeCron, Image: "default", Port: cobaltfile.DefaultPort,
+				Schedule: "0 0 * * *", Command: "node nightly.js",
+			},
 		},
 		Images: map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
 	})
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "jobs"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"jobs.example.com"}},
 	}
@@ -389,10 +411,14 @@ func TestReconcile_PerProjectFailureContinuesSweep(t *testing.T) {
 			{ID: 2, Name: "broken"},
 		},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
-			2: {ID: 20, ProjectID: 2, Number: 1, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr("not valid json")},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
+			2: {
+				ID: 20, ProjectID: 2, Number: 1, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr("not valid json"),
+			},
 		},
 		domains: map[int64][]string{1: {"api.example.com"}},
 	}
@@ -430,8 +456,10 @@ func TestReconcile_CaddyRouteMissingButPriorDeploy_CallsAddProjectRouteFirst(t *
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 3, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 3, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"api.example.com"}},
 	}
@@ -468,8 +496,10 @@ func TestReconcile_DomainsDrifted_CallsSetDomainsEvenWhenUpstreamInSync(t *testi
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{1: {"api.example.com", "api-staging.example.com"}},
 	}
@@ -509,10 +539,14 @@ func TestReconcile_SetDomainsFails_DoesNotHaltSweep(t *testing.T) {
 			{ID: 2, Name: "www"},
 		},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
-			2: {ID: 20, ProjectID: 2, Number: 3, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
+			2: {
+				ID: 20, ProjectID: 2, Number: 3, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{
 			1: {"api.example.com"},
@@ -550,10 +584,14 @@ func TestReconcile_ProjectRouteExistsError_DoesNotHaltSweep(t *testing.T) {
 			{ID: 2, Name: "www"},
 		},
 		lastByID: map[int64]*store.Deployment{
-			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
-			2: {ID: 20, ProjectID: 2, Number: 3, Status: cobaltapi.StateSuccess,
-				ResolvedCobaltfile: nullStr(cf)},
+			1: {
+				ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
+			2: {
+				ID: 20, ProjectID: 2, Number: 3, Status: cobaltapi.StateSuccess,
+				ResolvedCobaltfile: nullStr(cf),
+			},
 		},
 		domains: map[int64][]string{
 			1: {"api.example.com"},

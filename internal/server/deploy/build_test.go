@@ -95,7 +95,8 @@ func TestBuilder_PassesCacheDir(t *testing.T) {
 	d := &fakeImageBuilder{}
 	b := NewBuilder(d, &fakeEnv{}, "/data")
 
-	_, err := b.Build(context.Background(),
+	_, err := b.Build(
+		context.Background(),
 		store.Project{ID: 42, Name: "api"},
 		store.Deployment{Number: 5},
 		&Workspace{Path: "/tmp/repo", Cobaltfile: cf},
@@ -151,7 +152,8 @@ func TestBuilder_PropagatesEnvSecrets(t *testing.T) {
 	d := &fakeImageBuilder{}
 	b := NewBuilder(d, &fakeEnv{vars: map[string]string{"API_KEY": "k", "DB_URL": "u"}}, "")
 
-	_, err := b.Build(context.Background(),
+	_, err := b.Build(
+		context.Background(),
 		store.Project{ID: 1, Name: "x"},
 		store.Deployment{Number: 1, NoCache: true},
 		&Workspace{Cobaltfile: cf},
@@ -201,7 +203,8 @@ func TestBuilder_PrebuiltImageSkipsBuild(t *testing.T) {
 	}
 	d := &fakeImageBuilder{}
 	b := NewBuilder(d, &fakeEnv{}, "")
-	out, err := b.Build(context.Background(),
+	out, err := b.Build(
+		context.Background(),
 		store.Project{ID: 1, Name: "redis"},
 		store.Deployment{Number: 1},
 		&Workspace{Cobaltfile: cf},
@@ -243,7 +246,8 @@ func TestBuilder_MixedPrebuiltAndBuilt(t *testing.T) {
 	}
 	d := &fakeImageBuilder{}
 	b := NewBuilder(d, &fakeEnv{}, "")
-	out, err := b.Build(context.Background(),
+	out, err := b.Build(
+		context.Background(),
 		store.Project{ID: 1, Name: "openpanel"},
 		store.Deployment{Number: 2},
 		&Workspace{Cobaltfile: cf},
@@ -288,7 +292,8 @@ func TestBuilder_PropagatesDockerError(t *testing.T) {
 	}
 	d := &fakeImageBuilder{err: errors.New("docker boom")}
 	b := NewBuilder(d, &fakeEnv{}, "")
-	_, err := b.Build(context.Background(),
+	_, err := b.Build(
+		context.Background(),
 		store.Project{ID: 1, Name: "x"},
 		store.Deployment{Number: 1},
 		&Workspace{Cobaltfile: cf},

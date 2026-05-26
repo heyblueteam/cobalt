@@ -19,7 +19,8 @@ type ImageInfo struct {
 // skipped — they aren't cobalt-managed.
 func (c *Client) ListInternalImages(ctx context.Context, projectName string) ([]ImageInfo, error) {
 	prefix := InternalImagePrefix(projectName)
-	out, err := c.output(ctx,
+	out, err := c.output(
+		ctx,
 		"image", "ls",
 		"--filter", "reference="+prefix+"*",
 		"--format", "{{.Repository}}:{{.Tag}}\t{{.ID}}",

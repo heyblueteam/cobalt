@@ -19,7 +19,7 @@ specific server.
 Examples:
   cobalt use api
   cobalt use api --server staging`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			project := args[0]
 

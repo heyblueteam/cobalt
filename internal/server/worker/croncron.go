@@ -26,11 +26,10 @@ import (
 // daemon process. Multi-host swarm would need leader election to
 // avoid duplicate fires.
 type CronManager struct {
-	sched   *Scheduler
-	docker  CronDockerRunner
-	envs    EnvProvider
-	log     *slog.Logger
-	output  io.Writer // optional, defaults to discard
+	sched  *Scheduler
+	docker CronDockerRunner
+	envs   EnvProvider
+	log    *slog.Logger
 
 	mu     sync.Mutex
 	byName map[string]cronEntry // scheduler-name → registered entry

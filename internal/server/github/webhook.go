@@ -18,8 +18,8 @@ const (
 
 // Event names we care about. Anything not in this list is silently ignored.
 const (
-	EventPush                    = "push"
-	EventInstallation            = "installation"
+	EventPush                     = "push"
+	EventInstallation             = "installation"
 	EventInstallationRepositories = "installation_repositories"
 )
 
@@ -49,11 +49,11 @@ func VerifySignature(webhookSecret string, body []byte, signatureHeader string) 
 // PushEvent is the subset of GitHub's push event we use. Full schema:
 // https://docs.github.com/en/webhooks/webhook-events-and-payloads#push
 type PushEvent struct {
-	Ref        string             `json:"ref"`     // refs/heads/main
-	Before     string             `json:"before"`  // 40-hex previous tip
-	After      string             `json:"after"`   // 40-hex new tip
-	Deleted    bool               `json:"deleted"` // branch-delete
-	Repository PushRepository     `json:"repository"`
+	Ref          string            `json:"ref"`     // refs/heads/main
+	Before       string            `json:"before"`  // 40-hex previous tip
+	After        string            `json:"after"`   // 40-hex new tip
+	Deleted      bool              `json:"deleted"` // branch-delete
+	Repository   PushRepository    `json:"repository"`
 	Installation *PushInstallation `json:"installation,omitempty"`
 	// Commits is up to 20 commits from the push. GitHub truncates
 	// larger pushes — when that happens we cannot reliably tell which
@@ -132,16 +132,16 @@ type PushInstallation struct {
 
 // InstallationEvent fires when a user installs / uninstalls a GitHub App.
 type InstallationEvent struct {
-	Action       string                       `json:"action"` // "created", "deleted", "suspend", "unsuspend"
+	Action       string                        `json:"action"` // "created", "deleted", "suspend", "unsuspend"
 	Installation InstallationEventInstallation `json:"installation"`
-	Repositories []InstallationEventRepo      `json:"repositories"`
+	Repositories []InstallationEventRepo       `json:"repositories"`
 }
 
 // InstallationEventInstallation contains the installation row we'd insert.
 type InstallationEventInstallation struct {
-	ID      int64                       `json:"id"`
-	Account InstallationEventAccount    `json:"account"`
-	AppID   int64                       `json:"app_id"`
+	ID      int64                    `json:"id"`
+	Account InstallationEventAccount `json:"account"`
+	AppID   int64                    `json:"app_id"`
 }
 
 // InstallationEventAccount is the org or user the App is installed on.
@@ -160,10 +160,10 @@ type InstallationEventRepo struct {
 // InstallationRepositoriesEvent fires when the user adds or removes repos
 // from an existing installation.
 type InstallationRepositoriesEvent struct {
-	Action               string                       `json:"action"` // "added", "removed"
-	Installation         InstallationEventInstallation `json:"installation"`
-	RepositoriesAdded    []InstallationEventRepo      `json:"repositories_added"`
-	RepositoriesRemoved  []InstallationEventRepo      `json:"repositories_removed"`
+	Action              string                        `json:"action"` // "added", "removed"
+	Installation        InstallationEventInstallation `json:"installation"`
+	RepositoriesAdded   []InstallationEventRepo       `json:"repositories_added"`
+	RepositoriesRemoved []InstallationEventRepo       `json:"repositories_removed"`
 }
 
 // ParsePush, ParseInstallation, and ParseInstallationRepositories decode

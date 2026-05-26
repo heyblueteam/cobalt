@@ -130,7 +130,7 @@ func newGithubAppsManageCmd() *cobra.Command {
 
 Examples:
   cobalt github apps manage heyblueteam`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			c, err := newClient(cmd)
 			if err != nil {

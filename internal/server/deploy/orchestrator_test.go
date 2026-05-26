@@ -85,8 +85,8 @@ type atomic2 struct {
 	v  bool
 }
 
-func (a *atomic2) set(v bool)   { a.mu.Lock(); a.v = v; a.mu.Unlock() }
-func (a *atomic2) get() bool    { a.mu.Lock(); defer a.mu.Unlock(); return a.v }
+func (a *atomic2) set(v bool) { a.mu.Lock(); a.v = v; a.mu.Unlock() }
+func (a *atomic2) get() bool  { a.mu.Lock(); defer a.mu.Unlock(); return a.v }
 
 func newOrchCaddy(t *testing.T) *orchestratorCaddy {
 	t.Helper()
@@ -223,8 +223,7 @@ func setupOrchestrator(t *testing.T) (*Orchestrator, *orchestratorDocker, *orche
 	project, _ := db.GetProjectByName(context.Background(), "api")
 
 	fdocker := newOrchDocker()
-	fdocker.stdout["service ps"] =
-		`{"current_state":"Running","health":""}` + "\n"
+	fdocker.stdout["service ps"] = `{"current_state":"Running","health":""}` + "\n"
 	fdocker.stdout["service ls"] = "" // no existing services
 	fdocker.stdout["network ls"] = "" // network missing → create
 
@@ -477,10 +476,9 @@ func TestOrchestrator_HealthcheckFailureStopsServices(t *testing.T) {
 	t.Parallel()
 	o, fdocker, fcaddy, db, project := setupOrchestrator(t)
 	// Force fail-fast: 3 shutdown states for 1 replica.
-	fdocker.stdout["service ps"] =
-		`{"current_state":"Shutdown 1m ago","health":""}` + "\n" +
-			`{"current_state":"Failed 30s ago","health":""}` + "\n" +
-			`{"current_state":"Rejected 10s ago","health":""}` + "\n"
+	fdocker.stdout["service ps"] = `{"current_state":"Shutdown 1m ago","health":""}` + "\n" +
+		`{"current_state":"Failed 30s ago","health":""}` + "\n" +
+		`{"current_state":"Rejected 10s ago","health":""}` + "\n"
 	dep := enqueueAndFetch(t, db, project.ID)
 
 	if err := o.Run(context.Background(), dep); err == nil {
@@ -720,8 +718,7 @@ func TestOrchestrator_CaddyFailsAfterServicesRunning_VerifiesServiceRmCall(t *te
 	project, _ := db.GetProjectByName(context.Background(), "api")
 
 	fdocker := newOrchDocker()
-	fdocker.stdout["service ps"] =
-		`{"current_state":"Running","health":""}` + "\n"
+	fdocker.stdout["service ps"] = `{"current_state":"Running","health":""}` + "\n"
 	fdocker.stdout["service ls"] = ""
 	fdocker.stdout["network ls"] = ""
 	dockerCli := docker.NewWithRunner(fdocker)
