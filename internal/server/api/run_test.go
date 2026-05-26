@@ -41,6 +41,9 @@ type runFakeDocker struct {
 	// (echo) until stdin closes, then return runErr. Tests override
 	// onRun to do something different.
 	onRun func(stdin io.Reader, stdout, stderr io.Writer) error
+	// lastRunArgs captures the most recent `docker run` argv, so tests
+	// can assert on flags wired up by the handler (e.g. `--env K=V`).
+	lastRunArgs []string
 }
 
 func (f *runFakeDocker) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -50,6 +53,9 @@ func (f *runFakeDocker) Run(ctx context.Context, args []string, stdin io.Reader,
 func (f *runFakeDocker) RunWithEnv(_ context.Context, _ map[string]string, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	f.mu.Lock()
 	cb := f.onRun
+	if len(args) > 0 && args[0] == "run" {
+		f.lastRunArgs = append([]string(nil), args...)
+	}
 	f.mu.Unlock()
 	if cb == nil {
 		// Default: echo stdin → stdout, exit 0.
@@ -64,6 +70,27 @@ func (f *runFakeDocker) RunWithEnv(_ context.Context, _ map[string]string, args 
 		return nil
 	}
 	return cb(stdin, stdout, stderr)
+}
+
+// runEnvVars returns the `KEY=VALUE` pairs that followed `--env` in
+// the most recent `docker run` invocation, parsed into a map.
+func (f *runFakeDocker) runEnvVars() map[string]string {
+	f.mu.Lock()
+	args := append([]string(nil), f.lastRunArgs...)
+	f.mu.Unlock()
+	out := map[string]string{}
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] != "--env" {
+			continue
+		}
+		kv := args[i+1]
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		out[kv[:eq]] = kv[eq+1:]
+	}
+	return out
 }
 
 func newRunEnv(t *testing.T) *runEnv {
@@ -302,6 +329,141 @@ func TestRun_RealExitCodePropagated(t *testing.T) {
 	last := frames[len(frames)-1]
 	if last.Code != 42 {
 		t.Errorf("exit code: %d, want 42", last.Code)
+	}
+}
+
+func TestCobaltSyntheticEnv(t *testing.T) {
+	t.Parallel()
+	ptr := func(s string) *string { return &s }
+	project := &store.Project{Name: "api"}
+
+	cases := []struct {
+		name       string
+		live       *store.Deployment
+		publicHost string
+		wantKeys   []string
+		notWant    []string
+		wantValues map[string]string
+	}{
+		{
+			name:       "minimal: no host, no commit",
+			live:       &store.Deployment{Number: 7},
+			publicHost: "",
+			wantKeys:   []string{"COBALT_PROJECT_NAME", "COBALT_SERVICE_NAME", "COBALT_DEPLOYMENT_NUMBER"},
+			notWant:    []string{"COBALT_HOST", "COBALT_COMMIT"},
+			wantValues: map[string]string{
+				"COBALT_PROJECT_NAME":      "api",
+				"COBALT_SERVICE_NAME":      "web",
+				"COBALT_DEPLOYMENT_NUMBER": "7",
+			},
+		},
+		{
+			name:       "with host configured",
+			live:       &store.Deployment{Number: 1},
+			publicHost: "cobalt.blue.cc",
+			wantKeys:   []string{"COBALT_HOST"},
+			wantValues: map[string]string{"COBALT_HOST": "cobalt.blue.cc"},
+		},
+		{
+			name:       "with commit set",
+			live:       &store.Deployment{Number: 1, CommitSHA: ptr("deadbeef")},
+			publicHost: "",
+			wantKeys:   []string{"COBALT_COMMIT"},
+			wantValues: map[string]string{"COBALT_COMMIT": "deadbeef"},
+		},
+		{
+			name:       "empty-string commit is treated as absent",
+			live:       &store.Deployment{Number: 1, CommitSHA: ptr("")},
+			publicHost: "",
+			notWant:    []string{"COBALT_COMMIT"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := cobaltSyntheticEnv(project, "web", c.live, c.publicHost)
+			for _, k := range c.wantKeys {
+				if _, ok := got[k]; !ok {
+					t.Errorf("missing key %q in %v", k, got)
+				}
+			}
+			for _, k := range c.notWant {
+				if _, ok := got[k]; ok {
+					t.Errorf("unexpected key %q in %v", k, got)
+				}
+			}
+			for k, want := range c.wantValues {
+				if got[k] != want {
+					t.Errorf("%s: got %q, want %q", k, got[k], want)
+				}
+			}
+		})
+	}
+}
+
+// drainAndClose dials the WS, lets the fake docker run-and-exit, and
+// returns once frames have flowed. Tests inspect captured argv after.
+func (e *runEnv) drainRun(t *testing.T, project, command string) {
+	t.Helper()
+	conn := e.dial(t, project, "command="+url.QueryEscape(command))
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = readFrames(t, conn, ctx)
+}
+
+func TestRun_InjectsProjectAndSyntheticEnv(t *testing.T) {
+	t.Parallel()
+	e := newRunEnv(t)
+	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
+
+	proj, err := e.db.GetProjectByName(context.Background(), "api")
+	if err != nil {
+		t.Fatalf("GetProjectByName: %v", err)
+	}
+	if err := e.db.SetEnvVar(context.Background(), proj.ID, "FIREBASE_PRIVATE_KEY", "secret-value"); err != nil {
+		t.Fatalf("SetEnvVar: %v", err)
+	}
+
+	// Stage a benign docker invocation.
+	e.docker.onRun = func(_ io.Reader, _, _ io.Writer) error { return nil }
+
+	e.drainRun(t, "api", "true")
+
+	got := e.docker.runEnvVars()
+	if got["FIREBASE_PRIVATE_KEY"] != "secret-value" {
+		t.Errorf("project env missing: got %q", got["FIREBASE_PRIVATE_KEY"])
+	}
+	if got["COBALT_PROJECT_NAME"] != "api" {
+		t.Errorf("COBALT_PROJECT_NAME: got %q, want %q", got["COBALT_PROJECT_NAME"], "api")
+	}
+	if got["COBALT_SERVICE_NAME"] != "web" {
+		t.Errorf("COBALT_SERVICE_NAME: got %q, want %q", got["COBALT_SERVICE_NAME"], "web")
+	}
+	if got["COBALT_DEPLOYMENT_NUMBER"] != "1" {
+		t.Errorf("COBALT_DEPLOYMENT_NUMBER: got %q, want %q", got["COBALT_DEPLOYMENT_NUMBER"], "1")
+	}
+}
+
+func TestRun_SyntheticOverridesProjectEnv(t *testing.T) {
+	t.Parallel()
+	e := newRunEnv(t)
+	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
+
+	proj, err := e.db.GetProjectByName(context.Background(), "api")
+	if err != nil {
+		t.Fatalf("GetProjectByName: %v", err)
+	}
+	// User-set value that collides with a daemon-authoritative var.
+	if err := e.db.SetEnvVar(context.Background(), proj.ID, "COBALT_PROJECT_NAME", "hacked"); err != nil {
+		t.Fatalf("SetEnvVar: %v", err)
+	}
+
+	e.docker.onRun = func(_ io.Reader, _, _ io.Writer) error { return nil }
+	e.drainRun(t, "api", "true")
+
+	got := e.docker.runEnvVars()
+	if got["COBALT_PROJECT_NAME"] != "api" {
+		t.Errorf("synthetic should override project env: got %q, want %q", got["COBALT_PROJECT_NAME"], "api")
 	}
 }
 

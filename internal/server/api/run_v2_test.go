@@ -74,6 +74,36 @@ func writeV2(t *testing.T, conn *websocket.Conn, ctx context.Context, ch byte, b
 	}
 }
 
+func TestRunV2_InjectsProjectAndSyntheticEnv(t *testing.T) {
+	t.Parallel()
+	e := newRunEnv(t)
+	e.seedLiveDeploy("api", `{"version":"1.0","services":{"web":{"port":3000}}}`)
+
+	proj, err := e.db.GetProjectByName(context.Background(), "api")
+	if err != nil {
+		t.Fatalf("GetProjectByName: %v", err)
+	}
+	if err := e.db.SetEnvVar(context.Background(), proj.ID, "FIREBASE_PRIVATE_KEY", "v2-secret"); err != nil {
+		t.Fatalf("SetEnvVar: %v", err)
+	}
+
+	e.docker.onRun = func(_ io.Reader, _, _ io.Writer) error { return nil }
+
+	conn := e.dialV2(t, "api", "command="+url.QueryEscape("true"))
+	defer conn.CloseNow()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = readV2Frames(t, conn, ctx)
+
+	got := e.docker.runEnvVars()
+	if got["FIREBASE_PRIVATE_KEY"] != "v2-secret" {
+		t.Errorf("v2: project env missing: got %q", got["FIREBASE_PRIVATE_KEY"])
+	}
+	if got["COBALT_PROJECT_NAME"] != "api" {
+		t.Errorf("v2: COBALT_PROJECT_NAME: got %q, want %q", got["COBALT_PROJECT_NAME"], "api")
+	}
+}
+
 func TestRunV2_NegotiatesV2WhenOffered(t *testing.T) {
 	t.Parallel()
 	e := newRunEnv(t)

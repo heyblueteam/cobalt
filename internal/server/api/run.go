@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -93,6 +95,34 @@ type runRequest struct {
 	deploymentNetwork string
 	extraParams       []string
 	volumes           []docker.ServiceVolume
+	// envVars is the merged env passed to the one-shot container: the
+	// project's full env (cobalt env list) overlaid by the synthetic
+	// COBALT_* context vars. Synthetic vars win on collision so the
+	// runtime identity is always daemon-authoritative.
+	envVars map[string]string
+}
+
+// cobaltSyntheticEnv builds the daemon-authoritative COBALT_* context
+// vars injected into every one-shot run container. These identify the
+// project / service / deployment the command is executing against;
+// apps that branch worker-vs-web behavior on a single image can read
+// COBALT_SERVICE_NAME instead of duplicating images.
+//
+// Optional vars are omitted (not set to "") when their source is empty
+// so shell checks like `if [ -n "$COBALT_HOST" ]` work as expected.
+func cobaltSyntheticEnv(project *store.Project, serviceName string, live *store.Deployment, publicHost string) map[string]string {
+	out := map[string]string{
+		"COBALT_PROJECT_NAME":      project.Name,
+		"COBALT_SERVICE_NAME":      serviceName,
+		"COBALT_DEPLOYMENT_NUMBER": strconv.Itoa(live.Number),
+	}
+	if publicHost != "" {
+		out["COBALT_HOST"] = publicHost
+	}
+	if live.CommitSHA != nil && *live.CommitSHA != "" {
+		out["COBALT_COMMIT"] = *live.CommitSHA
+	}
+	return out
 }
 
 // Run implements GET /api/projects/{name}/run as a WebSocket endpoint.
@@ -152,6 +182,20 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 	// if the service isn't found or the cobaltfile is missing.
 	imageName, extraParams, volumes := resolveRunImage(live, project.ID, serviceName)
 
+	// Load the project's env (everything in `cobalt env`) and overlay
+	// the synthetic COBALT_* context vars. We soft-fail on store error
+	// because `cobalt run` is interactive — an operator should still be
+	// able to e.g. inspect a container when rqlite is having a bad
+	// time. Deploys hard-fail here; runs don't.
+	projectEnv, envErr := h.DB.EnvVarMap(r.Context(), project.ID)
+	if envErr != nil {
+		h.Log.Warn("run: env load failed; proceeding with synthetic only", "error", envErr)
+		projectEnv = map[string]string{}
+	}
+	runEnv := make(map[string]string, len(projectEnv)+5)
+	maps.Copy(runEnv, projectEnv)
+	maps.Copy(runEnv, cobaltSyntheticEnv(project, serviceName, live, h.PublicHost)) // synthetic wins on collision
+
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		// v2 first so a client that speaks both wins v2.
 		Subprotocols: []string{
@@ -178,6 +222,7 @@ func (h *Handler) Run(w http.ResponseWriter, r *http.Request) {
 		deploymentNetwork: docker.NetworkName(project.Name, live.Number),
 		extraParams:       extraParams,
 		volumes:           volumes,
+		envVars:           runEnv,
 	}
 
 	// Audit row at handler entry. The exit code goes in once the
@@ -288,6 +333,7 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 		ContainerName:    docker.RunContainerName(req.project.Name, time.Now().UnixNano()),
 		Image:            req.imageTag,
 		Command:          []string{"sh", "-c", req.command},
+		EnvVars:          req.envVars,
 		Networks:         []string{req.deploymentNetwork, deploy.MainNetworkName},
 		Volumes:          req.volumes,
 		ExtraParams:      req.extraParams,

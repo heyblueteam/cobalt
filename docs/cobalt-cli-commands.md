@@ -81,6 +81,8 @@ cobalt run [--project <p>] [--service <s>] [--timeout <secs>] "<command>"
 
 Implementation: WebSocket to the daemon, raw-mode TTY, exit code from the container is the CLI's exit code.
 
+**Container env.** The one-off container sees the project's full env (everything in `cobalt env list`) plus daemon-authoritative context vars: `COBALT_PROJECT_NAME`, `COBALT_SERVICE_NAME`, `COBALT_DEPLOYMENT_NUMBER`, `COBALT_HOST` (when the daemon has a public host configured), and `COBALT_COMMIT` (when the live deployment has a commit SHA). `COBALT_*` synthetic values override any project env of the same name for the duration of the run; the stored env is untouched.
+
 ### `cobalt init`
 
 Bootstrap a fresh server: install daemon via Docker, set up Caddy, register the first API key in local CLI config.
