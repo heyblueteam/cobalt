@@ -251,11 +251,25 @@ func TestPushEvent_TouchesPath(t *testing.T) {
 			want: true,
 		},
 		{
-			name: "twenty_commits_treated_as_truncated",
-			// GitHub caps commits[] at 20 in the push payload. We
+			name: "below_cap_filters_normally",
+			// 100 commits is well below the 2048 cap; we trust the
+			// file lists and skip when nothing touches our subdir.
+			ev: PushEvent{Commits: func() []PushCommit {
+				out := make([]PushCommit, 100)
+				for i := range out {
+					out[i] = PushCommit{Modified: []string{"web/x.ts"}}
+				}
+				return out
+			}()},
+			path: "api",
+			want: false,
+		},
+		{
+			name: "at_cap_treated_as_truncated",
+			// GitHub caps commits[] at 2048 in the push payload. We
 			// can't see past that, so deploy.
 			ev: PushEvent{Commits: func() []PushCommit {
-				out := make([]PushCommit, 20)
+				out := make([]PushCommit, 2048)
 				for i := range out {
 					out[i] = PushCommit{Modified: []string{"web/x.ts"}}
 				}

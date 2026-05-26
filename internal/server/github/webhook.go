@@ -73,16 +73,18 @@ type PushCommit struct {
 // inside `subdir`. An empty subdir means "repo root" — always touched.
 //
 // Conservative: if we can't tell (no commits listed, or the push
-// appears truncated at GitHub's 20-commit cap), returns true so we
+// appears truncated at GitHub's commits[] cap), returns true so we
 // don't skip a deploy on incomplete information. A redundant deploy is
 // cheaper than a skipped one.
 func (p PushEvent) TouchesPath(subdir string) bool {
 	if subdir == "" {
 		return true
 	}
-	// GitHub truncates commits[] at 20. We can't see what we can't see,
+	// GitHub truncates commits[] at 2048. We can't see what we can't see,
 	// so treat any push at-or-over the cap as "might have touched it".
-	if len(p.Commits) == 0 || len(p.Commits) >= 20 {
+	// The proper fix is to call the compare API for the full file list;
+	// tracked separately.
+	if len(p.Commits) == 0 || len(p.Commits) >= 2048 {
 		return true
 	}
 	prefix := subdir + "/"
