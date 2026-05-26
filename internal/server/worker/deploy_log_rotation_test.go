@@ -111,7 +111,7 @@ func TestRotateDeployLogs_GzipPreservesContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gzip.NewReader: %v", err)
 	}
-	defer gr.Close()
+	defer func() { _ = gr.Close() }()
 	got, err := io.ReadAll(gr)
 	if err != nil {
 		t.Fatalf("read: %v", err)

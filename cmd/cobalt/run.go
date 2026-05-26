@@ -195,7 +195,9 @@ func runClientV2(ctx context.Context, cancel context.CancelFunc, conn *websocket
 		close(writeCh)
 		<-writerDone
 		if code != 0 {
-			os.Exit(code)
+			// Propagate as an error so deferred cleanup (terminal
+			// restore, signal stop) runs before main() exits.
+			return exitCodeError{Code: code}
 		}
 		return nil
 	case <-sigCh:
@@ -229,7 +231,10 @@ func runResizeLoop(ctx context.Context, writeCh chan<- []byte) {
 		if err != nil {
 			return
 		}
-		rows, cols := uint16(h), uint16(w)
+		// Terminal cell counts safely fit in uint16 (real-world dims
+		// are bounded by display hardware; values >65535 are not a
+		// thing).
+		rows, cols := uint16(h), uint16(w) //nolint:gosec // bounded by terminal size
 		if rows == lastRows && cols == lastCols {
 			return
 		}
@@ -308,7 +313,9 @@ func runClientV1(ctx context.Context, cancel context.CancelFunc, conn *websocket
 	case code := <-exitCh:
 		cancel()
 		if code != 0 {
-			os.Exit(code)
+			// Propagate as an error so deferred cleanup (terminal
+			// restore, signal stop) runs before main() exits.
+			return exitCodeError{Code: code}
 		}
 		return nil
 	case <-sigCh:

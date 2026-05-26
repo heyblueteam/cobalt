@@ -126,7 +126,7 @@ func followUpgrade(ctx context.Context, cl *client.Client, id string) error {
 		// Stream may have closed mid-restart; surface the streamErr if
 		// it's the more useful one.
 		if streamErr != nil {
-			return fmt.Errorf("upgrade follow: %w (stream error: %v)", err, streamErr)
+			return fmt.Errorf("upgrade follow: %w (stream error: %w)", err, streamErr)
 		}
 		return fmt.Errorf("post-stream status fetch: %w", err)
 	}

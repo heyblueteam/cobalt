@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -79,8 +80,8 @@ func TestClientAPIError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("got %T, want *APIError", err)
 	}
 	if apiErr.Message != "project not found" {
@@ -105,8 +106,8 @@ func TestClientAPIErrorNonJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	apiErr, ok := err.(*APIError)
-	if !ok {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		t.Fatalf("got %T, want *APIError", err)
 	}
 	if apiErr.StatusCode != 500 {

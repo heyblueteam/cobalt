@@ -118,7 +118,7 @@ func TestBearerAuth_UpdatesLastUsedAt(t *testing.T) {
 	// last_used_at write is async; poll briefly.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := db.Client.QuerySingle(context.Background(),
+		resp, err := db.QuerySingle(context.Background(),
 			`SELECT last_used_at FROM apikeys WHERE id=?`, id)
 		if err != nil {
 			t.Fatalf("query: %v", err)
@@ -159,7 +159,7 @@ func TestBearerAuth_UpdatesLastUsedAt_RequestCtxCanceled(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		resp, err := db.Client.QuerySingle(context.Background(),
+		resp, err := db.QuerySingle(context.Background(),
 			`SELECT last_used_at FROM apikeys WHERE id=?`, id)
 		if err != nil {
 			t.Fatalf("query: %v", err)
@@ -199,7 +199,7 @@ func newTestDB(t *testing.T) *store.DB {
 
 func insertAPIKey(t *testing.T, db *store.DB, raw, name string) int64 {
 	t.Helper()
-	resp, err := db.Client.ExecuteSingle(
+	resp, err := db.ExecuteSingle(
 		context.Background(),
 		`INSERT INTO apikeys (key_hash, name, created_at) VALUES (?, ?, unixepoch())`,
 		HashAPIKey(raw), name,

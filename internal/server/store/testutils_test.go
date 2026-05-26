@@ -47,13 +47,13 @@ func openTestDB(t *testing.T) *DB {
 	}
 
 	if err := db.InitSchema(context.Background()); err != nil {
-		_ = db.Client.Close()
+		_ = db.Close()
 		stopRqlitedContainer(containerName)
 		t.Fatalf("InitSchema: %v", err)
 	}
 
 	t.Cleanup(func() {
-		_ = db.Client.Close()
+		_ = db.Close()
 		stopRqlitedContainer(containerName)
 	})
 
@@ -117,7 +117,7 @@ func waitForRqlite(url string, timeout time.Duration) bool {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		err = db.Ping(ctx)
 		cancel()
-		_ = db.Client.Close()
+		_ = db.Close()
 		if err == nil {
 			return true
 		}

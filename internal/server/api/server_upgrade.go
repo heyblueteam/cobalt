@@ -279,7 +279,9 @@ func (h *Handler) streamUpgradeFile(
 	offset int64,
 	upgradeID string,
 ) error {
-	f, err := os.Open(path)
+	// path is built by the daemon from validated upgrade ID under
+	// DataDir; not user-controlled.
+	f, err := os.Open(path) //nolint:gosec // daemon-constructed path
 	if errors.Is(err, os.ErrNotExist) {
 		f, err = waitForFile(ctx, path, 5*time.Second)
 		if err != nil {

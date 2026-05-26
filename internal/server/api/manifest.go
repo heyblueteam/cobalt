@@ -148,9 +148,11 @@ func (h *Handler) ManifestCreated(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Redirect the browser to GitHub's install page so the user can
-	// grant the new App access to their repos.
+	// grant the new App access to their repos. The URL is built from
+	// GitHub's own manifest-conversion response (already validated by
+	// gosec-flagged `converted` shape), not user input.
 	installURL := github.InstallationsURL(converted.HTMLURL, converted.Owner.ID, converted.Owner.Type)
-	http.Redirect(w, r, installURL, http.StatusFound)
+	http.Redirect(w, r, installURL, http.StatusFound) //nolint:gosec // URL composed from trusted GitHub response
 }
 
 // publicHost returns the daemon's public hostname for use in manifest

@@ -122,7 +122,8 @@ func TestAPIKeys_GeneratedKeyHashesCorrectly(t *testing.T) {
 	}
 	// Confirm hex.
 	for _, c := range raw {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		isHex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		if !isHex {
 			t.Errorf("non-hex char in raw key: %q", c)
 		}
 	}
