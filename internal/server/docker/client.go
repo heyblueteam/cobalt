@@ -115,10 +115,18 @@ func (r *ExecRunner) RunWithEnv(ctx context.Context, extraEnv map[string]string,
 // --cache-to type=local works for per-project BuildKit cache isolation.
 //
 // Projects that share (github_repo, branch, path) with another project
-// get their own builder named "<BuildxBuilderName>-<projectID>" — see
+// get their own builder named via IsolatedBuilderName — see
 // deploy/build.go and cobalt#24. The naming pattern is matched by
 // cleanupProjectArtifacts when a project is removed.
 const BuildxBuilderName = "cobalt-builder"
+
+// IsolatedBuilderName returns the buildx instance name for a project
+// that needs isolation from siblings sharing its source (cobalt#24).
+// Single source of truth so the deploy layer (which creates it) and the
+// api layer (which tears it down on project delete) can't drift.
+func IsolatedBuilderName(projectID int64) string {
+	return fmt.Sprintf("%s-%d", BuildxBuilderName, projectID)
+}
 
 // Client is the user-facing handle for everything in this package.
 type Client struct {
