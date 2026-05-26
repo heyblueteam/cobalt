@@ -34,6 +34,46 @@ func TestFindProjectsForRepoBranch(t *testing.T) {
 	}
 }
 
+// TestFindProjectsForRepoBranch_RoundTripsPath pins that Project.Path
+// is populated by this finder. Without it, the webhook handler reads
+// every project with Path == "" and the path-filtered dispatch in
+// handlePush silently degrades to "always deploy" — exactly the
+// regression that motivated this test.
+func TestFindProjectsForRepoBranch_RoundTripsPath(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.CreateProject(ctx, Project{
+		Name: "api", GithubRepo: "acme/monorepo", Branch: "main", Path: "services/api",
+	}); err != nil {
+		t.Fatalf("Create api: %v", err)
+	}
+	if _, err := db.CreateProject(ctx, Project{
+		Name: "web", GithubRepo: "acme/monorepo", Branch: "main", Path: "web",
+	}); err != nil {
+		t.Fatalf("Create web: %v", err)
+	}
+
+	got, err := db.FindProjectsForRepoBranch(ctx, "acme/monorepo", "main")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d projects, want 2", len(got))
+	}
+	paths := map[string]string{}
+	for _, p := range got {
+		paths[p.Name] = p.Path
+	}
+	if paths["api"] != "services/api" {
+		t.Errorf("api Path = %q, want services/api", paths["api"])
+	}
+	if paths["web"] != "web" {
+		t.Errorf("web Path = %q, want web", paths["web"])
+	}
+}
+
 func TestFindProjectsForRepoBranch_EmptyBranchDefaultsToMainMaster(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

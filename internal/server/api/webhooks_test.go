@@ -183,6 +183,118 @@ func TestWebhook_PushOnUntrackedBranchIsNoOp(t *testing.T) {
 	}
 }
 
+// TestWebhook_PushSkipsProjectWithUntouchedPath proves the path-filter
+// wiring in handlePush: a project scoped to `api/` does NOT redeploy
+// when the push only touches `web/`. The TouchesPath helper has its
+// own unit coverage; this test pins the integration — that handlePush
+// actually consults Project.Path (not Project.Name, etc.) before
+// enqueueing.
+func TestWebhook_PushSkipsProjectWithUntouchedPath(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	ctx := context.Background()
+	_, err := e.db.CreateProject(ctx, store.Project{
+		Name: "api", GithubRepo: "acme/monorepo", Branch: "main", Path: "api",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"ref":   "refs/heads/main",
+		"after": "abc123",
+		"repository": map[string]any{
+			"id": 1, "full_name": "acme/monorepo",
+		},
+		"commits": []map[string]any{
+			{"modified": []string{"web/index.ts"}},
+		},
+	}
+	resp := e.post(t, "push", "delivery-1", payload)
+	resp.Body.Close()
+	deps, _ := e.db.QueuedDeployments(ctx)
+	if len(deps) != 0 {
+		t.Errorf("queued: %d, want 0 (push touched web/, project scoped to api/)", len(deps))
+	}
+}
+
+// TestWebhook_PushEnqueuesProjectWhenPathTouched is the positive case:
+// a project scoped to `api/` DOES redeploy when the push touches
+// `api/main.go`. Pairs with TestWebhook_PushSkipsProjectWithUntouchedPath
+// to bracket the path-filter behavior.
+func TestWebhook_PushEnqueuesProjectWhenPathTouched(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	ctx := context.Background()
+	_, err := e.db.CreateProject(ctx, store.Project{
+		Name: "api", GithubRepo: "acme/monorepo", Branch: "main", Path: "api",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"ref":   "refs/heads/main",
+		"after": "abc123",
+		"repository": map[string]any{
+			"id": 1, "full_name": "acme/monorepo",
+		},
+		"commits": []map[string]any{
+			{"modified": []string{"api/main.go"}},
+		},
+	}
+	resp := e.post(t, "push", "delivery-1", payload)
+	resp.Body.Close()
+	deps, _ := e.db.QueuedDeployments(ctx)
+	if len(deps) != 1 {
+		t.Errorf("queued: %d, want 1 (push touched api/main.go, project scoped to api/)", len(deps))
+	}
+}
+
+// TestWebhook_PushDispatchesPerProjectPath is the discriminating case
+// that catches "did the per-project filter actually run per project."
+// Two projects sit on the same repo+branch but different sub-paths.
+// A push that touches only one sub-path must enqueue exactly one
+// deployment — the other project's path was not touched. A wiring
+// bug that, say, computed touched-ness once instead of per-project
+// would silently fail open here.
+func TestWebhook_PushDispatchesPerProjectPath(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	ctx := context.Background()
+	if _, err := e.db.CreateProject(ctx, store.Project{
+		Name: "api", GithubRepo: "acme/monorepo", Branch: "main", Path: "api",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.CreateProject(ctx, store.Project{
+		Name: "web", GithubRepo: "acme/monorepo", Branch: "main", Path: "web",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"ref":   "refs/heads/main",
+		"after": "abc123",
+		"repository": map[string]any{
+			"id": 1, "full_name": "acme/monorepo",
+		},
+		"commits": []map[string]any{
+			{"modified": []string{"api/main.go"}},
+		},
+	}
+	resp := e.post(t, "push", "delivery-1", payload)
+	resp.Body.Close()
+	deps, _ := e.db.QueuedDeployments(ctx)
+	if len(deps) != 1 {
+		t.Fatalf("queued: %d, want 1 (only api touched)", len(deps))
+	}
+	// Verify it was the api project, not web. ProjectID is the
+	// load-bearing field — wrong project would still queue 1 deploy
+	// but ship the wrong code.
+	apiProj, _ := e.db.GetProjectByName(ctx, "api")
+	if deps[0].ProjectID != apiProj.ID {
+		t.Errorf("enqueued ProjectID=%d, want api project ID=%d", deps[0].ProjectID, apiProj.ID)
+	}
+}
+
 func TestWebhook_BranchDeleteIsNoOp(t *testing.T) {
 	t.Parallel()
 	e := newWebhookEnv(t)
