@@ -37,6 +37,14 @@ func TestValidateProjectPath(t *testing.T) {
 		{"dotdot_only", "..", true, "parent traversal"},
 		{"dotdot_segment", "../api", true, "parent traversal"},
 		{"dotdot_middle", "services/../api", true, "canonical"},
+		// Invalid — `.` alone is repo root spelled the wrong way.
+		// (`./api` and `api/.` are caught earlier by the canonical
+		// check; `.` alone survives path.Clean and needs its own.)
+		{"dot_alone", ".", true, "empty string for repo root"},
+		// Invalid — length cap. 257 chars = one over MaxProjectPathLen.
+		{"too_long", strings.Repeat("a", MaxProjectPathLen+1), true, "too long"},
+		// Valid — exactly at the cap.
+		{"at_length_cap", strings.Repeat("a", MaxProjectPathLen), false, ""},
 		// Invalid — defense-in-depth checks.
 		{"backslash", "services\\api", true, "backslash"},
 		{"null_byte", "api\x00", true, "null byte"},
