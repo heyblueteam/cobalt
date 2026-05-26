@@ -250,7 +250,7 @@ func (c *Conn) ScpTo(localPath, remotePath string) error {
 }
 
 // shellSingleQuote wraps s in single quotes for a POSIX shell, escaping any
-// embedded single quotes via the standard `'\''` trick.
+// embedded single quotes via the standard `'\”` trick.
 func shellSingleQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
@@ -290,27 +290,4 @@ func CheckSSHKey(keyPath string) error {
 		return fmt.Errorf("invalid SSH key: %w", err)
 	}
 	return nil
-}
-
-type copier struct {
-	w   io.Writer
-	r   io.Reader
-	buf [32 << 10]byte
-}
-
-func (c *copier) Run() error {
-	for {
-		n, err := c.r.Read(c.buf[:])
-		if n > 0 {
-			if _, err := c.w.Write(c.buf[:n]); err != nil {
-				return err
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-	}
 }

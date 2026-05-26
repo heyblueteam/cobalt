@@ -199,7 +199,8 @@ func newTestDB(t *testing.T) *store.DB {
 
 func insertAPIKey(t *testing.T, db *store.DB, raw, name string) int64 {
 	t.Helper()
-	resp, err := db.Client.ExecuteSingle(context.Background(),
+	resp, err := db.Client.ExecuteSingle(
+		context.Background(),
 		`INSERT INTO apikeys (key_hash, name, created_at) VALUES (?, ?, unixepoch())`,
 		HashAPIKey(raw), name,
 	)

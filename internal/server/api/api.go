@@ -18,7 +18,6 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/github"
-	"github.com/heyblueteam/cobalt/internal/server/middleware"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
 
@@ -74,13 +73,13 @@ type CronView struct {
 
 // HandlerOpts is the constructor input for NewHandler.
 type HandlerOpts struct {
-	DB         *store.DB
-	Caddy      *caddy.Client
-	Docker     *docker.Client
-	GitHub     *github.Client
-	Queue      *deploy.Queue
-	Dispatcher *deploy.Dispatcher
-	Log        *slog.Logger
+	DB          *store.DB
+	Caddy       *caddy.Client
+	Docker      *docker.Client
+	GitHub      *github.Client
+	Queue       *deploy.Queue
+	Dispatcher  *deploy.Dispatcher
+	Log         *slog.Logger
 	DataDir     string
 	PublicHost  string
 	Version     string
@@ -175,10 +174,4 @@ func (h *Handler) projectFromPath(w http.ResponseWriter, r *http.Request) (*stor
 		return nil, false
 	}
 	return p, true
-}
-
-// requestID is a small accessor for handlers that want the per-request
-// id to attach to logs. Falls back to "" if not set.
-func requestID(r *http.Request) string {
-	return middleware.RequestIDFrom(r.Context())
 }

@@ -16,12 +16,12 @@ import (
 // project (cascading domains, deployments, etc.) unless
 // COBALT_E2E_KEEP is set.
 type Project struct {
-	t       *testing.T
-	env     Env
-	client  *client.Client
-	Name    string
-	Branch  string
-	GitHub  string
+	t      *testing.T
+	env    Env
+	client *client.Client
+	Name   string
+	Branch string
+	GitHub string
 }
 
 // NewProject creates a uniquely-named project on the fixture repo's

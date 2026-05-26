@@ -11,7 +11,6 @@ import (
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
-
 // CreateRollback implements POST /api/projects/{name}/rollback. Picks
 // a target deployment (explicit --to=N, or the most recent
 // successful deployment that isn't the current live one), verifies

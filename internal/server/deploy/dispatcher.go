@@ -184,7 +184,8 @@ func (d *Dispatcher) advance(ctx context.Context) {
 				d.log.Error("dispatcher: mark skipped",
 					"deployment_id", older.ID, "error", err)
 			} else {
-				d.log.Info("dispatcher: skipped",
+				d.log.Info(
+					"dispatcher: skipped",
 					"deployment_id", older.ID,
 					"project_id", older.ProjectID,
 					"superseded_by", newest.ID,

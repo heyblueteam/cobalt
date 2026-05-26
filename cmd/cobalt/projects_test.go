@@ -17,13 +17,13 @@ import (
 )
 
 type mockAPI struct {
-	srv         *httptest.Server
-	handler     func(w http.ResponseWriter, r *http.Request)
-	lastMethod  string
-	lastPath    string
-	lastQuery   string
-	lastBody    []byte
-	callCount   int
+	srv        *httptest.Server
+	handler    func(w http.ResponseWriter, r *http.Request)
+	lastMethod string
+	lastPath   string
+	lastQuery  string
+	lastBody   []byte
+	callCount  int
 }
 
 func newMockAPI() *mockAPI {
@@ -56,13 +56,6 @@ func (m *mockAPI) respond(v any) {
 		w.Header().Set("Content-Type", "application/json")
 		b, _ := json.Marshal(v)
 		w.Write(b)
-	}
-}
-
-func (m *mockAPI) respondStatus(code int, body string) {
-	m.handler = func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(code)
-		w.Write([]byte(body))
 	}
 }
 

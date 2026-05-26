@@ -258,9 +258,9 @@ func TestUpgrades_ValidateRequiredFields(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	cases := []Upgrade{
-		{TargetImage: "x", LogPath: "/p"},           // no ID
-		{ID: "x", LogPath: "/p"},                    // no TargetImage
-		{ID: "x", TargetImage: "x"},                 // no LogPath
+		{TargetImage: "x", LogPath: "/p"}, // no ID
+		{ID: "x", LogPath: "/p"},          // no TargetImage
+		{ID: "x", TargetImage: "x"},       // no LogPath
 	}
 	for _, u := range cases {
 		if err := db.CreateUpgrade(ctx, u); err == nil {

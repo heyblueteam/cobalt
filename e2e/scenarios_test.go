@@ -293,7 +293,8 @@ func TestDeployHooks(t *testing.T) {
 	// must precede the after line; otherwise the orchestrator wired
 	// the hooks into the wrong phase.
 	log := p.FetchDeployLog(t, d.ID, 30*time.Second)
-	AssertLogContains(t, log,
+	AssertLogContains(
+		t, log,
 		"HOOK-BEFORE-EXTRARUNPARAMS-OK",
 		"HOOK-BEFORE-SENTINEL marker="+marker,
 		"HOOK-AFTER-SENTINEL marker="+marker,
@@ -378,7 +379,8 @@ func TestExposedInternallyAlias(t *testing.T) {
 	d := p.Deploy(t)
 
 	log := p.FetchDeployLog(t, d.ID, 30*time.Second)
-	AssertLogContains(t, log,
+	AssertLogContains(
+		t, log,
 		"ALIAS-PROBE host="+expected,
 		"ALIAS-TCP-OK",
 		"ALIAS-HTTP-OK",

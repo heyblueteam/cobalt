@@ -8,16 +8,16 @@ import (
 )
 
 type Context struct {
-	T              *testing.T
-	DockerHost     string
-	CaddySocket    string
-	CaddyExternal  string
-	DaemonBaseURL  string
-	DataDir        string
-	SwarmStop      func()
-	CaddyStop      func()
-	DaemonStop     func()
-	BinaryPath     string
+	T             *testing.T
+	DockerHost    string
+	CaddySocket   string
+	CaddyExternal string
+	DaemonBaseURL string
+	DataDir       string
+	SwarmStop     func()
+	CaddyStop     func()
+	DaemonStop    func()
+	BinaryPath    string
 }
 
 func New(t *testing.T) *Context {

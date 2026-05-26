@@ -293,11 +293,11 @@ func validateProjectUpdateSource(req cobaltapi.ProjectUpdateSourceRequest) error
 }
 
 var (
-	errProjectNameRequired     = httpErr("project name required")
-	errProjectNameInvalid      = httpErr("project name must not contain whitespace or slashes")
+	errProjectNameRequired      = httpErr("project name required")
+	errProjectNameInvalid       = httpErr("project name must not contain whitespace or slashes")
 	errProjectGitHubRepoInvalid = httpErr("githubRepo must be in 'owner/name' form")
-	errProjectBranchRequired   = httpErr("branch required")
-	errProjectDomainInvalid    = httpErr("domain must not contain whitespace or slashes")
+	errProjectBranchRequired    = httpErr("branch required")
+	errProjectDomainInvalid     = httpErr("domain must not contain whitespace or slashes")
 )
 
 // httpErr is a tiny string-error type for validation messages we want
@@ -307,6 +307,8 @@ type httpErr string
 func (e httpErr) Error() string { return string(e) }
 
 // silence unused-import linters until renameProjectDir is wired up.
-var _ = filepath.Join
-var _ = os.Rename
-var _ = sql.NullString{}
+var (
+	_ = filepath.Join
+	_ = os.Rename
+	_ = sql.NullString{}
+)

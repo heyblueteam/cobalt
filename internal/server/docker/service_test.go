@@ -449,7 +449,8 @@ func TestWaitForServiceReady_FailFastOnShutdowns(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
 	// 3 shutdowns for 1 replica == fail-fast threshold.
-	r.answerStdout("service ps api-7-web",
+	r.answerStdout(
+		"service ps api-7-web",
 		"Shutdown 1 minute ago\nFailed 30 seconds ago\nRejected 10 seconds ago\n",
 	)
 	c := NewWithRunner(r)
@@ -468,9 +469,9 @@ func TestParseReplicas(t *testing.T) {
 		// Format is "<running>/<desired>". We return desired so that
 		// scale CLI output reflects what the operator just set, even
 		// while swarm is still draining/ramping.
-		{"3/3", 3},  // converged
-		{"1/2", 2},  // ramping up: 1 running, 2 desired
-		{"3/1", 1},  // draining: 3 running, 1 desired (regression case)
+		{"3/3", 3}, // converged
+		{"1/2", 2}, // ramping up: 1 running, 2 desired
+		{"3/1", 1}, // draining: 3 running, 1 desired (regression case)
 		{"0/0", 0},
 		{"", 0},
 		{"junk", 0},

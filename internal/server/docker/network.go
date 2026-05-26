@@ -38,7 +38,8 @@ func (c *Client) CreateNetwork(ctx context.Context, projectID int64, projectName
 // NetworkExists reports whether a network with the given name is present.
 // Used to make CreateNetwork idempotent at the call site.
 func (c *Client) NetworkExists(ctx context.Context, name string) (bool, error) {
-	out, err := c.output(ctx,
+	out, err := c.output(
+		ctx,
 		"network", "ls", "--filter", "name=^"+name+"$", "--format", "{{.Name}}",
 	)
 	if err != nil {

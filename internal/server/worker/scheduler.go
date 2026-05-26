@@ -24,8 +24,8 @@ type Job func(ctx context.Context)
 // Scheduler runs registered jobs on cron schedules. It is safe for
 // concurrent Schedule calls.
 type Scheduler struct {
-	log    *slog.Logger
-	cron   *cron.Cron
+	log     *slog.Logger
+	cron    *cron.Cron
 	rootCtx context.Context
 	cancel  context.CancelFunc
 
@@ -155,7 +155,8 @@ func (s *Scheduler) runJob(name string, job Job) {
 	}
 	defer func() {
 		if rv := recover(); rv != nil {
-			s.log.Error("scheduler: job panic",
+			s.log.Error(
+				"scheduler: job panic",
 				"name", name,
 				"recovered", rv,
 				"stack", string(debug.Stack()),
@@ -172,6 +173,7 @@ type cronLogger struct{ log *slog.Logger }
 func (l cronLogger) Info(msg string, keysAndValues ...any) {
 	l.log.Info("cron: "+msg, keysAndValues...)
 }
+
 func (l cronLogger) Error(err error, msg string, keysAndValues ...any) {
 	l.log.Error("cron: "+msg, append(keysAndValues, "error", err)...)
 }

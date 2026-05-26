@@ -12,13 +12,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-type globalFlags struct {
-	server  string
-	json    bool
-	yes     bool
-	project string
-}
-
 func resolveContext(cmd *cobra.Command) (cliconfig.Server, string, error) {
 	srv, err := resolveServer(cmd)
 	if err != nil {

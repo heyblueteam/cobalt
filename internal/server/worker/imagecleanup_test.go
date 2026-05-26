@@ -21,9 +21,9 @@ func (f *fakeProjectLister) ListProjects(_ context.Context) ([]store.Project, er
 }
 
 type fakeDeployLister struct {
-	byProject       map[int64][]int
+	byProject        map[int64][]int
 	successByProject map[int64][]int
-	err             error
+	err              error
 }
 
 func (f *fakeDeployLister) ActiveDeploymentNumbers(_ context.Context, projectID int64) ([]int, error) {
@@ -45,11 +45,11 @@ func (f *fakeDeployLister) RecentSuccessfulDeploymentNumbers(_ context.Context, 
 }
 
 type fakeImageOps struct {
-	mu         sync.Mutex
-	byProject  map[string][]docker.ImageInfo
-	listErr    error
-	removeErr  error
-	removed    []string
+	mu        sync.Mutex
+	byProject map[string][]docker.ImageInfo
+	listErr   error
+	removeErr error
+	removed   []string
 }
 
 func (f *fakeImageOps) ListInternalImages(_ context.Context, projectName string) ([]docker.ImageInfo, error) {
@@ -144,8 +144,8 @@ func TestCleanupImages_PerProjectFailureSkipsNotHalts(t *testing.T) {
 		byProject: map[int64][]int{2: {3}},
 	}
 	deploysWithError := &errOnFirstDeployLister{
-		first:   1,
-		err:     errors.New("transient"),
+		first:        1,
+		err:          errors.New("transient"),
 		fallthrough_: deploys,
 	}
 	images := &fakeImageOps{

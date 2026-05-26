@@ -341,7 +341,8 @@ func startRqlitedSidecar(log *slog.Logger, rqlitedPath, rqliteURL, dataDir strin
 	bindAddr := net.JoinHostPort(host, port)
 	advAddr := "localhost:" + port
 
-	cmd := exec.Command(rqlitedPath,
+	cmd := exec.Command(
+		rqlitedPath,
 		"-http-addr", bindAddr,
 		"-http-adv-addr", advAddr,
 		rqliteDataDir,
@@ -439,4 +440,3 @@ func (a cronManagerAdapter) ListForProject(projectName string) []api.CronView {
 func (a cronManagerAdapter) RemoveAllForProject(projectName string) error {
 	return a.inner.RemoveAllForProject(projectName)
 }
-

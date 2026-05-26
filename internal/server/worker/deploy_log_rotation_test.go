@@ -142,4 +142,3 @@ func TestRotateDeployLogs_DefaultsApplied(t *testing.T) {
 		t.Errorf("rotated %d files within default age", rotated)
 	}
 }
-

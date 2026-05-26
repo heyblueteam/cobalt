@@ -202,4 +202,3 @@ var (
 	_ CaddyReconcileStore  = (*store.DB)(nil)
 	_ CaddyReconcileTarget = (*caddy.Client)(nil)
 )
-

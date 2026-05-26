@@ -45,10 +45,10 @@ Examples:
 
 			if output.IsJSON() {
 				type serverEntry struct {
-					Name               string `json:"name"`
-					Host               string `json:"host"`
-					CurrentProject     string `json:"currentProject,omitempty"`
-					IsDefault          bool   `json:"isDefault"`
+					Name           string `json:"name"`
+					Host           string `json:"host"`
+					CurrentProject string `json:"currentProject,omitempty"`
+					IsDefault      bool   `json:"isDefault"`
 				}
 				var entries []serverEntry
 				for name, s := range cfg.Servers {
@@ -90,7 +90,7 @@ the confirmation prompt.
 Examples:
   cobalt servers remove staging --yes
   cobalt servers remove dev`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 

@@ -13,6 +13,51 @@ linters:
     - revive
     - unconvert
     - unparam
+  settings:
+    errcheck:
+      # Excluded functions whose errors are conventionally ignored.
+      # Close() in defers (can't usefully act on a close error during
+      # teardown), buffered Fprint* / Encode (writing to in-memory
+      # buffers never fails), and best-effort os.Remove in cleanup
+      # paths. Anything outside these patterns still gets flagged.
+      exclude-functions:
+        - (io.Closer).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*encoding/json.Encoder).Encode
+        - (net/http.ResponseWriter).Write
+        - os.Remove
+    revive:
+      rules:
+        # Blue's cobalt codebase doesn't enforce "every exported
+        # symbol needs a docstring" — too much boilerplate for names
+        # that are self-explanatory. Comments stay a judgment call.
+        - name: exported
+          disabled: true
+        - name: package-comments
+          disabled: true
+  exclusions:
+    rules:
+      # Test files intentionally use weak crypto, hardcoded test
+      # credentials, InsecureSkipVerify, etc. for fixtures. Scoping
+      # gosec out of _test.go avoids ~15 false-positive flags on
+      # values that are obviously not production secrets.
+      - path: _test\.go
+        linters:
+          - gosec
+      # e2e harness env builds an HTTP client against the local test
+      # daemon with InsecureSkipVerify; not a production path.
+      - path: e2e/env\.go
+        linters:
+          - gosec
+      # internal/storetest is test infrastructure (package doc:
+      # "test-only by convention"). It shells out to docker with
+      # variable args to spin up the rqlited container — not a
+      # production code path.
+      - path: internal/storetest/
+        linters:
+          - gosec
 
 formatters:
   enable:

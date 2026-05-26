@@ -13,7 +13,8 @@ type APIKey struct {
 }
 
 func (db *DB) CreateAPIKey(ctx context.Context, hash, name string) (int64, error) {
-	resp, err := db.ExecuteSingle(ctx,
+	resp, err := db.ExecuteSingle(
+		ctx,
 		`INSERT INTO apikeys (key_hash, name, created_at) VALUES (?, ?, strftime('%s', 'now'))`,
 		hash, name,
 	)
@@ -27,7 +28,8 @@ func (db *DB) CreateAPIKey(ctx context.Context, hash, name string) (int64, error
 }
 
 func (db *DB) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
-	resp, err := db.QuerySingle(ctx,
+	resp, err := db.QuerySingle(
+		ctx,
 		`SELECT id, name, created_at, last_used_at FROM apikeys ORDER BY created_at`,
 	)
 	if err != nil {
@@ -53,7 +55,8 @@ func (db *DB) ListAPIKeys(ctx context.Context) ([]APIKey, error) {
 }
 
 func (db *DB) GetAPIKeyByID(ctx context.Context, id int64) (*APIKey, error) {
-	resp, err := db.QuerySingle(ctx,
+	resp, err := db.QuerySingle(
+		ctx,
 		`SELECT id, name, created_at, last_used_at FROM apikeys WHERE id = ?`,
 		id,
 	)

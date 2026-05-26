@@ -68,7 +68,8 @@ func startRqlitedContainer(name, dataDir, hostPort string) error {
 	// unable to unlinkat the wsnapshots/*.crc32 files at test end
 	// (root- or container-user-owned, not test-user-owned), failing
 	// every rqlite-backed test with "permission denied".
-	cmd := exec.Command("docker", "run",
+	cmd := exec.Command(
+		"docker", "run",
 		"--name", name,
 		"--rm",
 		"--detach",

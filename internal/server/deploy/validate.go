@@ -24,7 +24,8 @@ func Validate(ctx context.Context, db *store.DB, req EnqueueRequest) error {
 		return ErrProjectIDRequired
 	}
 
-	resp, err := db.QuerySingle(ctx,
+	resp, err := db.QuerySingle(
+		ctx,
 		`SELECT count(*) FROM projects WHERE id = ?`, req.ProjectID,
 	)
 	if err != nil {

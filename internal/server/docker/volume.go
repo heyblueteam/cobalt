@@ -39,7 +39,8 @@ func (c *Client) CreateVolume(ctx context.Context, projectID int64, projectName,
 // VolumeExists reports whether a volume with the given full name is
 // already present.
 func (c *Client) VolumeExists(ctx context.Context, name string) (bool, error) {
-	out, err := c.output(ctx,
+	out, err := c.output(
+		ctx,
 		"volume", "ls", "--filter", "name=^"+name+"$", "--format", "{{.Name}}",
 	)
 	if err != nil {

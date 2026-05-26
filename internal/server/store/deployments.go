@@ -126,19 +126,22 @@ func (db *DB) NextDeploymentNumber(ctx context.Context, projectID int64) (int, e
 func (db *DB) SetDeploymentStatus(ctx context.Context, id int64, status cobaltapi.State) error {
 	switch {
 	case status == cobaltapi.StateFetching:
-		_, err := db.ExecuteSingle(ctx,
+		_, err := db.ExecuteSingle(
+			ctx,
 			`UPDATE deployments SET status = ?, started_at = COALESCE(started_at, strftime('%s', 'now')) WHERE id = ?`,
 			string(status), id,
 		)
 		return err
 	case status.IsTerminal():
-		_, err := db.ExecuteSingle(ctx,
+		_, err := db.ExecuteSingle(
+			ctx,
 			`UPDATE deployments SET status = ?, finished_at = strftime('%s', 'now') WHERE id = ?`,
 			string(status), id,
 		)
 		return err
 	default:
-		_, err := db.ExecuteSingle(ctx,
+		_, err := db.ExecuteSingle(
+			ctx,
 			`UPDATE deployments SET status = ? WHERE id = ?`,
 			string(status), id,
 		)
@@ -168,7 +171,8 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 		stmt, err := rqlitehttp.NewSQLStatement(
 			`SELECT `+deploymentSelectCols+` FROM deployments
 			 WHERE project_id = ? ORDER BY number DESC LIMIT ?`,
-			projectID, limit)
+			projectID, limit,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +194,8 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 	stmt, err := rqlitehttp.NewSQLStatement(
 		`SELECT `+deploymentSelectCols+` FROM deployments
 		 WHERE project_id = ? ORDER BY number DESC`,
-		projectID)
+		projectID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +249,8 @@ func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(
 		`SELECT `+deploymentSelectCols+` FROM deployments
 		 WHERE status = ? ORDER BY project_id, number`,
-		string(cobaltapi.StateQueued))
+		string(cobaltapi.StateQueued),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +270,8 @@ func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 }
 
 func (db *DB) SetResolvedCobaltfile(ctx context.Context, deploymentID int64, raw string) error {
-	_, err := db.ExecuteSingle(ctx,
+	_, err := db.ExecuteSingle(
+		ctx,
 		`UPDATE deployments SET resolved_cobaltfile = ? WHERE id = ?`,
 		raw, deploymentID,
 	)

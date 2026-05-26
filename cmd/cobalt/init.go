@@ -264,7 +264,8 @@ Examples:
 			// Idempotent: reuse the existing secret on subsequent inits.
 			// Rotation is a separate operator flow.
 			step = output.StartStep(output.IconSecret, "Generating encryption key (swarm secret)")
-			secretCheck := conn.Run(ctx,
+			secretCheck := conn.Run(
+				ctx,
 				"if docker secret inspect cobalt_encryption_key >/dev/null 2>&1; then "+
 					"  echo present; "+
 					"else "+
@@ -347,7 +348,8 @@ Examples:
 			// `docker compose up` does, so source the file into the calling
 			// shell first. set -a / set +a auto-exports every assignment
 			// without us listing the var names.
-			result := conn.Run(ctx,
+			result := conn.Run(
+				ctx,
 				"set -a && . /opt/cobalt/.env && set +a && "+
 					"docker stack deploy --with-registry-auth -c /opt/cobalt/docker-compose.yml cobalt",
 			)
@@ -689,7 +691,7 @@ func daemonExec(ctx context.Context, conn *ssh.Conn, cmd string) *ssh.Result {
 }
 
 // shellSingleQuote wraps s in single quotes for a POSIX shell,
-// escaping any embedded single quotes via the standard `'\''` trick.
+// escaping any embedded single quotes via the standard `'\”` trick.
 // (Mirrors the helper of the same name in internal/ssh/ssh.go to keep
 // init.go free of new internal-package imports for this one-liner.)
 func shellSingleQuote(s string) string {

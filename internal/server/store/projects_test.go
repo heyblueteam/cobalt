@@ -179,7 +179,7 @@ func TestProject_PathRoundTrip(t *testing.T) {
 
 // TestProject_EmptyPathIsRepoRoot proves the default — every existing
 // project (created before this column existed, or by callers that don't
-// set Path) sees an empty string back. The migration's DEFAULT '' on
+// set Path) sees an empty string back. The migration's DEFAULT ” on
 // the column is what makes this work; this test catches accidental
 // regression to NULL or a bogus default.
 func TestProject_EmptyPathIsRepoRoot(t *testing.T) {

@@ -93,7 +93,8 @@ type taskStatus struct {
 // guaranteed to match anyway. Health is assigned to Running entries in
 // arrival order so the WaitForServiceHealthy aggregates remain correct.
 func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskStatus, error) {
-	out, err := c.output(ctx,
+	out, err := c.output(
+		ctx,
 		"service", "ps", serviceName,
 		"--no-trunc",
 		"--format", `{"current_state":"{{.CurrentState}}"}`,
@@ -145,7 +146,8 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 // inspect call fails) are simply skipped — the caller treats absence as
 // "no healthcheck declared" and falls back to task-state readiness.
 func (c *Client) containerHealthForService(ctx context.Context, serviceName string) []string {
-	out, err := c.output(ctx,
+	out, err := c.output(
+		ctx,
 		"ps",
 		"--filter", "label=com.docker.swarm.service.name="+serviceName,
 		"--format", "{{.ID}}",

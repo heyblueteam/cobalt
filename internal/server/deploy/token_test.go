@@ -42,18 +42,21 @@ type fakeTokenStore struct {
 func (f *fakeTokenStore) ListGithubReposByFullName(_ context.Context, _ string) ([]store.GithubAppRepo, error) {
 	return f.repos, nil
 }
+
 func (f *fakeTokenStore) GetGithubAppInstallation(_ context.Context, id int64) (*store.GithubAppInstallation, error) {
 	if inst, ok := f.installations[id]; ok {
 		return inst, nil
 	}
 	return nil, store.ErrNotFound
 }
+
 func (f *fakeTokenStore) GetGithubApp(_ context.Context, id int64) (*store.GithubApp, error) {
 	if app, ok := f.apps[id]; ok {
 		return app, nil
 	}
 	return nil, store.ErrNotFound
 }
+
 func (f *fakeTokenStore) SetInstallationToken(_ context.Context, _ int64, token string, exp int64) error {
 	f.saved.token = token
 	f.saved.expiresAt = exp

@@ -14,9 +14,9 @@ import (
 )
 
 type fakeCronDocker struct {
-	mu      sync.Mutex
-	runs    []docker.RunOpts
-	runErr  error
+	mu     sync.Mutex
+	runs   []docker.RunOpts
+	runErr error
 }
 
 func (f *fakeCronDocker) Run(_ context.Context, opts docker.RunOpts) error {

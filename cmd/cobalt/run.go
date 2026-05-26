@@ -350,4 +350,3 @@ func runV1ReadLoop(ctx context.Context, conn *websocket.Conn, exitCh chan<- int)
 		}
 	}
 }
-

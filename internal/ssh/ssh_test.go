@@ -6,9 +6,9 @@ import (
 
 func TestParseSSHURL(t *testing.T) {
 	tests := []struct {
-		raw    string
-		wantU  string
-		wantH  string
+		raw   string
+		wantU string
+		wantH string
 	}{
 		{"root@server.com", "root", "server.com"},
 		{"user@192.168.1.100", "user", "192.168.1.100"},
