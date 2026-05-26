@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -226,7 +225,7 @@ func (h *Handler) cleanupProjectArtifacts(ctx context.Context, p store.Project) 
 		}
 	}
 	if h.Docker != nil {
-		builderName := fmt.Sprintf("%s-%d", docker.BuildxBuilderName, p.ID)
+		builderName := docker.IsolatedBuilderName(p.ID)
 		if err := h.Docker.RemoveBuildxBuilder(ctx, builderName); err != nil {
 			h.Log.Debug("api: delete project: remove builder (best-effort)",
 				"project", p.Name, "builder", builderName, "error", err)

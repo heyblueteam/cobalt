@@ -108,7 +108,7 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 				fmt.Fprintf(out, "⚠️  could not check source siblings (%v); using shared builder\n", err)
 			}
 		case siblingCount > 0:
-			builderName = fmt.Sprintf("%s-%d", docker.BuildxBuilderName, project.ID)
+			builderName = docker.IsolatedBuilderName(project.ID)
 			if err := b.docker.EnsureBuildxBuilder(ctx, builderName); err != nil {
 				return nil, fmt.Errorf("deploy.Build: ensure isolated builder %q: %w", builderName, err)
 			}
