@@ -199,12 +199,12 @@ func TestEnsureBuildxBuilder_CustomNameThreadsThrough(t *testing.T) {
 	}
 }
 
-// TestRemoveBuildxBuilder_PassesForceFlag locks in the argv shape the
-// cleanup-on-delete path depends on: `buildx rm --force <name>` so a
-// removal never hangs waiting for an in-flight build (the dispatcher's
-// per-project serialization guarantees no real concurrent build by the
-// time cleanup runs).
-func TestRemoveBuildxBuilder_PassesForceFlag(t *testing.T) {
+// TestRemoveBuildxBuilder_InspectsThenRemoves locks in the two-step
+// shape: inspect to confirm the builder exists, then `buildx rm --force
+// <name>` to tear it down. --force so removal never hangs waiting for
+// an in-flight build (the dispatcher's per-project serialization
+// guarantees no real concurrent build by the time cleanup runs).
+func TestRemoveBuildxBuilder_InspectsThenRemoves(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
 	c := NewWithRunner(r)
@@ -214,6 +214,26 @@ func TestRemoveBuildxBuilder_PassesForceFlag(t *testing.T) {
 	last := r.lastCall().Args
 	if !argSequence(last, "buildx", "rm", "--force", "cobalt-builder-42") {
 		t.Errorf("expected `buildx rm --force <name>`, got %v", last)
+	}
+}
+
+// TestRemoveBuildxBuilder_MissingBuilderReturnsNil proves the
+// inspect-first guard: when the builder doesn't exist (the common path
+// for solo-project deletes), we skip `buildx rm` and return nil — the
+// caller logs nothing instead of having to classify a non-zero rm exit
+// as "expected missing" vs "real failure".
+func TestRemoveBuildxBuilder_MissingBuilderReturnsNil(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerErr("buildx inspect", staticErr("no builder found"))
+	c := NewWithRunner(r)
+	if err := c.RemoveBuildxBuilder(context.Background(), "cobalt-builder-42"); err != nil {
+		t.Fatalf("RemoveBuildxBuilder: %v", err)
+	}
+	for _, call := range r.calls {
+		if len(call.Args) >= 2 && call.Args[0] == "buildx" && call.Args[1] == "rm" {
+			t.Errorf("rm should not run when inspect fails; got %v", call.Args)
+		}
 	}
 }
 

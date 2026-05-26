@@ -209,10 +209,9 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 // fail the API call — the DB row is already gone, and stale dirs or
 // builders are recoverable by the operator.
 //
-// Builder removal is best-effort: the majority of projects never get an
-// isolated builder (only those sharing source with a sibling do; see
-// cobalt#24), so `buildx rm` for a missing instance is the expected
-// case. We log at debug-ish level to avoid noise in the common path.
+// RemoveBuildxBuilder already absorbs the "builder doesn't exist" case
+// (the common path for solo projects), so any error here is a real
+// failure — daemon down, permissions — that an operator should see.
 func (h *Handler) cleanupProjectArtifacts(ctx context.Context, p store.Project) {
 	if h.DataDir != "" {
 		for _, path := range []string{
@@ -227,7 +226,7 @@ func (h *Handler) cleanupProjectArtifacts(ctx context.Context, p store.Project) 
 	if h.Docker != nil {
 		builderName := docker.IsolatedBuilderName(p.ID)
 		if err := h.Docker.RemoveBuildxBuilder(ctx, builderName); err != nil {
-			h.Log.Debug("api: delete project: remove builder (best-effort)",
+			h.Log.Warn("api: delete project: remove builder",
 				"project", p.Name, "builder", builderName, "error", err)
 		}
 	}
