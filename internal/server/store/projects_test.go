@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -304,5 +305,156 @@ func TestDeleteExpiredPendingApps(t *testing.T) {
 	}
 	if n != 2 {
 		t.Errorf("deleted: got %d, want 2", n)
+	}
+}
+
+// TestUpdateProjectSource_RoundTrip proves a project can be retargeted to a
+// different repo/branch/path in place and that the new values surface via
+// every retrieval path (GetByID + GetByName).
+func TestUpdateProjectSource_RoundTrip(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, err := db.CreateProject(ctx, Project{
+		Name: "api", GithubRepo: "heyblueteam/api", Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "develop", "api"); err != nil {
+		t.Fatalf("UpdateProjectSource: %v", err)
+	}
+
+	byID, err := db.GetProjectByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if byID.GithubRepo != "heyblueteam/blue" {
+		t.Errorf("GithubRepo: got %q, want heyblueteam/blue", byID.GithubRepo)
+	}
+	if byID.Branch != "develop" {
+		t.Errorf("Branch: got %q, want develop", byID.Branch)
+	}
+	if byID.Path != "api" {
+		t.Errorf("Path: got %q, want api", byID.Path)
+	}
+
+	byName, err := db.GetProjectByName(ctx, "api")
+	if err != nil {
+		t.Fatalf("GetByName: %v", err)
+	}
+	if byName.GithubRepo != "heyblueteam/blue" || byName.Path != "api" {
+		t.Errorf("GetByName drift: %+v", byName)
+	}
+}
+
+// TestUpdateProjectSource_NotFound proves updating a non-existent project
+// returns ErrNotFound — the API handler uses this to map to HTTP 404.
+func TestUpdateProjectSource_NotFound(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	err := db.UpdateProjectSource(context.Background(), 99999, "heyblueteam/blue", "main", "api")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+// TestUpdateProjectSource_InvalidPath proves the store-layer path validator
+// rejects bad paths even when the API handler validator is skipped.
+func TestUpdateProjectSource_InvalidPath(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+	id, _ := db.CreateProject(ctx, Project{Name: "x", GithubRepo: "h/x", Branch: "main"})
+
+	// Leading slash is rejected by ValidateProjectPath.
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "/api"); err == nil {
+		t.Error("UpdateProjectSource accepted leading-slash path, want validation error")
+	}
+	// `..` is rejected.
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "../escape"); err == nil {
+		t.Error("UpdateProjectSource accepted parent-traversal path, want validation error")
+	}
+}
+
+// TestUpdateProjectSource_IsolatesProjects proves updating one project's
+// source does not leak into other projects' rows — the WHERE clause is
+// correctly id-scoped.
+func TestUpdateProjectSource_IsolatesProjects(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idA, _ := db.CreateProject(ctx, Project{Name: "a", GithubRepo: "h/a", Branch: "main"})
+	idB, _ := db.CreateProject(ctx, Project{Name: "b", GithubRepo: "h/b", Branch: "main"})
+
+	if err := db.UpdateProjectSource(ctx, idA, "h/mono", "develop", "services/a"); err != nil {
+		t.Fatalf("UpdateProjectSource a: %v", err)
+	}
+
+	gotB, err := db.GetProjectByID(ctx, idB)
+	if err != nil {
+		t.Fatalf("GetByID b: %v", err)
+	}
+	if gotB.GithubRepo != "h/b" || gotB.Branch != "main" || gotB.Path != "" {
+		t.Errorf("project b leaked changes from a: %+v", gotB)
+	}
+}
+
+// TestUpdateProjectSource_EmptyPathClearsSubdir proves callers can move a
+// project back to repo-root by passing an empty path. Important for the
+// inverse of the monorepo cutover (un-monorepo-ing).
+func TestUpdateProjectSource_EmptyPathClearsSubdir(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+	id, _ := db.CreateProject(ctx, Project{
+		Name: "x", GithubRepo: "h/mono", Branch: "main", Path: "services/x",
+	})
+
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", ""); err != nil {
+		t.Fatalf("UpdateProjectSource: %v", err)
+	}
+	got, err := db.GetProjectByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got.Path != "" {
+		t.Errorf("Path: got %q, want empty", got.Path)
+	}
+	if got.GithubRepo != "h/x" {
+		t.Errorf("GithubRepo: got %q, want h/x", got.GithubRepo)
+	}
+}
+
+// TestUpdateProjectSource_BumpsUpdatedAt proves the updated_at column ticks
+// forward on each update — used by external observers (UI, audit logs) to
+// detect that a config change happened even when the row's other fields
+// happen to round-trip to the same values.
+func TestUpdateProjectSource_BumpsUpdatedAt(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+	id, _ := db.CreateProject(ctx, Project{Name: "x", GithubRepo: "h/x", Branch: "main"})
+
+	before, err := db.GetProjectByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID before: %v", err)
+	}
+
+	// sleep 1.1s so strftime('%s') ticks at least once (second resolution).
+	time.Sleep(1100 * time.Millisecond)
+
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", ""); err != nil {
+		t.Fatalf("UpdateProjectSource: %v", err)
+	}
+	after, err := db.GetProjectByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID after: %v", err)
+	}
+	if after.UpdatedAt <= before.UpdatedAt {
+		t.Errorf("UpdatedAt did not advance: before=%d after=%d", before.UpdatedAt, after.UpdatedAt)
 	}
 }

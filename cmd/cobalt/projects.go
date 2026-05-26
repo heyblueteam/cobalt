@@ -23,6 +23,7 @@ func newProjectsCmd() *cobra.Command {
 		newProjectsAddCmd(),
 		newProjectsRemoveCmd(),
 		newProjectsRenameCmd(),
+		newProjectsUpdateCmd(),
 	)
 
 	return cmd
@@ -149,6 +150,83 @@ Examples:
 			return cl.DeleteProject(cmd.Context(), name)
 		}),
 	}
+}
+
+func newProjectsUpdateCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update <name>",
+		Short: "Retarget a project's GitHub source (repo, branch, path)",
+		Long: `Changes which GitHub repo, branch, or sub-path a project tracks. Flags you
+do not pass keep their current values. The update is config-only — it does
+NOT trigger a deploy. Run ` + "`cobalt deploy --project <name>`" + ` separately to act on
+the new source.
+
+Existing domains, env vars, deployment history, and running services are
+unaffected by this command.
+
+Examples:
+  cobalt projects update api --github heyblueteam/blue --path api
+  cobalt projects update staging --branch develop
+  cobalt projects update web --path services/web`,
+		Args: cobra.ExactArgs(1),
+		RunE: runE(func(cmd *cobra.Command, args []string) error {
+			srv, err := resolveServer(cmd)
+			if err != nil {
+				return err
+			}
+			name := args[0]
+			cl := client.New(srv)
+
+			// Fetch current state so omitted flags keep their existing values.
+			current, err := cl.GetProject(cmd.Context(), name)
+			if err != nil {
+				return err
+			}
+
+			req := cobaltapi.ProjectUpdateSourceRequest{
+				GithubRepo: current.GithubRepo,
+				Branch:     current.Branch,
+				Path:       current.Path,
+			}
+			if cmd.Flags().Changed("github") {
+				req.GithubRepo = cmd.Flag("github").Value.String()
+				if err := validator.ValidateGitHubRepo(req.GithubRepo); err != nil {
+					return err
+				}
+			}
+			if cmd.Flags().Changed("branch") {
+				req.Branch = cmd.Flag("branch").Value.String()
+				if req.Branch == "" {
+					return fmt.Errorf("branch must not be empty")
+				}
+			}
+			if cmd.Flags().Changed("path") {
+				req.Path = cmd.Flag("path").Value.String()
+				if err := validator.ValidateProjectPath(req.Path); err != nil {
+					return err
+				}
+			}
+
+			project, err := cl.UpdateProjectSource(cmd.Context(), name, req)
+			if err != nil {
+				return err
+			}
+			pathDisplay := project.Path
+			if pathDisplay == "" {
+				pathDisplay = "(repo root)"
+			}
+			output.PrintLines(fmt.Sprintf(
+				"Project %s retargeted: %s@%s path=%s",
+				project.Name, project.GithubRepo, project.Branch, pathDisplay,
+			))
+			output.PrintLines("Run `cobalt deploy --project " + project.Name + "` to act on the new source.")
+			return nil
+		}),
+	}
+	cmd.Flags().String("github", "", "github repo as owner/repo (leave unset to keep current)")
+	cmd.Flags().String("branch", "", "git branch to deploy (leave unset to keep current)")
+	cmd.Flags().String("path", "", "sub-directory inside the repo (leave unset to keep current)")
+	return cmd
 }
 
 func newProjectsRenameCmd() *cobra.Command {

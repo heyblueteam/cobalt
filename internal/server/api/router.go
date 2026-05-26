@@ -12,6 +12,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects", h.CreateProject)
 	mux.HandleFunc("GET /api/projects/{name}", h.GetProject)
 	mux.HandleFunc("PATCH /api/projects/{name}", h.RenameProject)
+	mux.HandleFunc("PATCH /api/projects/{name}/source", h.UpdateProjectSource)
 	mux.HandleFunc("DELETE /api/projects/{name}", h.DeleteProject)
 
 	// Env vars

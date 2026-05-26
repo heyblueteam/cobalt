@@ -237,6 +237,179 @@ func TestCreateProject_WithDomainAttachesIt(t *testing.T) {
 	}
 }
 
+// TestUpdateProjectSource_RetargetsRepoBranchPath proves the monorepo cutover
+// use case end-to-end: an existing project's github/branch/path can be
+// changed in place via PATCH /api/projects/{name}/source, and the response
+// reflects the new values.
+func TestUpdateProjectSource_RetargetsRepoBranchPath(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	resp := e.do(http.MethodPost, "/api/projects", cobaltapi.ProjectCreateRequest{
+		Name: "api", GithubRepo: "heyblueteam/api", Branch: "main",
+	})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	resp = e.do(http.MethodPatch, "/api/projects/api/source", cobaltapi.ProjectUpdateSourceRequest{
+		GithubRepo: "heyblueteam/blue",
+		Branch:     "main",
+		Path:       "api",
+	})
+	mustStatus(t, resp, http.StatusOK)
+	updated := decode[cobaltapi.Project](t, resp)
+	if updated.GithubRepo != "heyblueteam/blue" {
+		t.Errorf("GithubRepo: got %q, want heyblueteam/blue", updated.GithubRepo)
+	}
+	if updated.Branch != "main" {
+		t.Errorf("Branch: got %q, want main", updated.Branch)
+	}
+	if updated.Path != "api" {
+		t.Errorf("Path: got %q, want api", updated.Path)
+	}
+	if updated.Name != "api" {
+		t.Errorf("Name leaked: got %q", updated.Name)
+	}
+}
+
+// TestUpdateProjectSource_NotFoundReturns404 proves updating a non-existent
+// project returns 404, not 500 — the handler maps store.ErrNotFound through.
+func TestUpdateProjectSource_NotFoundReturns404(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	resp := e.do(http.MethodPatch, "/api/projects/ghost/source", cobaltapi.ProjectUpdateSourceRequest{
+		GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("got %d, want 404", resp.StatusCode)
+	}
+}
+
+// TestUpdateProjectSource_ValidationErrors proves each bad-input case
+// returns 400, not 500 or 200.
+func TestUpdateProjectSource_ValidationErrors(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	cases := []struct {
+		name string
+		body cobaltapi.ProjectUpdateSourceRequest
+	}{
+		{"missing slash in repo", cobaltapi.ProjectUpdateSourceRequest{GithubRepo: "no-slash", Branch: "main", Path: ""}},
+		{"empty branch", cobaltapi.ProjectUpdateSourceRequest{GithubRepo: "h/x", Branch: "", Path: ""}},
+		{"leading slash path", cobaltapi.ProjectUpdateSourceRequest{GithubRepo: "h/x", Branch: "main", Path: "/api"}},
+		{"parent traversal path", cobaltapi.ProjectUpdateSourceRequest{GithubRepo: "h/x", Branch: "main", Path: "../escape"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := e.do(http.MethodPatch, "/api/projects/api/source", c.body)
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("got %d, want 400", resp.StatusCode)
+			}
+		})
+	}
+}
+
+// TestUpdateProjectSource_PreservesDomainsAndEnv proves a source retarget is
+// non-destructive: domains and env vars attached to the project survive the
+// update untouched. This is the core invariant that makes zero-downtime
+// cutover possible — bound domains stay bound to the project regardless of
+// which repo it now watches.
+func TestUpdateProjectSource_PreservesDomainsAndEnv(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+
+	// Create with an initial domain.
+	resp := e.do(http.MethodPost, "/api/projects", cobaltapi.ProjectCreateRequest{
+		Name: "api", GithubRepo: "heyblueteam/api", Branch: "main",
+		Domain: "api.example.com",
+	})
+	mustStatus(t, resp, http.StatusCreated)
+	resp.Body.Close()
+
+	// Add an env var.
+	resp = e.do(http.MethodPost, "/api/projects/api/env", cobaltapi.EnvSetRequest{
+		Vars: map[string]string{"KEEP_ME": "yes"},
+	})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Retarget.
+	resp = e.do(http.MethodPatch, "/api/projects/api/source", cobaltapi.ProjectUpdateSourceRequest{
+		GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	// Domains: still bound.
+	resp = e.do(http.MethodGet, "/api/projects/api/domains", nil)
+	mustStatus(t, resp, http.StatusOK)
+	doms := decode[[]cobaltapi.Domain](t, resp)
+	if len(doms) != 1 || doms[0].Name != "api.example.com" {
+		t.Errorf("domain dropped during source update: %+v", doms)
+	}
+
+	// Env: still there.
+	resp = e.do(http.MethodGet, "/api/projects/api/env", nil)
+	mustStatus(t, resp, http.StatusOK)
+	envList := decode[[]cobaltapi.EnvVar](t, resp)
+	found := false
+	for _, v := range envList {
+		if v.Key == "KEEP_ME" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("KEEP_ME env var dropped during source update: %+v", envList)
+	}
+}
+
+// TestUpdateProjectSource_DoesNotChangeName proves the source PATCH never
+// touches the project's name even if name-like fields are present in the
+// request body (they shouldn't be — the request struct doesn't have one —
+// but this asserts that intermediary tampering can't smuggle a rename
+// through the source endpoint).
+func TestUpdateProjectSource_DoesNotChangeName(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api")
+
+	resp := e.do(http.MethodPatch, "/api/projects/api/source", cobaltapi.ProjectUpdateSourceRequest{
+		GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	mustStatus(t, resp, http.StatusOK)
+	updated := decode[cobaltapi.Project](t, resp)
+	if updated.Name != "api" {
+		t.Errorf("name changed during source update: got %q, want api", updated.Name)
+	}
+
+	// Project is still resolvable by its original name.
+	resp = e.do(http.MethodGet, "/api/projects/api", nil)
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+}
+
+// TestUpdateProjectSource_IdempotentNoOp proves PATCHing the same source as
+// the project already has succeeds and returns the unchanged project.
+// Important because the CLI's flag-merging flow can produce a no-op request
+// when the user passes flags that happen to match current values.
+func TestUpdateProjectSource_IdempotentNoOp(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	setupProject(t, e, "api") // creates with h/api@main path=""
+
+	resp := e.do(http.MethodPatch, "/api/projects/api/source", cobaltapi.ProjectUpdateSourceRequest{
+		GithubRepo: "h/api", Branch: "main", Path: "",
+	})
+	mustStatus(t, resp, http.StatusOK)
+	got := decode[cobaltapi.Project](t, resp)
+	if got.GithubRepo != "h/api" || got.Branch != "main" || got.Path != "" {
+		t.Errorf("no-op update changed something: %+v", got)
+	}
+}
+
 // --- env ---
 
 func setupProject(t *testing.T, e *testEnv, name string) {

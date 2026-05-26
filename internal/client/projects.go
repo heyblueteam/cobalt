@@ -39,6 +39,14 @@ func (c *Client) RenameProject(ctx context.Context, name string, req cobaltapi.P
 	return &p, nil
 }
 
+func (c *Client) UpdateProjectSource(ctx context.Context, name string, req cobaltapi.ProjectUpdateSourceRequest) (*cobaltapi.Project, error) {
+	var p cobaltapi.Project
+	if err := c.patch(ctx, fmt.Sprintf("/api/projects/%s/source", name), req, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
 func (c *Client) DeleteProject(ctx context.Context, name string) error {
 	return c.del(ctx, fmt.Sprintf("/api/projects/%s", name))
 }

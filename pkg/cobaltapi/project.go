@@ -38,3 +38,17 @@ type ProjectCreateRequest struct {
 type ProjectRenameRequest struct {
 	Name string `json:"name"`
 }
+
+// ProjectUpdateSourceRequest is the body of PATCH /api/projects/{name}/source.
+// Retargets which GitHub repo, branch, and sub-path the project tracks. All
+// three fields are required; the CLI's `cobalt projects update` provides
+// partial-update ergonomics by fetching current state and merging user
+// flags before sending the full request.
+//
+// Existing domains, env vars, deployments, and running services are
+// unaffected — the next deploy reads from the new source.
+type ProjectUpdateSourceRequest struct {
+	GithubRepo string `json:"githubRepo"`
+	Branch     string `json:"branch"`
+	Path       string `json:"path"`
+}
