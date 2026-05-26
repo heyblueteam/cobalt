@@ -158,8 +158,8 @@ func (db *DB) ListGithubReposForInstallation(ctx context.Context, installationID
 
 func (db *DB) FindProjectsForRepoBranch(ctx context.Context, fullName, branch string) ([]Project, error) {
 	resp, err := db.QuerySingle(ctx, `
-        SELECT id, name, github_repo, branch, github_app_installation_id,
-               created_at, updated_at
+        SELECT id, name, github_repo, branch, path,
+               github_app_installation_id, created_at, updated_at
         FROM projects
         WHERE github_repo = ?
           AND (branch = ? OR (branch = '' AND ? IN ('main', 'master')))
@@ -176,18 +176,7 @@ func (db *DB) FindProjectsForRepoBranch(ctx context.Context, fullName, branch st
 	}
 	out := make([]Project, 0, len(results[0].Values))
 	for _, row := range results[0].Values {
-		var p Project
-		p.ID = toInt64(row[0])
-		p.Name = toString(row[1])
-		p.GithubRepo = toString(row[2])
-		p.Branch = toString(row[3])
-		if row[4] != nil {
-			p.GithubAppInstallationID.Int64 = toInt64(row[4])
-			p.GithubAppInstallationID.Valid = true
-		}
-		p.CreatedAt = toInt64(row[5])
-		p.UpdatedAt = toInt64(row[6])
-		out = append(out, p)
+		out = append(out, scanProjectRow(row))
 	}
 	return out, nil
 }

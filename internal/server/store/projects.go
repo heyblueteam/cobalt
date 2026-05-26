@@ -135,9 +135,11 @@ func (db *DB) CreateProject(ctx context.Context, p Project) (int64, error) {
 	return resp.Results[0].LastInsertID, nil
 }
 
-// scanProjectRow centralizes column-order knowledge so the four
-// queries that SELECT projects stay in sync when columns are added.
-// Column order MUST match the SELECT in every caller above.
+// scanProjectRow centralizes column-order knowledge so every query
+// that SELECTs projects stays in sync when columns are added. Callers
+// today: ListProjects, GetProjectByID, GetProjectByName (this file)
+// and FindProjectsForRepoBranch (github_repos.go). Column order MUST
+// match the SELECT in every caller.
 func scanProjectRow(row []any) Project {
 	var p Project
 	p.ID = toInt64(row[0])
