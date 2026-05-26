@@ -354,6 +354,38 @@ func TestOtherProjectsWithSameSource_AfterUpdate(t *testing.T) {
 	}
 }
 
+// TestOtherProjectsWithSameSource_EmptyPath proves two projects sharing
+// repo + branch with path="" (repo-root deploys — the pre-0006-migration
+// shape, still the default) match as siblings. Guards against a future
+// schema change that makes path nullable: SQL tuple IN treats NULL as
+// non-equal to NULL, which would silently break sibling detection for
+// repo-root projects.
+func TestOtherProjectsWithSameSource_EmptyPath(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idA, _ := db.CreateProject(ctx, Project{
+		Name: "root-a", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "",
+	})
+	idB, _ := db.CreateProject(ctx, Project{
+		Name: "root-b", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "",
+	})
+
+	for _, c := range []struct {
+		id   int64
+		want int
+	}{{idA, 1}, {idB, 1}} {
+		n, err := db.OtherProjectsWithSameSource(ctx, c.id)
+		if err != nil {
+			t.Fatalf("query id=%d: %v", c.id, err)
+		}
+		if n != c.want {
+			t.Errorf("id=%d count: got %d, want %d (empty-path siblings must match)", c.id, n, c.want)
+		}
+	}
+}
+
 // TestOtherProjectsWithSameSource_NonExistent proves a lookup against an
 // unknown ID returns (0, nil) — the caller (deploy builder) treats that
 // as "no siblings, use shared builder". Defensive: avoids surfacing a
