@@ -174,6 +174,28 @@ func (db *DB) RenameProject(ctx context.Context, id int64, newName string) error
 	return nil
 }
 
+// UpdateProjectSource retargets which GitHub repo, branch, and sub-path
+// the project tracks. Domains, env vars, deployments, and the on-disk
+// project directory are untouched; the next `cobalt deploy` reads from
+// the new source. Running services keep serving until that deploy.
+func (db *DB) UpdateProjectSource(ctx context.Context, id int64, githubRepo, branch, path string) error {
+	if err := validator.ValidateProjectPath(path); err != nil {
+		return err
+	}
+	resp, err := db.ExecuteSingle(ctx, `
+        UPDATE projects
+        SET github_repo = ?, branch = ?, path = ?, updated_at = strftime('%s', 'now')
+        WHERE id = ?
+    `, githubRepo, branch, path, id)
+	if err != nil {
+		return err
+	}
+	if len(resp.Results) == 0 || resp.Results[0].RowsAffected == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteProject removes a project. Foreign keys with ON DELETE CASCADE
 // (deployments, env_vars, domains, command_runs) clean up automatically.
 func (db *DB) DeleteProject(ctx context.Context, id int64) error {

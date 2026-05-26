@@ -88,6 +88,46 @@ func (h *Handler) GetProject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, projectToAPI(*p))
 }
 
+// UpdateProjectSource implements PATCH /api/projects/{name}/source.
+// Retargets which GitHub repo, branch, and sub-path the project tracks.
+// Domains, env vars, deployment history, and running services are
+// unaffected — the next `cobalt deploy --project <name>` reads from
+// the new source.
+//
+// All three source fields are required. The CLI's `cobalt projects update`
+// supplies partial-update ergonomics by fetching current state and
+// merging user flags before sending the full request.
+func (h *Handler) UpdateProjectSource(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.projectFromPath(w, r)
+	if !ok {
+		return
+	}
+	var req cobaltapi.ProjectUpdateSourceRequest
+	if err := readJSON(w, r, &req); err != nil {
+		return
+	}
+	if err := validateProjectUpdateSource(req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.DB.UpdateProjectSource(r.Context(), p.ID, req.GithubRepo, req.Branch, req.Path); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "project not found")
+			return
+		}
+		h.Log.Error("api: update project source", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	updated, err := h.DB.GetProjectByID(r.Context(), p.ID)
+	if err != nil {
+		h.Log.Error("api: refetch updated project", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, projectToAPI(*updated))
+}
+
 // RenameProject implements PATCH /api/projects/{name}. Updates the
 // display name and renames the on-disk project directory. Caddy state
 // is untouched (id-keyed routes don't depend on project name).
@@ -235,6 +275,19 @@ func validateProjectName(name string) error {
 	}
 	if strings.ContainsAny(name, "/\\ \t\n") {
 		return errProjectNameInvalid
+	}
+	return nil
+}
+
+func validateProjectUpdateSource(req cobaltapi.ProjectUpdateSourceRequest) error {
+	if !strings.Contains(req.GithubRepo, "/") {
+		return errProjectGitHubRepoInvalid
+	}
+	if req.Branch == "" {
+		return errProjectBranchRequired
+	}
+	if err := validator.ValidateProjectPath(req.Path); err != nil {
+		return err
 	}
 	return nil
 }
