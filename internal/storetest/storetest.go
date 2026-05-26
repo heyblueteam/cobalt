@@ -12,6 +12,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -74,11 +75,18 @@ func OpenDB(t *testing.T) *store.DB {
 }
 
 func startRqlitedContainer(name, dataDir, hostPort string) error {
+	// Match the host UID/GID so files rqlite writes into the
+	// bind-mounted dataDir (t.TempDir) are owned by the test process
+	// and can be cleaned up. The official rqlite image runs as a
+	// non-root user by default; on Linux CI that left t.TempDir
+	// unable to unlinkat the wsnapshots/*.crc32 files at test end
+	// (root- or container-user-owned, not test-user-owned), failing
+	// every rqlite-backed test with "permission denied".
 	cmd := exec.Command("docker", "run",
 		"--name", name,
 		"--rm",
 		"--detach",
-		"--user", "root",
+		"--user", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
 		"-v", dataDir+":/rqlite/data",
 		"-p", hostPort+":4001",
 		"rqlite/rqlite:latest",
