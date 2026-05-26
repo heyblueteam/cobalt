@@ -127,6 +127,7 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 		ContainerName:    docker.RunContainerName(req.project.Name, time.Now().UnixNano()),
 		Image:            req.imageTag,
 		Command:          []string{"sh", "-c", req.command},
+		EnvVars:          req.envVars,
 		Networks:         []string{req.deploymentNetwork, deploy.MainNetworkName},
 		Volumes:          req.volumes,
 		ExtraParams:      req.extraParams,
