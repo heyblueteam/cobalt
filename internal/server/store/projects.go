@@ -196,6 +196,35 @@ func (db *DB) UpdateProjectSource(ctx context.Context, id int64, githubRepo, bra
 	return nil
 }
 
+// OtherProjectsWithSameSource returns the count of projects (other than
+// projectID) that share the same (github_repo, branch, path) tuple as
+// projectID. Returns 0 with no error when projectID doesn't exist —
+// callers treat that as "no siblings, use the shared builder".
+//
+// Used by the deploy builder to decide whether to route a build through
+// an isolated per-project buildx instance (count > 0) or the shared one
+// (count == 0). See cobalt#24.
+func (db *DB) OtherProjectsWithSameSource(ctx context.Context, projectID int64) (int, error) {
+	resp, err := db.QuerySingle(ctx, `
+        SELECT COUNT(*) FROM projects
+        WHERE id <> ?
+          AND (github_repo, branch, path) IN (
+            SELECT github_repo, branch, path FROM projects WHERE id = ?
+          )
+    `, projectID, projectID)
+	if err != nil {
+		return 0, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return 0, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return 0, nil
+	}
+	return int(toInt64(results[0].Values[0][0])), nil
+}
+
 // DeleteProject removes a project. Foreign keys with ON DELETE CASCADE
 // (deployments, env_vars, domains, command_runs) clean up automatically.
 func (db *DB) DeleteProject(ctx context.Context, id int64) error {

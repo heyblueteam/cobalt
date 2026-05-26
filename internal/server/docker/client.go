@@ -109,10 +109,15 @@ func (r *ExecRunner) RunWithEnv(ctx context.Context, extraEnv map[string]string,
 	return nil
 }
 
-// BuildxBuilderName is the buildx instance the daemon creates and uses
-// for every project build. We need a docker-container driver (not the
-// default docker driver) so --cache-to type=local works for per-project
-// BuildKit cache isolation.
+// BuildxBuilderName is the shared buildx instance the daemon creates at
+// boot and uses for every build that doesn't need isolation. We need a
+// docker-container driver (not the default docker driver) so
+// --cache-to type=local works for per-project BuildKit cache isolation.
+//
+// Projects that share (github_repo, branch, path) with another project
+// get their own builder named "<BuildxBuilderName>-<projectID>" — see
+// deploy/build.go and cobalt#24. The naming pattern is matched by
+// cleanupProjectArtifacts when a project is removed.
 const BuildxBuilderName = "cobalt-builder"
 
 // Client is the user-facing handle for everything in this package.
@@ -137,22 +142,35 @@ func (c *Client) run(ctx context.Context, args ...string) error {
 	return c.runner.Run(ctx, args, nil, nil, nil)
 }
 
-// EnsureBuildxBuilder makes sure the docker-container builder named by
-// BuildxBuilderName exists, creating it if needed. Idempotent — safe to
-// call on every daemon boot.
+// EnsureBuildxBuilder makes sure the docker-container builder with the
+// given name exists, creating it if needed. Idempotent — safe to call on
+// every daemon boot and on every build.
 //
 // The docker-container driver is required so that --cache-to type=local
 // works for per-project cache isolation (improvement E in §8b).
-func (c *Client) EnsureBuildxBuilder(ctx context.Context) error {
-	if err := c.run(ctx, "buildx", "inspect", BuildxBuilderName); err == nil {
+//
+// Callers pass BuildxBuilderName for the shared builder, or
+// "<BuildxBuilderName>-<projectID>" for an isolated per-project builder.
+func (c *Client) EnsureBuildxBuilder(ctx context.Context, name string) error {
+	if err := c.run(ctx, "buildx", "inspect", name); err == nil {
 		return nil
 	}
 	return c.run(
 		ctx, "buildx", "create",
-		"--name", BuildxBuilderName,
+		"--name", name,
 		"--driver", "docker-container",
 		"--bootstrap",
 	)
+}
+
+// RemoveBuildxBuilder tears down a buildx instance by name. Best-effort:
+// callers use this on project deletion, where a missing builder ("never
+// got isolated") is the expected case for the majority of projects. The
+// underlying `docker buildx rm --force` exits non-zero only on real
+// failures (docker daemon down, etc.); a missing-builder error message
+// is normal and surfaced to the caller, which logs and continues.
+func (c *Client) RemoveBuildxBuilder(ctx context.Context, name string) error {
+	return c.run(ctx, "buildx", "rm", "--force", name)
 }
 
 // output captures stdout into a buffer and returns it, trimmed.

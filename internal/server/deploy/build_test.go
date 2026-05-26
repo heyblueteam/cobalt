@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -23,10 +24,12 @@ func (f *fakeEnv) EnvVarMap(_ context.Context, _ int64) (map[string]string, erro
 }
 
 type fakeImageBuilder struct {
-	mu    sync.Mutex
-	calls []docker.BuildOpts
-	tag   func(opts docker.BuildOpts) string
-	err   error
+	mu             sync.Mutex
+	calls          []docker.BuildOpts
+	ensuredBuilder []string
+	ensureErr      error
+	tag            func(opts docker.BuildOpts) string
+	err            error
 }
 
 func (f *fakeImageBuilder) Build(_ context.Context, opts docker.BuildOpts) (string, error) {
@@ -40,6 +43,25 @@ func (f *fakeImageBuilder) Build(_ context.Context, opts docker.BuildOpts) (stri
 		return f.tag(opts), nil
 	}
 	return docker.InternalImageName(opts.ProjectName, opts.ImageName, opts.DeploymentNumber), nil
+}
+
+func (f *fakeImageBuilder) EnsureBuildxBuilder(_ context.Context, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensuredBuilder = append(f.ensuredBuilder, name)
+	return f.ensureErr
+}
+
+// fakeProjectQuerier is a programmable stand-in for the store's
+// OtherProjectsWithSameSource lookup. Tests set count (or err) to drive
+// the builder's shared-vs-isolated decision.
+type fakeProjectQuerier struct {
+	count int
+	err   error
+}
+
+func (f *fakeProjectQuerier) OtherProjectsWithSameSource(_ context.Context, _ int64) (int, error) {
+	return f.count, f.err
 }
 
 func TestBuilder_BuildsEachUniqueImageOnce(t *testing.T) {
@@ -58,7 +80,7 @@ func TestBuilder_BuildsEachUniqueImageOnce(t *testing.T) {
 	}
 	ws := &Workspace{Path: "/tmp/repo", Cobaltfile: cf, Commit: "abc"}
 	d := &fakeImageBuilder{}
-	b := NewBuilder(d, &fakeEnv{}, "/data")
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "/data")
 
 	out, err := b.Build(context.Background(), store.Project{ID: 7, Name: "api"},
 		store.Deployment{Number: 3}, ws, nil)
@@ -93,7 +115,7 @@ func TestBuilder_PassesCacheDir(t *testing.T) {
 		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
 	}
 	d := &fakeImageBuilder{}
-	b := NewBuilder(d, &fakeEnv{}, "/data")
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "/data")
 
 	_, err := b.Build(
 		context.Background(),
@@ -124,7 +146,7 @@ func TestBuilder_StaticOnlySkipsBuild(t *testing.T) {
 		Images: map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
 	}
 	d := &fakeImageBuilder{}
-	b := NewBuilder(d, &fakeEnv{}, "")
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "")
 
 	out, err := b.Build(context.Background(), store.Project{ID: 1, Name: "x"},
 		store.Deployment{Number: 1}, &Workspace{Cobaltfile: cf}, nil)
@@ -150,7 +172,7 @@ func TestBuilder_PropagatesEnvSecrets(t *testing.T) {
 		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
 	}
 	d := &fakeImageBuilder{}
-	b := NewBuilder(d, &fakeEnv{vars: map[string]string{"API_KEY": "k", "DB_URL": "u"}}, "")
+	b := NewBuilder(d, &fakeEnv{vars: map[string]string{"API_KEY": "k", "DB_URL": "u"}}, &fakeProjectQuerier{}, "")
 
 	_, err := b.Build(
 		context.Background(),
@@ -202,7 +224,7 @@ func TestBuilder_PrebuiltImageSkipsBuild(t *testing.T) {
 		// no Images map entry — image is a pre-built ref
 	}
 	d := &fakeImageBuilder{}
-	b := NewBuilder(d, &fakeEnv{}, "")
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "")
 	out, err := b.Build(
 		context.Background(),
 		store.Project{ID: 1, Name: "redis"},
@@ -245,7 +267,7 @@ func TestBuilder_MixedPrebuiltAndBuilt(t *testing.T) {
 		},
 	}
 	d := &fakeImageBuilder{}
-	b := NewBuilder(d, &fakeEnv{}, "")
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "")
 	out, err := b.Build(
 		context.Background(),
 		store.Project{ID: 1, Name: "openpanel"},
@@ -283,6 +305,146 @@ func TestBuilder_MixedPrebuiltAndBuilt(t *testing.T) {
 	}
 }
 
+// TestBuilder_UsesSharedBuilderForSoloProject proves a project with no
+// source siblings does NOT trigger isolated-builder creation — the
+// shared builder is used by passing an empty BuilderName, and
+// EnsureBuildxBuilder is not called from the build path (the daemon
+// already bootstrapped the shared builder at boot).
+func TestBuilder_UsesSharedBuilderForSoloProject(t *testing.T) {
+	t.Parallel()
+	cf := &cobaltfile.Cobaltfile{
+		Version:  "1.0",
+		Services: map[string]cobaltfile.Service{"web": {Image: "default", Port: 8000}},
+		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	}
+	d := &fakeImageBuilder{}
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{count: 0}, "")
+
+	if _, err := b.Build(
+		context.Background(),
+		store.Project{ID: 7, Name: "solo"},
+		store.Deployment{Number: 1},
+		&Workspace{Cobaltfile: cf},
+		nil,
+	); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(d.calls) != 1 {
+		t.Fatalf("calls: %d", len(d.calls))
+	}
+	if d.calls[0].BuilderName != "" {
+		t.Errorf("BuilderName: got %q, want empty (shared builder)", d.calls[0].BuilderName)
+	}
+	if len(d.ensuredBuilder) != 0 {
+		t.Errorf("EnsureBuildxBuilder called %v; want no calls for solo project", d.ensuredBuilder)
+	}
+}
+
+// TestBuilder_UsesIsolatedBuilderForSharedProject proves a project that
+// shares source with at least one sibling routes its build through
+// "cobalt-builder-<projectID>" AND ensures that builder exists first.
+func TestBuilder_UsesIsolatedBuilderForSharedProject(t *testing.T) {
+	t.Parallel()
+	cf := &cobaltfile.Cobaltfile{
+		Version:  "1.0",
+		Services: map[string]cobaltfile.Service{"web": {Image: "default", Port: 8000}},
+		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	}
+	d := &fakeImageBuilder{}
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{count: 1}, "")
+
+	if _, err := b.Build(
+		context.Background(),
+		store.Project{ID: 42, Name: "next"},
+		store.Deployment{Number: 1},
+		&Workspace{Cobaltfile: cf},
+		nil,
+	); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := "cobalt-builder-42"
+	if len(d.ensuredBuilder) != 1 || d.ensuredBuilder[0] != want {
+		t.Errorf("EnsureBuildxBuilder: got %v, want [%q]", d.ensuredBuilder, want)
+	}
+	if len(d.calls) != 1 {
+		t.Fatalf("calls: %d", len(d.calls))
+	}
+	if d.calls[0].BuilderName != want {
+		t.Errorf("BuilderName: got %q, want %q", d.calls[0].BuilderName, want)
+	}
+}
+
+// TestBuilder_SoftFailsOnStoreError proves a store query failure does
+// NOT block the deploy — we fall back to the shared builder and log a
+// warning. The build still runs because the cache race is rare and a
+// transient store error would otherwise be a deploy-fatal regression.
+func TestBuilder_SoftFailsOnStoreError(t *testing.T) {
+	t.Parallel()
+	cf := &cobaltfile.Cobaltfile{
+		Version:  "1.0",
+		Services: map[string]cobaltfile.Service{"web": {Image: "default", Port: 8000}},
+		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	}
+	d := &fakeImageBuilder{}
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{err: errors.New("store down")}, "")
+
+	var out strings.Builder
+	if _, err := b.Build(
+		context.Background(),
+		store.Project{ID: 99, Name: "x"},
+		store.Deployment{Number: 1},
+		&Workspace{Cobaltfile: cf},
+		&out,
+	); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(d.calls) != 1 {
+		t.Fatalf("calls: %d", len(d.calls))
+	}
+	if d.calls[0].BuilderName != "" {
+		t.Errorf("BuilderName: got %q, want empty (shared fallback)", d.calls[0].BuilderName)
+	}
+	if len(d.ensuredBuilder) != 0 {
+		t.Errorf("EnsureBuildxBuilder unexpectedly called: %v", d.ensuredBuilder)
+	}
+	if !strings.Contains(out.String(), "store down") {
+		t.Errorf("expected warning containing store error; got %q", out.String())
+	}
+}
+
+// TestBuilder_FailsHardOnEnsureBuildxBuilderError proves that once we
+// decide isolation is needed, failing to ensure the isolated builder
+// aborts the build rather than silently re-routing through the shared
+// builder (which would re-introduce the cache race we're trying to
+// prevent — cobalt#24).
+func TestBuilder_FailsHardOnEnsureBuildxBuilderError(t *testing.T) {
+	t.Parallel()
+	cf := &cobaltfile.Cobaltfile{
+		Version:  "1.0",
+		Services: map[string]cobaltfile.Service{"web": {Image: "default", Port: 8000}},
+		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	}
+	d := &fakeImageBuilder{ensureErr: errors.New("buildx down")}
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{count: 2}, "")
+
+	_, err := b.Build(
+		context.Background(),
+		store.Project{ID: 7, Name: "next"},
+		store.Deployment{Number: 1},
+		&Workspace{Cobaltfile: cf},
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected hard-fail when EnsureBuildxBuilder fails")
+	}
+	if !strings.Contains(err.Error(), "cobalt-builder-7") {
+		t.Errorf("error should name the failing builder: %v", err)
+	}
+	if len(d.calls) != 0 {
+		t.Errorf("Build called %d times; want 0 (must abort before image build)", len(d.calls))
+	}
+}
+
 func TestBuilder_PropagatesDockerError(t *testing.T) {
 	t.Parallel()
 	cf := &cobaltfile.Cobaltfile{
@@ -291,7 +453,7 @@ func TestBuilder_PropagatesDockerError(t *testing.T) {
 		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
 	}
 	d := &fakeImageBuilder{err: errors.New("docker boom")}
-	b := NewBuilder(d, &fakeEnv{}, "")
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "")
 	_, err := b.Build(
 		context.Background(),
 		store.Project{ID: 1, Name: "x"},

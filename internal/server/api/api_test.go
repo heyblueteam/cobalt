@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
+	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -136,6 +138,91 @@ func TestDeleteProject_RemovesOnDiskArtifacts(t *testing.T) {
 	if _, err := os.Stat(logDir); !os.IsNotExist(err) {
 		t.Errorf("log dir still exists after delete: err=%v", err)
 	}
+}
+
+// TestDeleteProject_TearsDownIsolatedBuilder proves DELETE
+// /api/projects/{name} fires `docker buildx rm --force cobalt-builder-<id>`
+// — the lifecycle hook for the per-project builder created at deploy
+// time by sibling-aware projects (cobalt#24).
+//
+// The call is unconditional and best-effort: we don't track whether the
+// project ever got an isolated builder. `buildx rm` against a missing
+// name is the common path for solo projects and is silently absorbed.
+func TestDeleteProject_TearsDownIsolatedBuilder(t *testing.T) {
+	t.Parallel()
+	r := &recordingRunner{}
+	tmp := t.TempDir()
+	db := openTestDB(t)
+	mux := http.NewServeMux()
+	h := &Handler{
+		DB:      db,
+		Queue:   deploy.NewQueue(db),
+		Docker:  docker.NewWithRunner(r),
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DataDir: tmp,
+	}
+	h.Register(mux)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	body, _ := json.Marshal(cobaltapi.ProjectCreateRequest{
+		Name: "api", GithubRepo: "h/api", Branch: "main",
+	})
+	resp, err := srv.Client().Post(srv.URL+"/api/projects", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	created := decode[cobaltapi.Project](t, resp)
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodDelete, srv.URL+"/api/projects/api", nil)
+	resp, err = srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	mustStatus(t, resp, http.StatusNoContent)
+	resp.Body.Close()
+
+	want := fmt.Sprintf("%s-%d", docker.BuildxBuilderName, created.ID)
+	found := false
+	for _, args := range r.argv() {
+		if len(args) >= 4 && args[0] == "buildx" && args[1] == "rm" && args[2] == "--force" && args[3] == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected `buildx rm --force %s`; got runs %v", want, r.argv())
+	}
+}
+
+// recordingRunner is a minimal docker.Runner stand-in: records every
+// invocation, returns nil. Lives in the api package because docker's
+// fakeRunner is unexported.
+type recordingRunner struct {
+	mu    sync.Mutex
+	calls [][]string
+}
+
+func (r *recordingRunner) Run(_ context.Context, args []string, _ io.Reader, _, _ io.Writer) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, append([]string(nil), args...))
+	return nil
+}
+
+func (r *recordingRunner) RunWithEnv(_ context.Context, _ map[string]string, args []string, _ io.Reader, _, _ io.Writer) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, append([]string(nil), args...))
+	return nil
+}
+
+func (r *recordingRunner) argv() [][]string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([][]string, len(r.calls))
+	copy(out, r.calls)
+	return out
 }
 
 func TestProjectsCRUD(t *testing.T) {

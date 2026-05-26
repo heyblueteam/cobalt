@@ -41,22 +41,36 @@ type EnvLister interface {
 	EnvVarMap(ctx context.Context, projectID int64) (map[string]string, error)
 }
 
+// ProjectQuerier is the subset of *store.DB the builder uses to decide
+// whether a project needs an isolated buildx instance. Kept distinct
+// from EnvLister so a future expansion of either responsibility doesn't
+// muddle the other's contract.
+type ProjectQuerier interface {
+	OtherProjectsWithSameSource(ctx context.Context, projectID int64) (int, error)
+}
+
 // DockerImageBuilder is the docker primitive the builder shells out to.
 // Implemented by *docker.Client; defined here so tests can fake it.
 type DockerImageBuilder interface {
 	Build(ctx context.Context, opts docker.BuildOpts) (string, error)
+	EnsureBuildxBuilder(ctx context.Context, name string) error
 }
 
 // NewBuilder returns a Builder that uses the supplied docker primitive
 // and per-project BuildKit cache directory rooted at dataDir/buildkit-cache.
-func NewBuilder(d DockerImageBuilder, env EnvLister, dataDir string) Builder {
-	return &dockerBuilder{docker: d, env: env, dataDir: dataDir}
+//
+// projects is consulted on every build to pick the right buildx instance:
+// shared by default, isolated when the project shares (repo, branch,
+// path) with another (cobalt#24).
+func NewBuilder(d DockerImageBuilder, env EnvLister, projects ProjectQuerier, dataDir string) Builder {
+	return &dockerBuilder{docker: d, env: env, projects: projects, dataDir: dataDir}
 }
 
 type dockerBuilder struct {
-	docker  DockerImageBuilder
-	env     EnvLister
-	dataDir string
+	docker   DockerImageBuilder
+	env      EnvLister
+	projects ProjectQuerier
+	dataDir  string
 }
 
 func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace, out io.Writer) ([]BuiltService, error) {
@@ -72,6 +86,36 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 	cacheDir := ""
 	if b.dataDir != "" {
 		cacheDir = filepath.Join(b.dataDir, "buildkit-cache", strconv.FormatInt(project.ID, 10))
+	}
+
+	// Pick the buildx instance for this build. Shared by default; if any
+	// other project points at the same (repo, branch, path), promote to
+	// an isolated per-project builder so the two can't poison each
+	// other's `--mount=type=secret` cache (cobalt#24).
+	//
+	// Store failure → soft-fall-back to the shared builder. We prefer
+	// availability over correctness here because the cache race is rare
+	// and a transient store error would otherwise block the deploy.
+	// EnsureBuildxBuilder failure → hard-fail: we decided isolation is
+	// needed; silently using the shared builder would re-introduce the
+	// race we set out to avoid.
+	builderName := ""
+	if b.projects != nil {
+		siblingCount, err := b.projects.OtherProjectsWithSameSource(ctx, project.ID)
+		switch {
+		case err != nil:
+			if out != nil {
+				fmt.Fprintf(out, "⚠️  could not check source siblings (%v); using shared builder\n", err)
+			}
+		case siblingCount > 0:
+			builderName = fmt.Sprintf("%s-%d", docker.BuildxBuilderName, project.ID)
+			if err := b.docker.EnsureBuildxBuilder(ctx, builderName); err != nil {
+				return nil, fmt.Errorf("deploy.Build: ensure isolated builder %q: %w", builderName, err)
+			}
+			if out != nil {
+				fmt.Fprintf(out, "🔒 isolated builder %q (%d sibling project(s) share this source)\n", builderName, siblingCount)
+			}
+		}
 	}
 
 	// Build each unique image only once. Mirrors disco's resolution
@@ -117,6 +161,7 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 			EnvSecrets:       envSecrets,
 			NoCache:          dep.NoCache,
 			CacheDir:         cacheDir,
+			BuilderName:      builderName,
 			Output:           out,
 		}
 		tag, err := b.docker.Build(ctx, opts)
