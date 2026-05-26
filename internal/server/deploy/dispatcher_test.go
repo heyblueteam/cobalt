@@ -232,7 +232,7 @@ func TestDispatcher_DifferentProjectsRunInParallel(t *testing.T) {
 	// Wait for both to be in flight before we release the gate.
 	var seenAPI, seenWeb atomic.Bool
 	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && !(seenAPI.Load() && seenWeb.Load()) {
+	for time.Now().Before(deadline) && (!seenAPI.Load() || !seenWeb.Load()) {
 		if dep, _ := db.GetDeployment(context.Background(), idA); dep.Status == cobaltapi.StateFetching {
 			seenAPI.Store(true)
 		}
@@ -241,7 +241,7 @@ func TestDispatcher_DifferentProjectsRunInParallel(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if !(seenAPI.Load() && seenWeb.Load()) {
+	if !seenAPI.Load() || !seenWeb.Load() {
 		t.Fatal("both projects should be in flight in parallel")
 	}
 	if runner.callCount() != 2 {

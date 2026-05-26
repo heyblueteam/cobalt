@@ -77,7 +77,12 @@ func RotateDeployLogs(
 		switch {
 		case strings.HasSuffix(path, ".log.gz"):
 			if purgeAge > 0 && info.ModTime().Before(purgeBefore) {
-				if err := os.Remove(path); err != nil {
+				// TOCTOU concern: path comes from filepath.Walk inside
+				// daemon-managed DataDir; no untrusted symlinks are
+				// possible without first compromising the host's
+				// daemon user — at which point cobalt has bigger
+				// problems than log rotation.
+				if err := os.Remove(path); err != nil { //nolint:gosec // daemon-owned dir tree
 					log.Warn("rotate: purge", "path", path, "error", err)
 					if firstErr == nil {
 						firstErr = err

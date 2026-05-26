@@ -14,20 +14,65 @@ linters:
     - unconvert
     - unparam
   settings:
+    gosec:
+      # Excluded rules:
+      # - G104: duplicate of errcheck.
+      # - G204: cobalt IS a process supervisor — exec.Command with
+      #   variable args (git, docker, ssh) is the whole job. Daemon
+      #   inputs come from trusted sources (rqlite store, GitHub
+      #   webhook after HMAC verify, operator CLI).
+      # - G301/G302/G306: cobalt writes operator-readable log files,
+      #   generated config artifacts, and upgrade tooling. 0644 / 0755
+      #   are intentional; the security boundary is the host's user
+      #   account, not file modes.
+      # - G304: deploy paths come from the cobalt store (project name,
+      #   cobalt.json from a freshly cloned repo). Variable-path file
+      #   reads are the design, and inputs are trusted.
+      excludes:
+        - G104
+        - G204
+        - G301
+        - G302
+        - G304
+        - G306
     errcheck:
       # Excluded functions whose errors are conventionally ignored.
       # Close() in defers (can't usefully act on a close error during
       # teardown), buffered Fprint* / Encode (writing to in-memory
       # buffers never fails), and best-effort os.Remove in cleanup
       # paths. Anything outside these patterns still gets flagged.
+      #
+      # Close-method receivers are listed by concrete type because
+      # errcheck matches the static type, not the io.Closer interface:
+      # `defer conn.Close()` where conn is *ssh.Conn doesn't match the
+      # `(io.Closer).Close` pattern.
       exclude-functions:
         - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Listener).Close
+        - (net.Conn).Close
+        - (io.PipeReader).Close
+        - (io.PipeWriter).Close
+        - (*io.PipeReader).Close
+        - (*io.PipeWriter).Close
+        - (io.WriteCloser).Close
+        - (*github.com/heyblueteam/cobalt/internal/ssh.Conn).Close
+        - (*golang.org/x/crypto/ssh.Session).Close
+        - (*golang.org/x/crypto/ssh.Session).Signal
+        - (*github.com/coder/websocket.Conn).Close
+        - (*github.com/coder/websocket.Conn).CloseNow
+        - (*github.com/rqlite/rqlite-go-http.Client).Close
         - fmt.Fprint
         - fmt.Fprintf
         - fmt.Fprintln
         - (*encoding/json.Encoder).Encode
         - (net/http.ResponseWriter).Write
         - os.Remove
+        # Process teardown: best-effort kill / wait in shutdown paths;
+        # nothing actionable to do with the error.
+        - (*os.Process).Kill
+        - syscall.Kill
+        - (*os/exec.Cmd).Wait
     revive:
       rules:
         # Blue's cobalt codebase doesn't enforce "every exported
@@ -42,10 +87,13 @@ linters:
       # Test files intentionally use weak crypto, hardcoded test
       # credentials, InsecureSkipVerify, etc. for fixtures. Scoping
       # gosec out of _test.go avoids ~15 false-positive flags on
-      # values that are obviously not production secrets.
+      # values that are obviously not production secrets. unparam
+      # likewise: test helpers commonly have "always-the-same-arg"
+      # signatures kept open for future flexibility.
       - path: _test\.go
         linters:
           - gosec
+          - unparam
       # e2e harness env builds an HTTP client against the local test
       # daemon with InsecureSkipVerify; not a production path.
       - path: e2e/env\.go

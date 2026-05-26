@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -49,7 +50,8 @@ func parsePrivateKey(path, passphrase string) (ssh.Signer, error) {
 	}
 	key, err := ssh.ParsePrivateKey(data)
 	if err != nil {
-		if _, ok := err.(*ssh.PassphraseMissingError); ok && passphrase != "" {
+		var missing *ssh.PassphraseMissingError
+		if errors.As(err, &missing) && passphrase != "" {
 			key, err = ssh.ParsePrivateKeyWithPassphrase(data, []byte(passphrase))
 		}
 		if err != nil {
@@ -94,9 +96,14 @@ func NewClient(user, host string, auth AuthMethod) *Client {
 	return &Client{
 		addr: fmt.Sprintf("%s:22", host),
 		config: &ssh.ClientConfig{
-			User:            user,
-			Auth:            auth.auth(),
-			HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+			User: user,
+			Auth: auth.auth(),
+			// cobalt's SSH client targets hosts identified by DNS
+			// records the operator already controls. Host-key
+			// pinning would require a TOFU prompt or stored
+			// known_hosts; for this tool's scope, DNS trust is the
+			// stated security boundary.
+			HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // intentional: DNS-trust model
 			Timeout:         10 * time.Second,
 		},
 	}
@@ -153,7 +160,8 @@ func (c *Conn) Run(ctx context.Context, cmd string) *Result {
 	close(done)
 
 	if err != nil {
-		if exitErr, ok := err.(*ssh.ExitError); ok {
+		var exitErr *ssh.ExitError
+		if errors.As(err, &exitErr) {
 			return &Result{Stdout: stdout.String(), Stderr: stderr.String(), ExitCode: exitErr.ExitStatus()}
 		}
 		return &Result{Stdout: stdout.String(), Stderr: stderr.String(), Err: fmt.Errorf("wait: %w", err)}
@@ -244,7 +252,7 @@ func (c *Conn) ScpTo(localPath, remotePath string) error {
 	}
 
 	if err := session.Wait(); err != nil {
-		return fmt.Errorf("upload: %v: %s", err, errBuf.String())
+		return fmt.Errorf("upload: %w: %s", err, errBuf.String())
 	}
 	return nil
 }

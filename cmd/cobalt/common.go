@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -87,9 +88,17 @@ type confirmError struct{}
 func (confirmError) Error() string { return "aborted" }
 
 func IsConfirmAbort(err error) bool {
-	_, ok := err.(confirmError)
-	return ok
+	var ce confirmError
+	return errors.As(err, &ce)
 }
+
+// exitCodeError lets a command propagate a specific process exit code
+// up to main() without calling os.Exit mid-flow (which would skip any
+// deferred cleanup — terminal restore, signal stop, etc.). main()
+// unwraps via errors.As and calls os.Exit AFTER all defers have run.
+type exitCodeError struct{ Code int }
+
+func (e exitCodeError) Error() string { return fmt.Sprintf("exit code %d", e.Code) }
 
 func confirm(cmd *cobra.Command, msg string) error {
 	if cmd.Flag("yes").Value.String() == "true" {

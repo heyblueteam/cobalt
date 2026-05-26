@@ -52,6 +52,11 @@ const (
 
 // do issues an authenticated request and decodes the response. credential
 // is consumed per the auth mode. Non-2xx responses produce *HTTPError.
+// body is currently always nil at the call sites; kept as a parameter so
+// adding POST/PUT-with-body endpoints (manifest exchange already does
+// POST) doesn't require widening the signature.
+//
+//nolint:unparam // body kept for future-write call sites
 func (c *Client) do(ctx context.Context, method, path string, mode auth, credential string, body, out any) error {
 	var buf io.Reader
 	if body != nil {

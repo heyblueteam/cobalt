@@ -257,7 +257,9 @@ var errOffsetInvalid = httpErr("offset must be a non-negative integer")
 func waitForFile(ctx context.Context, path string, budget time.Duration) (*os.File, error) {
 	deadline := time.Now().Add(budget)
 	for {
-		f, err := os.Open(path)
+		// path is built by the daemon from validated project name +
+		// deployment number under DataDir; not user-controlled.
+		f, err := os.Open(path) //nolint:gosec // daemon-constructed path
 		if err == nil {
 			return f, nil
 		}

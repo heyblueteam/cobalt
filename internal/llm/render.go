@@ -136,7 +136,7 @@ func renderCommand(cmd *cobra.Command) string {
 		cmd.Flags().VisitAll(func(flag *pflag.Flag) {
 			desc := flag.Usage
 			if flag.DefValue != "" {
-				desc = desc + fmt.Sprintf(" (default: %s)", flag.DefValue)
+				desc += fmt.Sprintf(" (default: %s)", flag.DefValue)
 			}
 			lines = append(lines, fmt.Sprintf("  --%s %s: %s", flag.Name, flag.Value.Type(), desc))
 		})

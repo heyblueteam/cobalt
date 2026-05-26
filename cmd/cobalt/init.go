@@ -139,10 +139,7 @@ Examples:
 			defer conn.Close()
 
 			// 🔍 Detect environment and show what we're about to do.
-			env, err := detectEnv(ctx, conn, host, publicHost, insecureTLS, composeFile, noCaddyfile)
-			if err != nil {
-				return err
-			}
+			env := detectEnv(ctx, conn, host, publicHost, insecureTLS, composeFile, noCaddyfile)
 
 			// 🌐 Confirm public hostname (unless --public-host was supplied).
 			if publicHost == "" {
@@ -494,7 +491,7 @@ type envState struct {
 	proposedPublicHost string
 }
 
-func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag string, insecureTLS bool, composeFile string, noCaddyfile bool) (envState, error) {
+func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag string, insecureTLS bool, composeFile string, noCaddyfile bool) envState {
 	step := output.StartStep(output.IconDetect, "Detecting environment")
 
 	dockerCheck := conn.Run(ctx, "docker --version")
@@ -541,7 +538,7 @@ func detectEnv(ctx context.Context, conn *ssh.Conn, sshHost, publicHostFlag stri
 		dockerInstalled:    dockerInstalled,
 		swarmActive:        swarmActive,
 		proposedPublicHost: proposed,
-	}, nil
+	}
 }
 
 // dialSSH wraps the auth selection and connect into a single 🔌 step.

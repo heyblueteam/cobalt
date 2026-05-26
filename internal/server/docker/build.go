@@ -165,10 +165,7 @@ func quoteDotEnvValue(v string) string {
 	if v == "" {
 		return ""
 	}
-	needsQuote := false
-	if v[0] == '#' {
-		needsQuote = true
-	}
+	needsQuote := v[0] == '#'
 	if !needsQuote {
 		switch v[0] {
 		case ' ', '\t':

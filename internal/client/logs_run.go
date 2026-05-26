@@ -93,7 +93,7 @@ func readUpgradeErrorBody(resp *http.Response) string {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if len(body) == 0 {
-		return fmt.Sprintf("%s", resp.Status)
+		return resp.Status
 	}
 	// Daemon wraps errors in {"error": "..."}. Decode + return the
 	// inner string when present; fall back to the raw body otherwise.

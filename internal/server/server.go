@@ -389,7 +389,7 @@ func waitForRqlited(url string, timeout time.Duration) bool {
 			continue
 		}
 		err = db.Ping(context.Background())
-		db.Client.Close()
+		_ = db.Close()
 		if err == nil {
 			return true
 		}

@@ -187,7 +187,7 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 		if len(results) == 0 {
 			return nil, nil
 		}
-		deps, _ := scanDeployments(results[0].Values)
+		deps := scanDeployments(results[0].Values)
 		return deps, nil
 	}
 
@@ -210,7 +210,7 @@ func (db *DB) ListDeploymentsForProject(ctx context.Context, projectID int64, li
 	if len(results) == 0 {
 		return nil, nil
 	}
-	deps, _ := scanDeployments(results[0].Values)
+	deps := scanDeployments(results[0].Values)
 	return deps, nil
 }
 
@@ -265,7 +265,7 @@ func (db *DB) QueuedDeployments(ctx context.Context) ([]Deployment, error) {
 	if len(results) == 0 {
 		return nil, nil
 	}
-	deps, _ := scanDeployments(results[0].Values)
+	deps := scanDeployments(results[0].Values)
 	return deps, nil
 }
 
@@ -426,16 +426,16 @@ func (db *DB) ActiveDeployments(ctx context.Context) ([]Deployment, error) {
 	if len(results) == 0 {
 		return nil, nil
 	}
-	deps, _ := scanDeployments(results[0].Values)
+	deps := scanDeployments(results[0].Values)
 	return deps, nil
 }
 
-func scanDeployments(rows [][]any) ([]Deployment, error) {
+func scanDeployments(rows [][]any) []Deployment {
 	var out []Deployment
 	for _, row := range rows {
 		out = append(out, *scanDeploymentRow(row))
 	}
-	return out, nil
+	return out
 }
 
 func scanDeploymentRow(row []any) *Deployment {
