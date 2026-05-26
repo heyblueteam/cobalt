@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"slices"
 	"strings"
 )
 
@@ -62,15 +63,12 @@ func ValidateProjectPath(p string) error {
 	if cleaned := path.Clean(p); cleaned != p {
 		return fmt.Errorf("%w: not in canonical form (got %q, want %q)", ErrProjectPathInvalid, p, cleaned)
 	}
-	for _, part := range strings.Split(p, "/") {
-		if part == ".." {
-			return fmt.Errorf("%w: parent traversal (`..`) not allowed", ErrProjectPathInvalid)
-		}
-		if part == "" {
-			// path.Clean already collapses these, but defense in
-			// depth in case of future logic changes.
-			return fmt.Errorf("%w: empty segment", ErrProjectPathInvalid)
-		}
+	// Per-segment check for `..`. Empty segments are impossible here:
+	// path.Clean collapses `//`, leading/trailing slashes are rejected
+	// earlier, and the canonical-form check rejects anything else that
+	// would produce an empty segment.
+	if slices.Contains(strings.Split(p, "/"), "..") {
+		return fmt.Errorf("%w: parent traversal (`..`) not allowed", ErrProjectPathInvalid)
 	}
 	return nil
 }
