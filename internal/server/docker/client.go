@@ -171,13 +171,18 @@ func (c *Client) EnsureBuildxBuilder(ctx context.Context, name string) error {
 	)
 }
 
-// RemoveBuildxBuilder tears down a buildx instance by name. Best-effort:
-// callers use this on project deletion, where a missing builder ("never
-// got isolated") is the expected case for the majority of projects. The
-// underlying `docker buildx rm --force` exits non-zero only on real
-// failures (docker daemon down, etc.); a missing-builder error message
-// is normal and surfaced to the caller, which logs and continues.
+// RemoveBuildxBuilder tears down a buildx instance by name. Returns nil
+// when the builder doesn't exist — that's the common path for project
+// deletes (only sibling-sharing projects ever got an isolated builder).
+//
+// We inspect first so the caller can treat any non-nil error as a real
+// failure (docker daemon down, permission issue) worth surfacing,
+// instead of guessing whether a non-zero rm exit means "missing — fine"
+// or "broken — page someone".
 func (c *Client) RemoveBuildxBuilder(ctx context.Context, name string) error {
+	if err := c.run(ctx, "buildx", "inspect", name); err != nil {
+		return nil
+	}
 	return c.run(ctx, "buildx", "rm", "--force", name)
 }
 
