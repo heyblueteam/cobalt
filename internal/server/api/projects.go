@@ -1,13 +1,16 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
@@ -198,23 +201,35 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
-	h.cleanupProjectArtifacts(p.Name)
+	h.cleanupProjectArtifacts(r.Context(), *p)
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// cleanupProjectArtifacts removes the on-disk paths a project owns. Failures
-// are logged but do not fail the API call — the DB row is already gone, and
-// stale dirs are recoverable by the operator.
-func (h *Handler) cleanupProjectArtifacts(projectName string) {
-	if h.DataDir == "" {
-		return
+// cleanupProjectArtifacts removes the on-disk paths a project owns AND
+// the per-project buildx builder, if any. Failures are logged but do not
+// fail the API call — the DB row is already gone, and stale dirs or
+// builders are recoverable by the operator.
+//
+// Builder removal is best-effort: the majority of projects never get an
+// isolated builder (only those sharing source with a sibling do; see
+// cobalt#24), so `buildx rm` for a missing instance is the expected
+// case. We log at debug-ish level to avoid noise in the common path.
+func (h *Handler) cleanupProjectArtifacts(ctx context.Context, p store.Project) {
+	if h.DataDir != "" {
+		for _, path := range []string{
+			filepath.Join(h.DataDir, "projects", p.Name),
+			filepath.Join(h.DataDir, "logs", "deployments", p.Name),
+		} {
+			if err := os.RemoveAll(path); err != nil {
+				h.Log.Warn("api: delete project: remove dir", "path", path, "error", err)
+			}
+		}
 	}
-	for _, p := range []string{
-		filepath.Join(h.DataDir, "projects", projectName),
-		filepath.Join(h.DataDir, "logs", "deployments", projectName),
-	} {
-		if err := os.RemoveAll(p); err != nil {
-			h.Log.Warn("api: delete project: remove dir", "path", p, "error", err)
+	if h.Docker != nil {
+		builderName := fmt.Sprintf("%s-%d", docker.BuildxBuilderName, p.ID)
+		if err := h.Docker.RemoveBuildxBuilder(ctx, builderName); err != nil {
+			h.Log.Debug("api: delete project: remove builder (best-effort)",
+				"project", p.Name, "builder", builderName, "error", err)
 		}
 	}
 }

@@ -221,6 +221,156 @@ func TestCreateProject_RejectsInvalidPath(t *testing.T) {
 	}
 }
 
+// TestOtherProjectsWithSameSource_Solo proves a project with no siblings
+// returns 0 — the deploy builder will route through the shared builder.
+func TestOtherProjectsWithSameSource_Solo(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	id, _ := db.CreateProject(ctx, Project{
+		Name: "solo", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	n, err := db.OtherProjectsWithSameSource(ctx, id)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count: got %d, want 0", n)
+	}
+}
+
+// TestOtherProjectsWithSameSource_Sibling proves two projects with the
+// same (repo, branch, path) each see the other.
+func TestOtherProjectsWithSameSource_Sibling(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idA, _ := db.CreateProject(ctx, Project{
+		Name: "next", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "app",
+	})
+	idB, _ := db.CreateProject(ctx, Project{
+		Name: "white-label", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "app",
+	})
+
+	for _, c := range []struct {
+		id   int64
+		want int
+	}{{idA, 1}, {idB, 1}} {
+		n, err := db.OtherProjectsWithSameSource(ctx, c.id)
+		if err != nil {
+			t.Fatalf("query id=%d: %v", c.id, err)
+		}
+		if n != c.want {
+			t.Errorf("id=%d count: got %d, want %d", c.id, n, c.want)
+		}
+	}
+}
+
+// TestOtherProjectsWithSameSource_DifferentPath proves that two projects
+// sharing repo + branch but pointing at different sub-paths do NOT count
+// as siblings — they don't race on BuildKit's in-memory cache because
+// the build contexts are disjoint.
+func TestOtherProjectsWithSameSource_DifferentPath(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idAPI, _ := db.CreateProject(ctx, Project{
+		Name: "api", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	_, _ = db.CreateProject(ctx, Project{
+		Name: "next", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "app",
+	})
+	n, err := db.OtherProjectsWithSameSource(ctx, idAPI)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count: got %d, want 0 (different path)", n)
+	}
+}
+
+// TestOtherProjectsWithSameSource_DifferentBranch proves the branch
+// column participates in the match.
+func TestOtherProjectsWithSameSource_DifferentBranch(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idA, _ := db.CreateProject(ctx, Project{
+		Name: "prod", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	_, _ = db.CreateProject(ctx, Project{
+		Name: "staging", GithubRepo: "heyblueteam/blue", Branch: "staging", Path: "api",
+	})
+	n, err := db.OtherProjectsWithSameSource(ctx, idA)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count: got %d, want 0 (different branch)", n)
+	}
+}
+
+// TestOtherProjectsWithSameSource_AfterUpdate proves the live-query
+// model — when one project's source changes via UpdateProjectSource so
+// it now matches another, both projects start reporting siblings without
+// any per-project state migration.
+func TestOtherProjectsWithSameSource_AfterUpdate(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	idA, _ := db.CreateProject(ctx, Project{
+		Name: "a", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
+	})
+	idB, _ := db.CreateProject(ctx, Project{
+		Name: "b", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "app",
+	})
+
+	// Before update: different paths → no siblings.
+	if n, _ := db.OtherProjectsWithSameSource(ctx, idA); n != 0 {
+		t.Fatalf("before update, A: got %d, want 0", n)
+	}
+
+	// Retarget A to share the path with B.
+	if err := db.UpdateProjectSource(ctx, idA, "heyblueteam/blue", "main", "app"); err != nil {
+		t.Fatalf("UpdateProjectSource: %v", err)
+	}
+
+	for _, c := range []struct {
+		id   int64
+		want int
+	}{{idA, 1}, {idB, 1}} {
+		n, err := db.OtherProjectsWithSameSource(ctx, c.id)
+		if err != nil {
+			t.Fatalf("query id=%d: %v", c.id, err)
+		}
+		if n != c.want {
+			t.Errorf("after update id=%d: got %d, want %d", c.id, n, c.want)
+		}
+	}
+}
+
+// TestOtherProjectsWithSameSource_NonExistent proves a lookup against an
+// unknown ID returns (0, nil) — the caller (deploy builder) treats that
+// as "no siblings, use shared builder". Defensive: avoids surfacing a
+// transient race between project delete and an in-flight deploy as a
+// deploy-fatal error.
+func TestOtherProjectsWithSameSource_NonExistent(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+	n, err := db.OtherProjectsWithSameSource(context.Background(), 99999)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("count: got %d, want 0", n)
+	}
+}
+
 func TestActiveDeploymentNumbers(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)

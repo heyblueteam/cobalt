@@ -155,7 +155,7 @@ func TestEnsureBuildxBuilder_NoOpWhenInspectSucceeds(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
 	c := NewWithRunner(r)
-	if err := c.EnsureBuildxBuilder(context.Background()); err != nil {
+	if err := c.EnsureBuildxBuilder(context.Background(), BuildxBuilderName); err != nil {
 		t.Fatalf("EnsureBuildxBuilder: %v", err)
 	}
 	// Inspect succeeded (fake returns nil error by default), so create
@@ -173,12 +173,86 @@ func TestEnsureBuildxBuilder_CreatesWhenInspectFails(t *testing.T) {
 	r := newFakeRunner()
 	r.answerErr("buildx inspect", staticErr("not found"))
 	c := NewWithRunner(r)
-	if err := c.EnsureBuildxBuilder(context.Background()); err != nil {
+	if err := c.EnsureBuildxBuilder(context.Background(), BuildxBuilderName); err != nil {
 		t.Fatalf("EnsureBuildxBuilder: %v", err)
 	}
 	last := r.lastCall().Args
 	if !argSequence(last, "buildx", "create", "--name", BuildxBuilderName, "--driver", "docker-container", "--bootstrap") {
 		t.Errorf("expected buildx create with docker-container driver, got %v", last)
+	}
+}
+
+// TestEnsureBuildxBuilder_CustomNameThreadsThrough proves the name
+// argument reaches buildx unmodified — the per-project isolated builder
+// path depends on this for the hybrid scheme (cobalt#24).
+func TestEnsureBuildxBuilder_CustomNameThreadsThrough(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerErr("buildx inspect", staticErr("not found"))
+	c := NewWithRunner(r)
+	if err := c.EnsureBuildxBuilder(context.Background(), "cobalt-builder-42"); err != nil {
+		t.Fatalf("EnsureBuildxBuilder: %v", err)
+	}
+	last := r.lastCall().Args
+	if !argSequence(last, "buildx", "create", "--name", "cobalt-builder-42", "--driver", "docker-container", "--bootstrap") {
+		t.Errorf("expected create with custom name, got %v", last)
+	}
+}
+
+// TestRemoveBuildxBuilder_PassesForceFlag locks in the argv shape the
+// cleanup-on-delete path depends on: `buildx rm --force <name>` so a
+// removal never hangs waiting for an in-flight build (the dispatcher's
+// per-project serialization guarantees no real concurrent build by the
+// time cleanup runs).
+func TestRemoveBuildxBuilder_PassesForceFlag(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if err := c.RemoveBuildxBuilder(context.Background(), "cobalt-builder-42"); err != nil {
+		t.Fatalf("RemoveBuildxBuilder: %v", err)
+	}
+	last := r.lastCall().Args
+	if !argSequence(last, "buildx", "rm", "--force", "cobalt-builder-42") {
+		t.Errorf("expected `buildx rm --force <name>`, got %v", last)
+	}
+}
+
+// TestBuild_BuilderNameThreadsThrough proves opts.BuilderName lands in
+// argv as `--builder <name>`. This is the lever the deploy layer uses to
+// route a build through an isolated per-project buildx (cobalt#24).
+func TestBuild_BuilderNameThreadsThrough(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if _, err := c.Build(context.Background(), BuildOpts{
+		ProjectName:      "api",
+		ImageName:        "default",
+		DeploymentNumber: 1,
+		BuilderName:      "cobalt-builder-42",
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	args := r.lastCall().Args
+	if !argSequence(args, "--builder", "cobalt-builder-42") {
+		t.Errorf("expected --builder cobalt-builder-42, got %v", args)
+	}
+}
+
+// TestBuild_EmptyBuilderNameFallsBackToShared keeps every existing
+// caller (and every solo project after the cobalt#24 change) on the
+// shared builder by default.
+func TestBuild_EmptyBuilderNameFallsBackToShared(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if _, err := c.Build(context.Background(), BuildOpts{
+		ProjectName: "api", ImageName: "default", DeploymentNumber: 1,
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	args := r.lastCall().Args
+	if !argSequence(args, "--builder", BuildxBuilderName) {
+		t.Errorf("expected fallback to shared builder, got %v", args)
 	}
 }
 

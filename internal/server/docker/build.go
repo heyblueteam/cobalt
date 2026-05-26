@@ -24,6 +24,13 @@ type BuildOpts struct {
 	// cache between projects, so two projects sharing a repo can't poison
 	// each other's builds (improvement E from the deploy-flow audit).
 	CacheDir string
+	// BuilderName selects the buildx instance to route the build through.
+	// Empty falls back to BuildxBuilderName (the shared builder). The
+	// deploy layer sets this to "cobalt-builder-<projectID>" for projects
+	// that share source with at least one sibling — isolating BuildKit's
+	// in-memory secret cache so two parallel builds of the same source
+	// can't cross-contaminate each other's `--secret` values (cobalt#24).
+	BuilderName string
 	// Output, when non-nil, captures buildx's stdout AND stderr (interleaved
 	// — buildkit writes its progress to stderr, image layer progress to
 	// stdout). Callers tee this into the per-deployment log file so
@@ -53,13 +60,20 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	}
 
 	tag := InternalImageName(opts.ProjectName, opts.ImageName, opts.DeploymentNumber)
-	// "buildx build --builder cobalt-builder" routes the build through the
-	// docker-container driver instance the daemon ensures at boot. --load
-	// imports the resulting image into the host's docker engine so swarm
-	// can run it.
+	// "buildx build --builder <name>" routes the build through a
+	// docker-container driver instance. --load imports the resulting
+	// image into the host's docker engine so swarm can run it.
+	//
+	// BuilderName empty → shared builder (default). The deploy layer
+	// picks an isolated "cobalt-builder-<projectID>" builder name for
+	// projects that share source with siblings (cobalt#24).
+	builder := opts.BuilderName
+	if builder == "" {
+		builder = BuildxBuilderName
+	}
 	args := []string{
 		"buildx", "build",
-		"--builder", BuildxBuilderName,
+		"--builder", builder,
 		"--load",
 		"-t", tag,
 	}
