@@ -17,13 +17,25 @@ import (
 type fakeReconcileStore struct {
 	projects   []store.Project
 	lastByID   map[int64]*store.Deployment
+	active     map[int64]*store.Deployment
 	domains    map[int64][]string
 	listErr    error
+	activeErr  error
 	domainsErr error
 }
 
 func (f *fakeReconcileStore) ListProjects(_ context.Context) ([]store.Project, error) {
 	return f.projects, f.listErr
+}
+
+func (f *fakeReconcileStore) ActiveDeploymentForProject(_ context.Context, projectID int64) (*store.Deployment, error) {
+	if f.activeErr != nil {
+		return nil, f.activeErr
+	}
+	if d := f.active[projectID]; d != nil {
+		return d, nil
+	}
+	return nil, store.ErrNotFound
 }
 
 func (f *fakeReconcileStore) GetLastSuccessfulDeployment(_ context.Context, projectID int64) (*store.Deployment, error) {
@@ -43,10 +55,12 @@ func (f *fakeReconcileStore) ListPrimaryDomainsForProject(_ context.Context, pro
 type fakeReconcileCaddy struct {
 	mu sync.Mutex
 
-	routeExists    map[int64]bool
-	routeExistsErr error
-	upstream       map[int64]string
-	domainsErr     error
+	routeExists      map[int64]bool
+	routeExistsErr   error
+	upstream         map[int64]string
+	currentDomains   map[int64][]string
+	currentDomainErr error
+	domainsErr       error
 
 	addCalls    []int64
 	serveCalls  []serveServiceCall
@@ -71,9 +85,16 @@ type domainCall struct {
 
 func newFakeReconcileCaddy() *fakeReconcileCaddy {
 	return &fakeReconcileCaddy{
-		routeExists: map[int64]bool{},
-		upstream:    map[int64]string{},
+		routeExists:    map[int64]bool{},
+		upstream:       map[int64]string{},
+		currentDomains: map[int64][]string{},
 	}
+}
+
+func (f *fakeReconcileCaddy) CurrentDomains(_ context.Context, id int64) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.currentDomains[id], f.currentDomainErr
 }
 
 func (f *fakeReconcileCaddy) ProjectRouteExists(_ context.Context, id int64) (bool, error) {
@@ -608,6 +629,120 @@ func TestReconcile_ProjectRouteExistsError_DoesNotHaltSweep(t *testing.T) {
 	_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
 	if err != nil {
 		t.Fatalf("Reconcile: error should be nil (per-project failure absorbed), got: %v", err)
+	}
+}
+
+func TestReconcile_SkipsProjectWithActiveDeployment(t *testing.T) {
+	t.Parallel()
+	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
+		Version: "1.0",
+		Services: map[string]cobaltfile.Service{
+			"web": {Type: cobaltfile.TypeContainer, Image: "default", Port: 3000},
+		},
+		Images: map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	})
+	st := &fakeReconcileStore{
+		projects: []store.Project{{ID: 1, Name: "api"}},
+		lastByID: map[int64]*store.Deployment{
+			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess, ResolvedCobaltfile: nullStr(cf)},
+		},
+		// A deploy is mid-swap: it owns the project's Caddy state right now.
+		active: map[int64]*store.Deployment{
+			1: {ID: 11, ProjectID: 1, Number: 8, Status: cobaltapi.StateSwapping},
+		},
+		domains: map[int64][]string{1: {"api.example.com"}},
+	}
+	cy := newFakeReconcileCaddy()
+	cy.routeExists[1] = true
+	cy.upstream[1] = "api-5-web" // drifted — would normally be "corrected" back to api-7-web
+
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if corrected != 0 {
+		t.Errorf("corrected: got %d, want 0 (project has an in-flight deploy)", corrected)
+	}
+	// The reconciler must not touch Caddy at all for an in-flight project —
+	// doing so is exactly what reverts the deploy's swap.
+	if len(cy.serveCalls)+len(cy.domainCalls)+len(cy.addCalls)+len(cy.staticCalls) != 0 {
+		t.Errorf("reconciler mutated Caddy for an in-flight project: serve=%d domain=%d add=%d static=%d",
+			len(cy.serveCalls), len(cy.domainCalls), len(cy.addCalls), len(cy.staticCalls))
+	}
+}
+
+func TestReconcile_DomainsInSync_SkipsSetDomains(t *testing.T) {
+	t.Parallel()
+	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
+		Version: "1.0",
+		Services: map[string]cobaltfile.Service{
+			"web": {Type: cobaltfile.TypeContainer, Image: "default", Port: 3000},
+		},
+		Images: map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	})
+	st := &fakeReconcileStore{
+		projects: []store.Project{{ID: 1, Name: "api"}},
+		lastByID: map[int64]*store.Deployment{
+			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess, ResolvedCobaltfile: nullStr(cf)},
+		},
+		domains: map[int64][]string{1: {"api.example.com", "www.api.example.com"}},
+	}
+	cy := newFakeReconcileCaddy()
+	cy.routeExists[1] = true
+	cy.upstream[1] = "api-7-web"
+	// Live host set matches desired (order intentionally swapped to prove the
+	// set comparison ignores ordering).
+	cy.currentDomains[1] = []string{"www.api.example.com", "api.example.com"}
+
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if corrected != 0 {
+		t.Errorf("corrected: got %d, want 0", corrected)
+	}
+	if len(cy.domainCalls) != 0 {
+		t.Errorf("SetDomainsForProject called %d times when domains in sync (should be 0)", len(cy.domainCalls))
+	}
+}
+
+func TestReconcile_DomainsDriftedSet_TriggersSetDomains(t *testing.T) {
+	t.Parallel()
+	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
+		Version: "1.0",
+		Services: map[string]cobaltfile.Service{
+			"web": {Type: cobaltfile.TypeContainer, Image: "default", Port: 3000},
+		},
+		Images: map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	})
+	st := &fakeReconcileStore{
+		projects: []store.Project{{ID: 1, Name: "api"}},
+		lastByID: map[int64]*store.Deployment{
+			1: {ID: 10, ProjectID: 1, Number: 7, Status: cobaltapi.StateSuccess, ResolvedCobaltfile: nullStr(cf)},
+		},
+		domains: map[int64][]string{1: {"api.example.com", "new.example.com"}},
+	}
+	cy := newFakeReconcileCaddy()
+	cy.routeExists[1] = true
+	cy.upstream[1] = "api-7-web"
+	cy.currentDomains[1] = []string{"api.example.com"} // missing new.example.com
+
+	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(cy.domainCalls) != 1 {
+		t.Fatalf("SetDomainsForProject calls: %d, want 1 (domains drifted)", len(cy.domainCalls))
+	}
+}
+
+func TestReconcile_ActiveDeploymentCheckError_DoesNotHaltSweep(t *testing.T) {
+	t.Parallel()
+	st := &fakeReconcileStore{
+		projects:  []store.Project{{ID: 1, Name: "api"}},
+		activeErr: errors.New("rqlite unreachable"),
+	}
+	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, newFakeReconcileCaddy()); err != nil {
+		t.Fatalf("Reconcile: per-project failure should be absorbed, got: %v", err)
 	}
 }
 

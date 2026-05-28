@@ -22,6 +22,11 @@ type CaddyReconcileStore interface {
 	// by separate Caddy `cobalt-redirect-*` routes and reconciled out
 	// of band by the API domain handlers.
 	ListPrimaryDomainsForProject(ctx context.Context, projectID int64) ([]string, error)
+	// ActiveDeploymentForProject returns the project's in-flight deployment
+	// (fetching/building/swapping), or store.ErrNotFound if none. The
+	// reconciler uses it to stand down while a deploy owns the project's
+	// Caddy state — see reconcileProject.
+	ActiveDeploymentForProject(ctx context.Context, projectID int64) (*store.Deployment, error)
 }
 
 // CaddyReconcileTarget is the Caddy subset the reconciler talks to.
@@ -29,6 +34,7 @@ type CaddyReconcileTarget interface {
 	ProjectRouteExists(ctx context.Context, projectID int64) (bool, error)
 	AddProjectRoute(ctx context.Context, projectID int64, domains []string) error
 	CurrentUpstream(ctx context.Context, projectID int64) (string, error)
+	CurrentDomains(ctx context.Context, projectID int64) ([]string, error)
 	ServeService(ctx context.Context, projectID int64, container string, port int) error
 	ServeStaticSite(ctx context.Context, projectID int64, projectName string, deploymentNumber int) error
 	SetDomainsForProject(ctx context.Context, projectID int64, domains []string) error
@@ -94,6 +100,21 @@ func reconcileProject(
 	cy CaddyReconcileTarget,
 	p store.Project,
 ) (bool, error) {
+	// Stand down while a deploy is in flight. A deploy owns its project's
+	// Caddy state end-to-end (start services → swap upstream → verify →
+	// mark success). The reconciler's notion of "desired" is the LAST
+	// SUCCESSFUL deployment, which is stale during a deploy: acting on it
+	// here PATCHes the upstream back to the previous container while the
+	// deploy is swapping to the new one, so the deploy's verify reads the
+	// reverted value and fails ("serve verify drifted"). Skip until the
+	// deploy reaches a terminal state; the post-deploy state is then
+	// authoritative and we reconcile against it normally.
+	if _, err := st.ActiveDeploymentForProject(ctx, p.ID); err == nil {
+		return false, nil
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return false, fmt.Errorf("check active deployment: %w", err)
+	}
+
 	live, err := st.GetLastSuccessfulDeployment(ctx, p.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return false, nil // never deployed; nothing to reconcile
@@ -139,9 +160,20 @@ func reconcileProject(
 		return reapplyHandler(ctx, cy, p, *live, web)
 	}
 
-	// Domains may have drifted since last deploy.
-	if err := cy.SetDomainsForProject(ctx, p.ID, domains); err != nil {
-		return false, fmt.Errorf("set domains: %w", err)
+	// Domains may have drifted since last deploy — but only PATCH when they
+	// actually differ. Every admin PATCH triggers a full Caddy config reload
+	// (8-12s on a busy server, re-provisioning all TLS-managed domains), so
+	// re-asserting an unchanged host list for every project every cycle is
+	// pure load on the admin endpoint and a prior contributor to its
+	// saturation. Read the live host set and skip the no-op case.
+	liveDomains, err := cy.CurrentDomains(ctx, p.ID)
+	if err != nil {
+		return false, fmt.Errorf("read current domains: %w", err)
+	}
+	if !sameHostSet(liveDomains, domains) {
+		if err := cy.SetDomainsForProject(ctx, p.ID, domains); err != nil {
+			return false, fmt.Errorf("set domains: %w", err)
+		}
 	}
 
 	switch web.Type {
@@ -194,6 +226,26 @@ func reapplyHandler(
 		return false, fmt.Errorf("unsupported web type %q", web.Type)
 	}
 	return true, nil
+}
+
+// sameHostSet reports whether a and b contain the same hosts, ignoring
+// order. Caddy's host matcher is order-independent, so a reordered list is
+// not drift and must not trigger a reload.
+func sameHostSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[string]int, len(a))
+	for _, h := range a {
+		counts[h]++
+	}
+	for _, h := range b {
+		counts[h]--
+		if counts[h] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Compile-time interface satisfaction checks. Production wiring uses

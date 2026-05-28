@@ -264,6 +264,7 @@ func newCaddyClient(cfg Config) *caddy.Client {
 //   - network cleanup         hourly  (prune overlay networks for inactive deploys)
 //   - pending app cleanup     10m     (drop expired manifest-flow rows)
 //   - caddy reconcile         30s     (root fix for upstream issue #97)
+//   - caddy watchdog          30s     (auto-restart Caddy if admin wedges)
 //   - deploy log rotation     daily   (gzip > 30d, purge gz > 1y)
 func registerScheduledJobs(
 	sched *worker.Scheduler,
@@ -294,6 +295,8 @@ func registerScheduledJobs(
 			log.Warn("caddy reconcile failed", "error", err)
 		}
 	})
+	caddyWatchdog := worker.NewCaddyWatchdog(caddyCli, dockerCli, worker.DefaultCaddyServiceName, log)
+	_ = sched.Schedule("caddy-watchdog", "@every 30s", caddyWatchdog.Tick)
 	_ = sched.Schedule("deploy-log-rotation", "@daily", func(ctx context.Context) {
 		if _, _, err := worker.RotateDeployLogs(ctx, log, dataDir, 0, 0, time.Now()); err != nil {
 			log.Warn("deploy log rotation failed", "error", err)

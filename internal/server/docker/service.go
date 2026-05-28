@@ -154,6 +154,14 @@ func (c *Client) ScaleService(ctx context.Context, name string, replicas int) er
 	return c.run(ctx, "service", "scale", fmt.Sprintf("%s=%d", name, replicas))
 }
 
+// RestartService forces a rolling restart of an existing swarm service in
+// place — same config, fresh tasks — via `docker service update --force`.
+// The Caddy watchdog uses it to recover a wedged admin endpoint without a
+// human SSHing in to `docker restart`.
+func (c *Client) RestartService(ctx context.Context, name string) error {
+	return c.run(ctx, "service", "update", "--force", name)
+}
+
 // ServiceInfo summarizes a swarm service's identity.
 type ServiceInfo struct {
 	Name             string
