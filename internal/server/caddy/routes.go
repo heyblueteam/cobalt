@@ -103,3 +103,21 @@ func (c *Client) ProjectRouteExists(ctx context.Context, projectID int64) (bool,
 	}
 	return false, fmt.Errorf("caddy: project route exists check: %w", err)
 }
+
+// CurrentDomains returns the host list on the project's match block as Caddy
+// currently holds it. Implemented as a targeted GET on the hosts @id so we
+// don't walk the full config tree (mirrors CurrentUpstream).
+//
+// Returns nil (not an error) when the project has no route or no host
+// matcher yet, so callers treat "absent" as "differs from any desired set".
+func (c *Client) CurrentDomains(ctx context.Context, projectID int64) ([]string, error) {
+	var hosts []string
+	err := c.do(ctx, http.MethodGet, "/id/"+ProjectHostsID(projectID)+"/host", nil, &hosts)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("caddy: read current domains: %w", err)
+	}
+	return hosts, nil
+}

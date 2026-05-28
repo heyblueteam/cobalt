@@ -218,6 +218,35 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body, out any)
 	return nil
 }
 
+// PingTimeout bounds a single admin liveness probe. Deliberately short: it's
+// a health check, not a real operation, and must surface a wedged admin
+// socket in seconds rather than inheriting the 60s operation timeout.
+const PingTimeout = 5 * time.Second
+
+// Ping reports whether Caddy's admin endpoint is responsive.
+//
+// It deliberately does NOT take adminMu. When the admin API wedges, an
+// in-flight operation can hold adminMu for minutes (60s timeout × retries),
+// so a probe that queued behind it could never observe the wedge it exists
+// to detect. Ping issues a raw round-trip with its own short deadline.
+//
+// Any HTTP response — even a 4xx/404 — means the admin API is alive and
+// answering; only a transport error (timeout, connection refused, EOF) is a
+// failure. The watchdog acts on the latter.
+func (c *Client) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, PingTimeout)
+	defer cancel()
+	err := c.doOnce(ctx, http.MethodGet, "/config/apps/http/servers", nil, nil)
+	if err == nil {
+		return nil
+	}
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return nil
+	}
+	return err
+}
+
 // HTTPError is returned for non-2xx Caddy responses.
 type HTTPError struct {
 	Status int
