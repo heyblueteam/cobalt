@@ -18,6 +18,13 @@ import (
 type Client struct {
 	server cliconfig.Server
 	http   *http.Client
+	// stream is used for long-lived SSE follows (deploy output, service
+	// logs). Unlike http it has NO whole-request Timeout: an SSE stream
+	// outlives any fixed deadline (a quiet build step emits no bytes for
+	// minutes), so cancellation is driven by the request context and the
+	// server's heartbeat instead. Sharing http here is what capped deploy
+	// follows at 30s and made `cobalt deployments output` quit mid-build.
+	stream *http.Client
 }
 
 type APIError struct {
@@ -28,11 +35,17 @@ type APIError struct {
 func (e *APIError) Error() string { return e.Message }
 
 func New(s cliconfig.Server) *Client {
+	tr := transportFor(s)
 	return &Client{
 		server: s,
 		http: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: transportFor(s),
+			Transport: tr,
+		},
+		stream: &http.Client{
+			// No Timeout — see Client.stream. Same transport (so a pinned
+			// CA is honored) and context-driven cancellation.
+			Transport: tr,
 		},
 	}
 }

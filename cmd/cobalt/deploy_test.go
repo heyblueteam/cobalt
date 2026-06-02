@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/heyblueteam/cobalt/internal/output"
@@ -180,20 +181,25 @@ func TestDeploymentsOutputLatest(t *testing.T) {
 	api := newMockAPI()
 	defer api.close()
 
-	var callCount int
 	api.handler = func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		w.Header().Set("Content-Type", "application/json")
-		if callCount == 1 {
-			// List recent deployments → return one
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/output"):
+			// SSE output — emit one line then close.
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte("data: build output line\n\n"))
+		case strings.HasPrefix(r.URL.Path, "/api/deployments/"):
+			// GET /api/deployments/{id} — terminal status, so the
+			// follower stops after the single stream.
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(cobaltapi.Deployment{
+				ID: 10, Number: 3, Status: cobaltapi.StateSuccess,
+			})
+		default:
+			// List recent deployments → return one.
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]cobaltapi.Deployment{
 				{ID: 10, Number: 3, Status: cobaltapi.StateSuccess},
 			})
-		} else {
-			// SSE output — just close immediately for test
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.Write([]byte("data: build output line\n\n"))
-			return
 		}
 	}
 
