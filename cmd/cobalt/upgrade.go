@@ -114,7 +114,7 @@ func followUpgrade(ctx context.Context, cl *client.Client, id string) error {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("log stream returned %s", resp.Status)
 	}
-	streamErr := output.ConsumeSSE(ctx, resp.Body, output.Stdout)
+	_, streamErr := output.ConsumeSSE(ctx, resp.Body, output.Stdout)
 	// SSE close happens for two reasons during a real upgrade: the
 	// daemon serving the stream got swapped (TCP reset on the old
 	// container), or the upgrade really finished. Either way we now

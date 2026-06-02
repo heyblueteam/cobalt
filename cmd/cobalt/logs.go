@@ -38,7 +38,8 @@ Examples:
 				return fmt.Errorf("%s: %s", resp.Status, string(body))
 			}
 
-			return output.ConsumeSSE(ctx, resp.Body, output.Stdout)
+			_, err = output.ConsumeSSE(ctx, resp.Body, output.Stdout)
+			return err
 		}),
 	}
 	cmd.Flags().String("project", "", "project name")

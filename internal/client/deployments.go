@@ -70,7 +70,9 @@ func (c *Client) StreamGet(ctx context.Context, path string) (*http.Response, er
 	}
 	req.Header.Set("Authorization", "Bearer "+c.server.APIKey)
 	req.Header.Set("Accept", "text/event-stream")
-	return c.http.Do(req)
+	// Use the no-timeout streaming client: SSE follows outlive the 30s
+	// whole-request Timeout on c.http. Cancellation is via ctx.
+	return c.stream.Do(req)
 }
 
 func (c *Client) DeployOutputURL(deploymentID int64, offset int64) string {
