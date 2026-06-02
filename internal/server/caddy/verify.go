@@ -44,8 +44,8 @@ var defaultVerifyBackoff = []time.Duration{
 //   - Otherwise, retries with exponential backoff up to len(verifyBackoff)
 //     attempts.
 //   - On final mismatch, returns *PatchVerifyError.
-func (c *Client) VerifyServeService(ctx context.Context, projectID int64, containerName string, port int) error {
-	if err := c.ServeService(ctx, projectID, containerName, port); err != nil {
+func (c *Client) VerifyServeService(ctx context.Context, projectID int64, containerName string, port, deploymentNumber int) error {
+	if err := c.ServeService(ctx, projectID, containerName, port, deploymentNumber); err != nil {
 		return err
 	}
 	want := containerName

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -12,6 +13,33 @@ import (
 //	{projectName}-{deploymentNumber}-{serviceName}
 func ServiceName(projectName string, deploymentNumber int, serviceName string) string {
 	return fmt.Sprintf("%s-%d-%s", projectName, deploymentNumber, serviceName)
+}
+
+// WebGeneration parses the deployment number out of a project's `web` service
+// name — the inverse of ServiceName(projectName, n, "web"). It returns
+// ok=false for names that don't belong to this project or aren't the `web`
+// service (worker/cron services, other projects, malformed names).
+//
+// projectName is taken as known (not parsed back out) so a hyphenated project
+// name — or a hyphenated service name — doesn't make the split ambiguous.
+func WebGeneration(projectName, serviceName string) (int, bool) {
+	rest, ok := strings.CutPrefix(serviceName, projectName+"-")
+	if !ok {
+		return 0, false
+	}
+	// rest is "{number}-{serviceName}", e.g. "114-web"; split on the first '-'.
+	i := strings.IndexByte(rest, '-')
+	if i <= 0 {
+		return 0, false
+	}
+	if rest[i+1:] != "web" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(rest[:i])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // NetworkName is the docker overlay network for a project's deployment.

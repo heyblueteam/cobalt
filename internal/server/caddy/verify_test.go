@@ -26,7 +26,7 @@ func TestVerifyServeService_FirstAttemptMatches(t *testing.T) {
 	c := f.client()
 	c.PatchVerifyBackoff = fastBackoff
 
-	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000); err != nil {
+	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000, 7); err != nil {
 		t.Errorf("VerifyServeService: %v", err)
 	}
 }
@@ -54,7 +54,7 @@ func TestVerifyServeService_ConvergesAfterRetries(t *testing.T) {
 	c := NewHTTPClient(srv.URL, srv.Client())
 	c.PatchVerifyBackoff = fastBackoff
 
-	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000); err != nil {
+	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000, 7); err != nil {
 		t.Errorf("expected eventual convergence, got: %v", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestVerifyServeService_PersistentDriftReturnsError(t *testing.T) {
 	c := NewHTTPClient(srv.URL, srv.Client())
 	c.PatchVerifyBackoff = fastBackoff
 
-	err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000)
+	err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000, 7)
 	var ve *PatchVerifyError
 	if !errors.As(err, &ve) {
 		t.Fatalf("want *PatchVerifyError, got %T: %v", err, err)
@@ -98,7 +98,7 @@ func TestVerifyServeService_PatchFailureBubbles(t *testing.T) {
 	c := NewHTTPClient(srv.URL, srv.Client())
 	c.PatchVerifyBackoff = fastBackoff
 
-	err := c.VerifyServeService(context.Background(), 7, "x", 80)
+	err := c.VerifyServeService(context.Background(), 7, "x", 80, 7)
 	if err == nil {
 		t.Error("expected error from PATCH failure")
 	}
@@ -120,7 +120,7 @@ func TestVerifyServeService_HonorsContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := c.VerifyServeService(ctx, 7, "x", 80)
+	err := c.VerifyServeService(ctx, 7, "x", 80, 7)
 	if err == nil {
 		t.Error("expected context error")
 	}
@@ -152,7 +152,7 @@ func TestVerifyServeService_TransientReadFailure_RetriesAndSucceeds(t *testing.T
 	c := NewHTTPClient(srv.URL, srv.Client())
 	c.PatchVerifyBackoff = fastBackoff
 
-	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000); err != nil {
+	if err := c.VerifyServeService(context.Background(), 7, "myapp-7-web", 3000, 7); err != nil {
 		t.Errorf("expected success after transient read failure, got: %v", err)
 	}
 }

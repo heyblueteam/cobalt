@@ -22,6 +22,37 @@ func TestNames(t *testing.T) {
 	}
 }
 
+func TestWebGeneration(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		project, service string
+		wantN            int
+		wantOK           bool
+	}{
+		{"api", "api-7-web", 7, true},
+		{"api", "api-114-web", 114, true},
+		// hyphenated project name — projectName is known, so the split is safe.
+		{"my-app", "my-app-3-web", 3, true},
+		// non-web services are not web generations.
+		{"api", "api-7-worker", 0, false},
+		{"api", "api-7-cron-nightly", 0, false},
+		// other project / unrelated names.
+		{"api", "web-7-web", 0, false},
+		{"api", "api-web", 0, false},
+		{"api", "api-x-web", 0, false},
+		{"api", "", 0, false},
+		// round-trips with ServiceName.
+		{"api", ServiceName("api", 42, "web"), 42, true},
+	}
+	for _, c := range cases {
+		n, ok := WebGeneration(c.project, c.service)
+		if ok != c.wantOK || n != c.wantN {
+			t.Errorf("WebGeneration(%q, %q) = (%d, %v), want (%d, %v)",
+				c.project, c.service, n, ok, c.wantN, c.wantOK)
+		}
+	}
+}
+
 func TestSplitParams(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

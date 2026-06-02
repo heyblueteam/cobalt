@@ -69,9 +69,10 @@ type fakeReconcileCaddy struct {
 }
 
 type serveServiceCall struct {
-	ProjectID int64
-	Container string
-	Port      int
+	ProjectID        int64
+	Container        string
+	Port             int
+	DeploymentNumber int
 }
 type serveStaticCall struct {
 	ProjectID        int64
@@ -117,10 +118,10 @@ func (f *fakeReconcileCaddy) CurrentUpstream(_ context.Context, id int64) (strin
 	return f.upstream[id], nil
 }
 
-func (f *fakeReconcileCaddy) ServeService(_ context.Context, id int64, container string, port int) error {
+func (f *fakeReconcileCaddy) ServeService(_ context.Context, id int64, container string, port, deploymentNumber int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.serveCalls = append(f.serveCalls, serveServiceCall{id, container, port})
+	f.serveCalls = append(f.serveCalls, serveServiceCall{id, container, port, deploymentNumber})
 	f.upstream[id] = container
 	return nil
 }
@@ -175,7 +176,7 @@ func TestReconcile_NoCorrectionWhenInSync(t *testing.T) {
 	cy.routeExists[1] = true
 	cy.upstream[1] = "api-7-web" // matches expected ServiceName
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestReconcile_PatchesUpstreamOnDrift(t *testing.T) {
 	cy.routeExists[1] = true
 	cy.upstream[1] = "api-5-web" // drifted to old deploy
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestReconcile_RecreatesMissingRoute(t *testing.T) {
 	// Route doesn't exist (Caddy was wiped).
 	cy.routeExists[1] = false
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -288,7 +289,7 @@ func TestReconcile_StaticSiteRecreatesViaServeStaticSite(t *testing.T) {
 	cy := newFakeReconcileCaddy()
 	cy.routeExists[1] = false
 
-	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if corrected != 1 {
 		t.Errorf("corrected: %d, want 1", corrected)
 	}
@@ -322,7 +323,7 @@ func TestReconcile_StaticSiteSkipsDriftCheck(t *testing.T) {
 	cy := newFakeReconcileCaddy()
 	cy.routeExists[1] = true
 
-	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if corrected != 0 {
 		t.Errorf("static site existing route should NOT be corrected: %d", corrected)
 	}
@@ -335,7 +336,7 @@ func TestReconcile_NoLastSuccessSkipsProject(t *testing.T) {
 		lastByID: map[int64]*store.Deployment{},
 	}
 	cy := newFakeReconcileCaddy()
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestReconcile_MissingResolvedCobaltfileSkips(t *testing.T) {
 		},
 	}
 	cy := newFakeReconcileCaddy()
-	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if corrected != 0 {
 		t.Errorf("corrected: %d, want 0 (no resolved cobaltfile)", corrected)
 	}
@@ -380,7 +381,7 @@ func TestReconcile_NoDomainsSkips(t *testing.T) {
 		// no domains
 	}
 	cy := newFakeReconcileCaddy()
-	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if corrected != 0 {
 		t.Errorf("corrected: %d, want 0", corrected)
 	}
@@ -409,7 +410,7 @@ func TestReconcile_NoWebServiceSkipsCaddy(t *testing.T) {
 		domains: map[int64][]string{1: {"jobs.example.com"}},
 	}
 	cy := newFakeReconcileCaddy()
-	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, _ := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if corrected != 0 {
 		t.Errorf("cron-only project should not trigger Caddy correction: %d", corrected)
 	}
@@ -448,7 +449,7 @@ func TestReconcile_PerProjectFailureContinuesSweep(t *testing.T) {
 	cy.routeExists[1] = true
 	cy.upstream[1] = "api-5-web" // drifted
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -460,7 +461,7 @@ func TestReconcile_PerProjectFailureContinuesSweep(t *testing.T) {
 func TestReconcile_ListProjectsErrorBubbles(t *testing.T) {
 	t.Parallel()
 	st := &fakeReconcileStore{listErr: errors.New("db down")}
-	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, newFakeReconcileCaddy()); err == nil {
+	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, newFakeReconcileCaddy(), nil, nil); err == nil {
 		t.Error("expected error from project list failure")
 	}
 }
@@ -487,7 +488,7 @@ func TestReconcile_CaddyRouteMissingButPriorDeploy_CallsAddProjectRouteFirst(t *
 	cy := newFakeReconcileCaddy()
 	cy.routeExists[1] = false
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -528,7 +529,7 @@ func TestReconcile_DomainsDrifted_CallsSetDomainsEvenWhenUpstreamInSync(t *testi
 	cy.routeExists[1] = true
 	cy.upstream[1] = "api-7-web" // correct upstream
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -581,7 +582,7 @@ func TestReconcile_SetDomainsFails_DoesNotHaltSweep(t *testing.T) {
 	cy.upstream[2] = "www-3-web"
 	cy.domainsErr = errors.New("caddy unreachable")
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: error should be nil (per-project failure absorbed), got: %v", err)
 	}
@@ -626,7 +627,7 @@ func TestReconcile_ProjectRouteExistsError_DoesNotHaltSweep(t *testing.T) {
 	cy.upstream[2] = "www-3-web"
 	cy.routeExistsErr = errors.New("caddy admin API down")
 
-	_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: error should be nil (per-project failure absorbed), got: %v", err)
 	}
@@ -656,7 +657,7 @@ func TestReconcile_SkipsProjectWithActiveDeployment(t *testing.T) {
 	cy.routeExists[1] = true
 	cy.upstream[1] = "api-5-web" // drifted — would normally be "corrected" back to api-7-web
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -694,7 +695,7 @@ func TestReconcile_DomainsInSync_SkipsSetDomains(t *testing.T) {
 	// set comparison ignores ordering).
 	cy.currentDomains[1] = []string{"www.api.example.com", "api.example.com"}
 
-	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy)
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -727,7 +728,7 @@ func TestReconcile_DomainsDriftedSet_TriggersSetDomains(t *testing.T) {
 	cy.upstream[1] = "api-7-web"
 	cy.currentDomains[1] = []string{"api.example.com"} // missing new.example.com
 
-	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy); err != nil {
+	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, nil, nil); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(cy.domainCalls) != 1 {
@@ -741,7 +742,7 @@ func TestReconcile_ActiveDeploymentCheckError_DoesNotHaltSweep(t *testing.T) {
 		projects:  []store.Project{{ID: 1, Name: "api"}},
 		activeErr: errors.New("rqlite unreachable"),
 	}
-	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, newFakeReconcileCaddy()); err != nil {
+	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, newFakeReconcileCaddy(), nil, nil); err != nil {
 		t.Fatalf("Reconcile: per-project failure should be absorbed, got: %v", err)
 	}
 }

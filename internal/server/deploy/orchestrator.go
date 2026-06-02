@@ -34,6 +34,12 @@ type Orchestrator struct {
 	// get registered with the scheduler. nil in unit tests that don't
 	// exercise the cron path.
 	CronManager CronReconciler
+	// DataPlaneProber, when non-nil, gates each container cutover on a real
+	// request through Caddy's own listener confirming the running router
+	// serves the new deployment (not just the admin config tree, which can
+	// lag). Production wires the docker client; left nil in unit tests that
+	// don't exercise the data-plane gate, so the cutover path stays hermetic.
+	DataPlaneProber ReadinessProber
 }
 
 // CronReconciler is the cron-side surface the orchestrator calls
@@ -246,6 +252,19 @@ func (o *Orchestrator) cutover(
 		revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return fmt.Errorf("deploy: commit caddy: %w", err)
+	}
+
+	// Confirm the *running* router — not just the admin config tree — actually
+	// serves the new deployment before declaring success. Under reload pressure
+	// Caddy's admin API can report the new upstream while the compiled router
+	// still dials the old (now-deleted) container, 502ing every fresh request.
+	if o.DataPlaneProber != nil {
+		if err := waitDataPlaneServing(ctx, o.DataPlaneProber, o.DB, *project, dep, cf, log, out); err != nil {
+			fmt.Fprintf(out, "↩️  data-plane verify failed, reverting\n")
+			revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
+			_ = stopServices(context.Background(), o.Docker, startedServices)
+			return fmt.Errorf("deploy: %w", err)
+		}
 	}
 	fmt.Fprintf(out, "✅ traffic swap verified\n")
 
