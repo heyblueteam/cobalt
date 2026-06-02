@@ -7,6 +7,14 @@ import (
 	"strconv"
 )
 
+// DeploymentHeader is the response header ServeService stamps on every
+// proxied response, carrying the deployment number the handler was last
+// PATCHed to serve. A data-plane probe (deploy.probeDataPlane) reads it back
+// through Caddy's own listener to learn which deployment the *running* router
+// actually routes to — which can lag the admin config tree under reload
+// pressure (the silent divergence behind the post-cutover 502 incident).
+const DeploymentHeader = "X-Cobalt-Deployment"
+
 // ServeService swaps a project's reverse-proxy upstream to point at a newly
 // started container. This is the atomic cutover point of a deploy: a single
 // PATCH against the project's handler @id flips traffic from the old
@@ -14,10 +22,26 @@ import (
 //
 // containerName + port form the docker-internal address Caddy will dial,
 // e.g. "myapp-7-web" + 3000 → "myapp-7-web:3000".
-func (c *Client) ServeService(ctx context.Context, projectID int64, containerName string, port int) error {
+//
+// deploymentNumber is stamped into the DeploymentHeader on proxied responses
+// so the running router's identity is observable from the data plane. It
+// travels in the *same* handler config as the upstream, so a lagging compiled
+// handler that still dials the old container also still emits the old number —
+// that mismatch is the divergence signal the reconciler self-heals on.
+func (c *Client) ServeService(ctx context.Context, projectID int64, containerName string, port, deploymentNumber int) error {
 	body := map[string]any{
 		"@id":     ProjectHandlerID(projectID),
 		"handler": "reverse_proxy",
+		// header_down: set on the response Caddy returns from this upstream.
+		// Must be re-sent on every PATCH — the PATCH replaces the whole
+		// handler, so omitting it would drop the header.
+		"headers": map[string]any{
+			"response": map[string]any{
+				"set": map[string]any{
+					DeploymentHeader: []any{strconv.Itoa(deploymentNumber)},
+				},
+			},
+		},
 		"upstreams": []any{
 			map[string]any{"dial": containerName + ":" + strconv.Itoa(port)},
 		},

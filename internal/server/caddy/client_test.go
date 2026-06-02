@@ -200,7 +200,7 @@ func TestServeService_PatchesHandler(t *testing.T) {
 	f := newFakeCaddy(t)
 	c := f.client()
 	const projectID int64 = 5
-	if err := c.ServeService(context.Background(), projectID, "myapp-7-web", 3000); err != nil {
+	if err := c.ServeService(context.Background(), projectID, "myapp-7-web", 3000, 7); err != nil {
 		t.Fatalf("ServeService: %v", err)
 	}
 	call := f.lastCall(t)
@@ -212,6 +212,11 @@ func TestServeService_PatchesHandler(t *testing.T) {
 	}
 	if !strings.Contains(string(call.Body), `"dial":"myapp-7-web:3000"`) {
 		t.Errorf("body missing dial: %s", call.Body)
+	}
+	// The deployment-identity header must ride along in the same handler
+	// PATCH so the data plane can report which deployment it serves.
+	if !strings.Contains(string(call.Body), `"X-Cobalt-Deployment":["7"]`) {
+		t.Errorf("body missing X-Cobalt-Deployment header: %s", call.Body)
 	}
 }
 

@@ -29,14 +29,16 @@ type fakeSwapCaddy struct {
 }
 
 type verifyCall struct {
-	projectID int64
-	container string
-	port      int
+	projectID        int64
+	container        string
+	port             int
+	deploymentNumber int
 }
 type serveSvcCall struct {
-	projectID int64
-	container string
-	port      int
+	projectID        int64
+	container        string
+	port             int
+	deploymentNumber int
 }
 type staticCall struct {
 	projectID        int64
@@ -52,17 +54,17 @@ func (f *fakeSwapCaddy) SetDomainsForProject(_ context.Context, projectID int64,
 	return f.setDomainsErr
 }
 
-func (f *fakeSwapCaddy) VerifyServeService(_ context.Context, projectID int64, container string, port int) error {
+func (f *fakeSwapCaddy) VerifyServeService(_ context.Context, projectID int64, container string, port, deploymentNumber int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.verifyCalls = append(f.verifyCalls, verifyCall{projectID, container, port})
+	f.verifyCalls = append(f.verifyCalls, verifyCall{projectID, container, port, deploymentNumber})
 	return f.verifyErr
 }
 
-func (f *fakeSwapCaddy) ServeService(_ context.Context, projectID int64, container string, port int) error {
+func (f *fakeSwapCaddy) ServeService(_ context.Context, projectID int64, container string, port, deploymentNumber int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.serveSvcCalls = append(f.serveSvcCalls, serveSvcCall{projectID, container, port})
+	f.serveSvcCalls = append(f.serveSvcCalls, serveSvcCall{projectID, container, port, deploymentNumber})
 	return f.serveSvcErr
 }
 

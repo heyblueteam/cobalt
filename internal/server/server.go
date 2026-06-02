@@ -171,14 +171,15 @@ func Run(ctx context.Context, cfg Config) error {
 	cronMgr := worker.NewCronManager(sched, dockerCli, db, log)
 
 	orchestrator := &deploy.Orchestrator{
-		DB:          db,
-		Docker:      dockerCli,
-		Caddy:       caddyCli,
-		Preparer:    preparer,
-		Builder:     builder,
-		DataDir:     cfg.DataDir,
-		Log:         log,
-		CronManager: cronMgr,
+		DB:              db,
+		Docker:          dockerCli,
+		Caddy:           caddyCli,
+		Preparer:        preparer,
+		Builder:         builder,
+		DataDir:         cfg.DataDir,
+		Log:             log,
+		CronManager:     cronMgr,
+		DataPlaneProber: dockerCli,
 	}
 
 	queue := deploy.NewQueue(db)
@@ -290,8 +291,9 @@ func registerScheduledJobs(
 			log.Warn("pending-apps cleanup failed", "error", err)
 		}
 	})
+	dataPlaneProber := deploy.CaddyDataPlaneProber{Prober: dockerCli}
 	_ = sched.Schedule("caddy-reconcile", "@every 30s", func(ctx context.Context) {
-		if _, err := worker.ReconcileCaddyState(ctx, log, db, caddyCli); err != nil {
+		if _, err := worker.ReconcileCaddyState(ctx, log, db, caddyCli, dataPlaneProber, dockerCli); err != nil {
 			log.Warn("caddy reconcile failed", "error", err)
 		}
 	})

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
@@ -29,13 +30,36 @@ type CaddyReconcileStore interface {
 	ActiveDeploymentForProject(ctx context.Context, projectID int64) (*store.Deployment, error)
 }
 
+// DataPlaneProber reports which deployment Caddy's *running* router actually
+// serves for a domain — ground truth the admin API cannot give, because the
+// compiled router can lag the config tree under reload pressure (the silent
+// divergence behind the post-cutover 502 incident). A nil prober disables the
+// data-plane convergence check (unit tests that don't exercise it).
+type DataPlaneProber interface {
+	// ServedDeployment returns the deployment number the running router serves
+	// for domain (via the X-Cobalt-Deployment header) plus the HTTP status.
+	// served == "" means no header (pre-header handler / unknown). A non-nil
+	// error means the probe couldn't run; callers treat that as "unknown",
+	// never as drift.
+	ServedDeployment(ctx context.Context, domain string) (served string, status int, err error)
+}
+
+// ServiceReaper lists and removes a project's docker services. The reconciler
+// uses it to reap a superseded `*-web` generation kept alive for grace (see
+// deploy.cleanupOldServices) once the data plane confirms the current
+// deployment is serving. A nil reaper disables reaping.
+type ServiceReaper interface {
+	ListServicesForProject(ctx context.Context, projectID int64) ([]docker.ServiceInfo, error)
+	RemoveService(ctx context.Context, name string) error
+}
+
 // CaddyReconcileTarget is the Caddy subset the reconciler talks to.
 type CaddyReconcileTarget interface {
 	ProjectRouteExists(ctx context.Context, projectID int64) (bool, error)
 	AddProjectRoute(ctx context.Context, projectID int64, domains []string) error
 	CurrentUpstream(ctx context.Context, projectID int64) (string, error)
 	CurrentDomains(ctx context.Context, projectID int64) ([]string, error)
-	ServeService(ctx context.Context, projectID int64, container string, port int) error
+	ServeService(ctx context.Context, projectID int64, container string, port, deploymentNumber int) error
 	ServeStaticSite(ctx context.Context, projectID int64, projectName string, deploymentNumber int) error
 	SetDomainsForProject(ctx context.Context, projectID int64, domains []string) error
 }
@@ -62,6 +86,8 @@ func ReconcileCaddyState(
 	log *slog.Logger,
 	st CaddyReconcileStore,
 	cy CaddyReconcileTarget,
+	dp DataPlaneProber,
+	reaper ServiceReaper,
 ) (int, error) {
 	if log == nil {
 		log = slog.Default()
@@ -73,7 +99,7 @@ func ReconcileCaddyState(
 
 	r := reconcileResult{}
 	for _, p := range projects {
-		corrected, err := reconcileProject(ctx, log, st, cy, p)
+		corrected, err := reconcileProject(ctx, log, st, cy, dp, reaper, p)
 		if err != nil {
 			log.Warn("caddy reconcile: project failed",
 				"project_id", p.ID, "project", p.Name, "error", err)
@@ -98,6 +124,8 @@ func reconcileProject(
 	log *slog.Logger,
 	st CaddyReconcileStore,
 	cy CaddyReconcileTarget,
+	dp DataPlaneProber,
+	reaper ServiceReaper,
 	p store.Project,
 ) (bool, error) {
 	// Stand down while a deploy is in flight. A deploy owns its project's
@@ -183,16 +211,32 @@ func reconcileProject(
 		if err != nil {
 			return false, fmt.Errorf("read current upstream: %w", err)
 		}
-		if got == want {
-			return false, nil
+		if got != want {
+			// The admin config tree itself drifted — repair it.
+			log.Warn("caddy reconcile: upstream drifted (config tree)",
+				"project_id", p.ID, "project", p.Name,
+				"want", want, "got", got)
+			if err := cy.ServeService(ctx, p.ID, want, web.Port, live.Number); err != nil {
+				return false, fmt.Errorf("repair upstream: %w", err)
+			}
+			return true, nil
 		}
-		log.Warn("caddy reconcile: upstream drifted",
-			"project_id", p.ID, "project", p.Name,
-			"want", want, "got", got)
-		if err := cy.ServeService(ctx, p.ID, want, web.Port); err != nil {
-			return false, fmt.Errorf("repair upstream: %w", err)
+		// The config tree is correct — but the *compiled router* can lag the
+		// tree under reload pressure and keep dialing a since-deleted upstream
+		// (the silent post-cutover 502 divergence; the admin GET above can't
+		// see it). Probe the data plane and force-repair if the running router
+		// disagrees.
+		corrected, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, domains[0])
+		if err != nil {
+			return false, err
 		}
-		return true, nil
+		if !corrected {
+			// Only reap a superseded web generation once the live router is
+			// confirmed (or unprobed-but-config-correct) on the new one — never
+			// while traffic might still be landing on the old build.
+			reapSupersededWeb(ctx, log, reaper, p, live.Number)
+		}
+		return corrected, nil
 
 	case cobaltfile.TypeStatic, cobaltfile.TypeGenerator:
 		// We don't have a cheap "what is the current root?" probe (it
@@ -201,6 +245,92 @@ func reconcileProject(
 		return false, nil
 	}
 	return false, nil
+}
+
+// reconcileDataPlane probes Caddy's running router for the project's primary
+// domain and, when it diverges from the desired deployment, force-repairs with
+// a single ServeService PATCH — which makes Caddy recompile the route. That's
+// cheaper and safer than delete+recreate: no window with no route (404), and
+// one reload instead of three.
+//
+// A nil prober, an inconclusive probe (Caddy unreachable), or a "no header"
+// response (a pre-header handler) are all treated as "unknown" — never as
+// drift — so a fleet-wide daemon upgrade can't stampede force-rebuilds.
+func reconcileDataPlane(
+	ctx context.Context,
+	log *slog.Logger,
+	cy CaddyReconcileTarget,
+	dp DataPlaneProber,
+	p store.Project,
+	live store.Deployment,
+	web cobaltfile.Service,
+	domain string,
+) (bool, error) {
+	if dp == nil {
+		return false, nil
+	}
+	want := strconv.Itoa(live.Number)
+	served, status, err := dp.ServedDeployment(ctx, domain)
+	if err != nil {
+		log.Debug("caddy reconcile: data-plane probe inconclusive",
+			"project_id", p.ID, "project", p.Name, "error", err)
+		return false, nil
+	}
+	// Divergence = the router serves a different deployment, or 502/503/504s
+	// because it's dialing a dead upstream. served=="" (no header) is NOT
+	// divergence — treat unknown handlers as fine and let their next deploy
+	// stamp the header.
+	if !isGatewayStatus(status) && (served == "" || served == want) {
+		return false, nil
+	}
+	log.Warn("caddy reconcile: upstream drifted (data plane)",
+		"project_id", p.ID, "project", p.Name,
+		"want", want, "served", served, "status", status)
+	container := docker.ServiceName(p.Name, live.Number, "web")
+	if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
+		return false, fmt.Errorf("repair upstream (data plane): %w", err)
+	}
+	return true, nil
+}
+
+func isGatewayStatus(status int) bool {
+	return status == 502 || status == 503 || status == 504
+}
+
+// reapSupersededWeb removes any of the project's `*-web` services from an
+// older deployment than current. deploy.cleanupOldServices intentionally keeps
+// the most recent prior generation alive as a grace fallback (so a lagging
+// router serves the old build instead of 502ing); this reaps it once the live
+// deployment is confirmed serving. Best-effort and nil-safe.
+func reapSupersededWeb(
+	ctx context.Context,
+	log *slog.Logger,
+	reaper ServiceReaper,
+	p store.Project,
+	currentNumber int,
+) {
+	if reaper == nil {
+		return
+	}
+	services, err := reaper.ListServicesForProject(ctx, p.ID)
+	if err != nil {
+		log.Debug("caddy reconcile: list services for reap failed",
+			"project_id", p.ID, "error", err)
+		return
+	}
+	for _, s := range services {
+		n, ok := docker.WebGeneration(p.Name, s.Name)
+		if !ok || n >= currentNumber {
+			continue
+		}
+		if err := reaper.RemoveService(ctx, s.Name); err != nil {
+			log.Warn("caddy reconcile: reap superseded web service failed",
+				"name", s.Name, "project_id", p.ID, "error", err)
+			continue
+		}
+		log.Info("caddy reconcile: reaped superseded web service",
+			"name", s.Name, "project_id", p.ID, "current", currentNumber)
+	}
 }
 
 // reapplyHandler re-PATCHes the right handler kind onto a freshly
@@ -215,7 +345,7 @@ func reapplyHandler(
 	switch web.Type {
 	case cobaltfile.TypeContainer:
 		container := docker.ServiceName(p.Name, live.Number, "web")
-		if err := cy.ServeService(ctx, p.ID, container, web.Port); err != nil {
+		if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
 			return false, fmt.Errorf("reapply container: %w", err)
 		}
 	case cobaltfile.TypeStatic, cobaltfile.TypeGenerator:

@@ -17,9 +17,9 @@ type SwapDocker interface{}
 // SwapCaddy is the Caddy subset swap-step helpers need.
 type SwapCaddy interface {
 	SetDomainsForProject(ctx context.Context, projectID int64, domains []string) error
-	VerifyServeService(ctx context.Context, projectID int64, container string, port int) error
+	VerifyServeService(ctx context.Context, projectID int64, container string, port, deploymentNumber int) error
 	ServeStaticSite(ctx context.Context, projectID int64, projectName string, deploymentNumber int) error
-	ServeService(ctx context.Context, projectID int64, container string, port int) error
+	ServeService(ctx context.Context, projectID int64, container string, port, deploymentNumber int) error
 }
 
 // SwapStore is the store subset swap-step helpers need.
@@ -73,7 +73,7 @@ func commitCaddySwap(
 	case cobaltfile.TypeContainer:
 		container := docker.ServiceName(project.Name, dep.Number, "web")
 		port := web.Port
-		if err := cy.VerifyServeService(ctx, project.ID, container, port); err != nil {
+		if err := cy.VerifyServeService(ctx, project.ID, container, port, dep.Number); err != nil {
 			return fmt.Errorf("deploy.commitCaddySwap: %w", err)
 		}
 	case cobaltfile.TypeStatic, cobaltfile.TypeGenerator:
@@ -117,7 +117,7 @@ func revertCaddySwap(
 	switch web.Type {
 	case cobaltfile.TypeContainer:
 		container := docker.ServiceName(project.Name, prev.Number, "web")
-		if err := cy.ServeService(ctx, project.ID, container, web.Port); err != nil {
+		if err := cy.ServeService(ctx, project.ID, container, web.Port, prev.Number); err != nil {
 			log.Error("deploy.revertCaddySwap: container revert failed",
 				"project_id", project.ID, "want_upstream", container, "error", err)
 		}
