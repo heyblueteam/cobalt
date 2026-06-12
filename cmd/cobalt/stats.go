@@ -83,7 +83,8 @@ type (
 		err  error
 		code int // HTTP status of a failed connect; 0 when the stream died some other way
 	}
-	retryMsg struct{}
+	retryMsg     struct{}
+	staleTickMsg struct{}
 )
 
 // reconnectDelay paces retry after the stream drops — matches the
@@ -94,6 +95,12 @@ const reconnectDelay = 2 * time.Second
 // is four minutes of context — plenty for "did that spike just start".
 const historyCap = 120
 
+// staleAfter flips "live" to "stalled" when no snapshot has arrived for
+// three intervals. A hung connection (daemon wedged, network blackhole)
+// never delivers a streamEndMsg, so without a watchdog the view shows
+// "live" over frozen numbers indefinitely.
+const staleAfter = 3 * reconnectDelay
+
 type statsModel struct {
 	ctx     context.Context
 	client  *client.Client
@@ -101,14 +108,15 @@ type statsModel struct {
 	byMem   bool
 	hideRep bool
 
-	snap    *cobaltapi.ServerStats
-	history map[string][]float64
-	ch      chan tea.Msg
-	status  string // "live", "connecting…", "reconnecting…"
-	lastErr error  // why the last stream attempt ended; shown while reconnecting
-	err     error  // fatal: quits the program and is reported to the user
-	width   int
-	height  int
+	snap       *cobaltapi.ServerStats
+	history    map[string][]float64
+	ch         chan tea.Msg
+	status     string    // "live", "stalled", "connecting…", "reconnecting…"
+	lastSnapAt time.Time // when the last snapshot arrived; drives the stalled check
+	lastErr    error     // why the last stream attempt ended; shown while reconnecting
+	err        error     // fatal: quits the program and is reported to the user
+	width      int
+	height     int
 }
 
 func statsTUI(ctx context.Context, c *client.Client, project string) error {
@@ -132,7 +140,12 @@ func statsTUI(ctx context.Context, c *client.Client, project string) error {
 	return nil
 }
 
-func (m statsModel) Init() tea.Cmd { return m.connect() }
+func (m statsModel) Init() tea.Cmd { return tea.Batch(m.connect(), staleTick()) }
+
+// staleTick drives the stalled-stream watchdog, re-armed on every tick.
+func staleTick() tea.Cmd {
+	return tea.Tick(reconnectDelay, func(time.Time) tea.Msg { return staleTickMsg{} })
+}
 
 // connect opens the SSE stream and hands its channel to the model. The
 // reader goroutine lives until the stream ends or ctx is cancelled.
@@ -201,6 +214,7 @@ func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := cobaltapi.ServerStats(msg)
 		m.snap = &s
 		m.status = "live"
+		m.lastSnapAt = time.Now()
 		m.lastErr = nil
 		// History tracks the full snapshot, not the filtered view, so
 		// cycling filters doesn't restart the sparklines.
@@ -229,6 +243,14 @@ func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case retryMsg:
 		return m, m.connect()
+
+	case staleTickMsg:
+		// Only demote a live view: connecting/reconnecting already say
+		// the stream is down, and the next snapshot restores "live".
+		if m.status == "live" && !m.lastSnapAt.IsZero() && time.Since(m.lastSnapAt) > staleAfter {
+			m.status = "stalled"
+		}
+		return m, staleTick()
 	}
 	return m, nil
 }

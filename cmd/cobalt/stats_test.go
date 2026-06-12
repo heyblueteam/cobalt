@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/heyblueteam/cobalt/internal/cliconfig"
@@ -281,5 +282,25 @@ func TestPadTruncateRuneAware(t *testing.T) {
 	}
 	if got := truncate("web", 8); got != "web" {
 		t.Errorf("truncate short = %q", got)
+	}
+}
+
+func TestStaleTickDemotesLiveOnly(t *testing.T) {
+	m := statsModel{status: "live", lastSnapAt: time.Now().Add(-staleAfter - time.Second)}
+	next, _ := m.Update(staleTickMsg{})
+	if got := next.(statsModel).status; got != "stalled" {
+		t.Errorf("status = %q, want stalled (no snapshot for >%v)", got, staleAfter)
+	}
+
+	fresh := statsModel{status: "live", lastSnapAt: time.Now()}
+	next, _ = fresh.Update(staleTickMsg{})
+	if got := next.(statsModel).status; got != "live" {
+		t.Errorf("fresh stream demoted to %q", got)
+	}
+
+	reconnecting := statsModel{status: "reconnecting…", lastSnapAt: time.Now().Add(-time.Minute)}
+	next, _ = reconnecting.Update(staleTickMsg{})
+	if got := next.(statsModel).status; got != "reconnecting…" {
+		t.Errorf("reconnecting overwritten to %q", got)
 	}
 }
