@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -232,5 +233,38 @@ func TestStatsOnceCLI(t *testing.T) {
 	}
 	if snap.Node != "server.blue.cc" || len(snap.Containers) != 4 {
 		t.Errorf("--json roundtrip = %+v", snap)
+	}
+}
+
+func TestStreamEndFatalVsRetry(t *testing.T) {
+	m := statsModel{status: "live", history: map[string][]float64{}}
+
+	// Auth failures and a missing endpoint can't be fixed by retrying:
+	// the model must record the error and quit.
+	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		next, _ := m.Update(streamEndMsg{err: errors.New("denied"), code: code})
+		fatal := next.(statsModel)
+		if fatal.err == nil {
+			t.Errorf("code %d: model.err not set, TUI would retry forever", code)
+		}
+	}
+
+	// A dropped connection retries, and the reason is surfaced.
+	next, _ := m.Update(streamEndMsg{err: errors.New("connection refused")})
+	retry := next.(statsModel)
+	if retry.err != nil {
+		t.Fatalf("transient drop treated as fatal: %v", retry.err)
+	}
+	if retry.status != "reconnecting…" || retry.lastErr == nil {
+		t.Errorf("status = %q, lastErr = %v; want reconnecting with reason", retry.status, retry.lastErr)
+	}
+	if view := retry.View(); !strings.Contains(view, "connection refused") {
+		t.Errorf("View() hides the reconnect reason:\n%s", view)
+	}
+
+	// The next snapshot clears the stale error.
+	next, _ = retry.Update(snapMsg(sampleSnap()))
+	if live := next.(statsModel); live.lastErr != nil || live.status != "live" {
+		t.Errorf("snapshot did not clear error state: status=%q lastErr=%v", live.status, live.lastErr)
 	}
 }

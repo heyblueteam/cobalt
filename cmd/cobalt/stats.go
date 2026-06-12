@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -77,8 +79,11 @@ func statsOnce(ctx context.Context, c *client.Client, project string, asJSON boo
 type (
 	connectedMsg struct{ ch chan tea.Msg }
 	snapMsg      cobaltapi.ServerStats
-	streamEndMsg struct{ err error }
-	retryMsg     struct{}
+	streamEndMsg struct {
+		err  error
+		code int // HTTP status of a failed connect; 0 when the stream died some other way
+	}
+	retryMsg struct{}
 )
 
 // reconnectDelay paces retry after the stream drops — matches the
@@ -100,6 +105,8 @@ type statsModel struct {
 	history map[string][]float64
 	ch      chan tea.Msg
 	status  string // "live", "connecting…", "reconnecting…"
+	lastErr error  // why the last stream attempt ended; shown while reconnecting
+	err     error  // fatal: quits the program and is reported to the user
 	width   int
 	height  int
 }
@@ -112,11 +119,17 @@ func statsTUI(ctx context.Context, c *client.Client, project string) error {
 		history: map[string][]float64{},
 		status:  "connecting…",
 	}
-	_, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
+	final, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithContext(ctx)).Run()
 	if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	if fm, ok := final.(statsModel); ok {
+		return fm.err
+	}
+	return nil
 }
 
 func (m statsModel) Init() tea.Cmd { return m.connect() }
@@ -128,12 +141,15 @@ func (m statsModel) connect() tea.Cmd {
 	return func() tea.Msg {
 		resp, err := c.ServerStatsSSE(ctx)
 		if err != nil {
-			return streamEndMsg{err}
+			return streamEndMsg{err: err}
 		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return streamEndMsg{fmt.Errorf("%s: %s", resp.Status, string(body))}
+			return streamEndMsg{
+				err:  fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body))),
+				code: resp.StatusCode,
+			}
 		}
 		ch := make(chan tea.Msg, 4)
 		go func() {
@@ -145,7 +161,7 @@ func (m statsModel) connect() tea.Cmd {
 				}
 				return nil
 			})
-			ch <- streamEndMsg{err}
+			ch <- streamEndMsg{err: err}
 		}()
 		return connectedMsg{ch}
 	}
@@ -185,6 +201,7 @@ func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := cobaltapi.ServerStats(msg)
 		m.snap = &s
 		m.status = "live"
+		m.lastErr = nil
 		// History tracks the full snapshot, not the filtered view, so
 		// cycling filters doesn't restart the sparklines.
 		for _, r := range buildRows(s, false) {
@@ -199,6 +216,14 @@ func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitMsg(m.ch)
 
 	case streamEndMsg:
+		switch msg.code {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+			// Retrying can't fix a bad API key or a daemon without the
+			// endpoint (pre-stats version) — quit and report why.
+			m.err = msg.err
+			return m, tea.Quit
+		}
+		m.lastErr = msg.err
 		m.status = "reconnecting…"
 		return m, tea.Tick(reconnectDelay, func(time.Time) tea.Msg { return retryMsg{} })
 
@@ -229,8 +254,14 @@ func (m statsModel) nextFilter() string {
 }
 
 func (m statsModel) View() string {
+	// The connection state, with the reason when the stream is down —
+	// "reconnecting…" alone tells the user nothing actionable.
+	status := m.status
+	if m.lastErr != nil && status != "live" {
+		status += " — " + m.lastErr.Error()
+	}
 	if m.snap == nil {
-		return "\n  " + stDim.Render(m.status)
+		return "\n  " + stDim.Render(status)
 	}
 	rows := filterRows(buildRows(*m.snap, m.byMem), m.filter)
 
@@ -238,7 +269,7 @@ func (m statsModel) View() string {
 	if m.filter != "" {
 		help += " (" + m.filter + ")"
 	}
-	return renderHeader(*m.snap, m.status) + "\n\n" +
+	return renderHeader(*m.snap, status) + "\n\n" +
 		renderTable(rows, m.history, !m.hideRep) + "\n\n " +
 		stDim.Render(help) + "\n"
 }
