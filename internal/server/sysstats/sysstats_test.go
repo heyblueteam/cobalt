@@ -129,3 +129,16 @@ func TestParseMemInfoMissingTotal(t *testing.T) {
 		t.Error("want error when MemTotal is absent")
 	}
 }
+
+// Kernels before 3.14 have no MemAvailable; used must fall back to
+// MemTotal − MemFree instead of degenerating to used == total.
+func TestParseMemInfoNoMemAvailable(t *testing.T) {
+	var out cobaltapi.SystemStats
+	err := parseMemInfo([]byte("MemTotal: 1000 kB\nMemFree: 400 kB\n"), &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := uint64(600) * 1024; out.MemUsedBytes != want {
+		t.Errorf("MemUsedBytes = %d, want %d (MemFree fallback)", out.MemUsedBytes, want)
+	}
+}

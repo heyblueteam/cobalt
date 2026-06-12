@@ -170,9 +170,10 @@ func cpuPercent(prev, cur cpuTimes) float64 {
 // free(1): MemTotal − MemAvailable, which accounts for reclaimable page
 // cache (MemFree alone wildly overstates pressure).
 func parseMemInfo(b []byte, out *cobaltapi.SystemStats) error {
-	var memTotal, memAvail, swapTotal, swapFree uint64
+	var memTotal, memFree, memAvail, swapTotal, swapFree uint64
 	want := map[string]*uint64{
 		"MemTotal":     &memTotal,
+		"MemFree":      &memFree,
 		"MemAvailable": &memAvail,
 		"SwapTotal":    &swapTotal,
 		"SwapFree":     &swapFree,
@@ -198,6 +199,12 @@ func parseMemInfo(b []byte, out *cobaltapi.SystemStats) error {
 	}
 	if memTotal == 0 {
 		return fmt.Errorf("sysstats: no MemTotal in /proc/meminfo")
+	}
+	if memAvail == 0 {
+		// Kernels before 3.14 don't report MemAvailable; MemFree
+		// overstates pressure (it ignores reclaimable cache) but beats
+		// the alternative of reporting used == total.
+		memAvail = memFree
 	}
 	out.MemTotalBytes = memTotal
 	out.MemUsedBytes = memTotal - memAvail
