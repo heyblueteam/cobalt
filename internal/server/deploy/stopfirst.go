@@ -44,10 +44,13 @@ func stopFirstPhase(
 
 	for _, name := range flagged {
 		for _, s := range services {
-			// Labels, not name parsing: ServiceName/DeploymentNumber come from
-			// the service's own cobalt labels, so a `smtp` flag can never match
-			// an unrelated `old-smtp` service.
-			if s.ServiceName != name || s.DeploymentNumber == dep.Number {
+			// `docker service ls` gives us names only (listServices fills just
+			// Name/Replicas — the label-derived ServiceInfo fields are NOT
+			// populated on this path), so match by exact name parse. Generation
+			// treats project and service as known, so a `smtp` flag can never
+			// match an unrelated `old-smtp` service.
+			gen, ok := docker.Generation(project.Name, name, s.Name)
+			if !ok || gen == dep.Number {
 				continue
 			}
 			fmt.Fprintf(out, "⏹  stopping %s before start (stopFirst — service is down until #%d is healthy)\n",
