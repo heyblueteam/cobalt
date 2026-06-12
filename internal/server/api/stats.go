@@ -156,14 +156,17 @@ func (h *Handler) assembleStats(ctx context.Context, sampler SystemSampler, usag
 	return snap, nil
 }
 
-// hostname is the OS hostname, falling back to the configured public
-// host — Node must never be empty, multi-node fan-in keys on it.
-func hostname(fallback string) string {
+// hostname is the configured public host, falling back to the OS
+// hostname — Node must never be empty, multi-node fan-in keys on it.
+// PublicHost comes first: the daemon runs in a container, where
+// os.Hostname() is the container ID — meaningless to a reader and
+// different after every redeploy, which would break fan-in keying.
+func hostname(publicHost string) string {
+	if publicHost != "" {
+		return publicHost
+	}
 	if h, err := os.Hostname(); err == nil && h != "" {
 		return h
-	}
-	if fallback != "" {
-		return fallback
 	}
 	return "unknown"
 }

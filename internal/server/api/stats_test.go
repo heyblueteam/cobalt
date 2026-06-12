@@ -157,3 +157,15 @@ func TestServerStats_Follow(t *testing.T) {
 		t.Errorf("attribution = %+v", last.Containers[0])
 	}
 }
+
+// The daemon runs in a container, where os.Hostname() is the container
+// ID — Node must report the configured public host when one is set.
+func TestHostnamePrefersPublicHost(t *testing.T) {
+	t.Parallel()
+	if got := hostname("server.blue.cc"); got != "server.blue.cc" {
+		t.Errorf("hostname = %q, want the configured public host", got)
+	}
+	if got := hostname(""); got == "" || got == "unknown" {
+		t.Logf("no public host: fell back to OS hostname %q", got)
+	}
+}
