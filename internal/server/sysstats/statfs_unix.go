@@ -12,8 +12,8 @@ func statfs(path string) (used, total uint64, err error) {
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, 0, err
 	}
-	bsize := uint64(st.Bsize)
-	used = (uint64(st.Blocks) - uint64(st.Bfree)) * bsize
-	total = used + uint64(st.Bavail)*bsize
+	bsize := uint64(st.Bsize) //nolint:gosec // block size is never negative (int64 on Linux, uint32 on Darwin)
+	used = (st.Blocks - st.Bfree) * bsize
+	total = used + st.Bavail*bsize
 	return used, total, nil
 }

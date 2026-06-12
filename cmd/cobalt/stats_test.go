@@ -27,12 +27,18 @@ func sampleSnap() cobaltapi.ServerStats {
 			Disks:         []cobaltapi.DiskStats{{Mount: "/", UsedBytes: 64 << 30, TotalBytes: 100 << 30}},
 		},
 		Containers: []cobaltapi.ContainerStats{
-			{ID: "a1", Name: "api-114-web.1.x", Project: "api", Service: "web", Deployment: 114, Slot: 1,
-				CPUPercent: 81.2, MemUsedBytes: 1 << 30, MemLimitBytes: 8 << 30, NetRxBytes: 1 << 30, NetTxBytes: 1 << 29},
-			{ID: "a2", Name: "api-114-web.2.y", Project: "api", Service: "web", Deployment: 114, Slot: 2,
-				CPUPercent: 79.0, MemUsedBytes: 2 << 30, MemLimitBytes: 8 << 30},
-			{ID: "n1", Name: "next-50-web.1.z", Project: "next", Service: "web", Deployment: 50, Slot: 1,
-				CPUPercent: 4, MemUsedBytes: 400 << 20},
+			{
+				ID: "a1", Name: "api-114-web.1.x", Project: "api", Service: "web", Deployment: 114, Slot: 1,
+				CPUPercent: 81.2, MemUsedBytes: 1 << 30, MemLimitBytes: 8 << 30, NetRxBytes: 1 << 30, NetTxBytes: 1 << 29,
+			},
+			{
+				ID: "a2", Name: "api-114-web.2.y", Project: "api", Service: "web", Deployment: 114, Slot: 2,
+				CPUPercent: 79.0, MemUsedBytes: 2 << 30, MemLimitBytes: 8 << 30,
+			},
+			{
+				ID: "n1", Name: "next-50-web.1.z", Project: "next", Service: "web", Deployment: 50, Slot: 1,
+				CPUPercent: 4, MemUsedBytes: 400 << 20,
+			},
 			{ID: "d1", Name: "caddy", CPUPercent: 1, MemUsedBytes: 90 << 20},
 		},
 	}

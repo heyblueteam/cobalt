@@ -188,11 +188,13 @@ func (m statsModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// History tracks the full snapshot, not the filtered view, so
 		// cycling filters doesn't restart the sparklines.
 		for _, r := range buildRows(s, false) {
-			h := append(m.history[r.key()], r.CPU)
+			key := r.key()
+			h := m.history[key]
+			h = append(h, r.CPU)
 			if len(h) > historyCap {
 				h = h[len(h)-historyCap:]
 			}
-			m.history[r.key()] = h
+			m.history[key] = h
 		}
 		return m, waitMsg(m.ch)
 

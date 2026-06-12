@@ -47,9 +47,9 @@ func (statsRunner) Run(_ context.Context, args []string, _ io.Reader, stdout, _ 
 	}
 	switch args[0] {
 	case "stats":
-		io.WriteString(stdout, statsBody)
+		_, _ = io.WriteString(stdout, statsBody)
 	case "ps":
-		io.WriteString(stdout, psBody)
+		_, _ = io.WriteString(stdout, psBody)
 	}
 	return nil
 }

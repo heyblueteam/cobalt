@@ -34,8 +34,9 @@ func (h *Handler) ServerStats(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := r.Context()
 	// Prime the CPU delta so docker's ~2s sampling window doubles as the
-	// measurement window for the host CPU number.
-	h.Sys.Sample()
+	// measurement window for the host CPU number. The reading itself is
+	// discarded — only the stored counters matter.
+	_, _ = h.Sys.Sample()
 	usages, err := h.Docker.StatsOnce(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "docker stats: "+err.Error())
@@ -61,7 +62,7 @@ func (h *Handler) serverStatsFollow(w http.ResponseWriter, r *http.Request) {
 		interval = DefaultStatsInterval
 	}
 	stream := h.Docker.StatsStream(ctx)
-	h.Sys.Sample() // prime the CPU delta
+	_, _ = h.Sys.Sample() // prime the CPU delta; reading discarded
 
 	emit := func() error {
 		snap, err := h.assembleStats(ctx, stream.Snapshot())
@@ -89,8 +90,9 @@ func (h *Handler) serverStatsFollow(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-stream.Done():
 			// docker stats died under us (docker restart, error). Emit
-			// what we have and close; the client reconnects with backoff.
-			emit()
+			// what we have — best effort, the stream is closing either
+			// way — and let the client reconnect with backoff.
+			_ = emit()
 			return
 		case <-ticker.C:
 			if err := emit(); err != nil {
