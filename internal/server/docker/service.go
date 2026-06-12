@@ -79,6 +79,13 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 	for _, l := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ServiceName, opts.DeploymentNumber) {
 		args = append(args, "--label", l)
 	}
+	// --label lands on the swarm service object only; --container-label
+	// puts the same set on every task container, so per-container views
+	// (`docker stats` attribution) resolve ownership without parsing
+	// swarm task names. See ResolveOwner.
+	for _, l := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ServiceName, opts.DeploymentNumber) {
+		args = append(args, "--container-label", l)
+	}
 
 	// Env vars: deterministic order so argv is reproducible for tests.
 	envKeys := sortedKeys(opts.EnvVars)
