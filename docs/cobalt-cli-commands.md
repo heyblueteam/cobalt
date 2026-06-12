@@ -68,6 +68,25 @@ cobalt logs [--project <p>] [--service <s>]
 
 Press Ctrl+C to stop.
 
+### `cobalt stats`
+
+Live dashboard of host CPU / memory / load / disk and per-container usage,
+grouped by project and service with per-replica rows.
+
+```
+cobalt stats [--project <p>] [--once] [--json]
+```
+
+- In a terminal: full-screen view updating every ~2s. Keys: `q` quit,
+  `c`/`m` sort by CPU/memory, `r` toggle replica rows, `p` cycle project filter.
+- `--once`, `--json`, or piped output: prints a single snapshot and exits
+  (`--json` emits the raw `ServerStats` document — sizes in bytes).
+- Containers cobalt doesn't manage appear under the `other` group.
+
+Backed by `GET /api/server/stats` (`?follow=1` for the SSE stream). The
+daemon samples `docker stats` plus `/proc`; stats reflect the node the
+daemon runs on.
+
 ### `cobalt run`
 
 Run a one-off command inside a project's container. Interactive (allocates a TTY, supports resize).

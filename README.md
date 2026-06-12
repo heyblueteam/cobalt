@@ -92,6 +92,9 @@ cobalt deployments list
 
 # Stream logs
 cobalt logs -f
+
+# Live resource dashboard (host + per-container)
+cobalt stats
 ```
 
 ## Features
@@ -102,6 +105,7 @@ cobalt logs -f
 - **Docker Swarm ready** — Single command deploys your stack to Swarm
 - **Sidecar database** — Built-in rqlite for HA-ready persistence (no external DB needed)
 - **GitHub integration** — Webhook-driven deploys from any GitHub repo
+- **Live monitoring** — `cobalt stats` shows host + per-container CPU/memory grouped by project, from your laptop
 - **Single binary** — One executable, one deployment target
 
 ## Why Cobalt?

@@ -113,6 +113,18 @@ func parseOffset(id string) (int64, bool) {
 // output stream sets this to the byte offset, so a resuming caller can
 // reconnect with ?offset=N; streams that emit no ids return "").
 func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) (string, error) {
+	return ConsumeSSEEvents(ctx, r, func(_, data string) error {
+		_, err := fmt.Fprintln(out, data)
+		return err
+	})
+}
+
+// ConsumeSSEEvents parses a Server-Sent Events stream from r, calling fn
+// once per dispatched event with its id ("" when the event carries none)
+// and its data payload (multiple data: fields joined by '\n'). A non-nil
+// error from fn stops consumption and is returned. Returns the last
+// event id observed.
+func ConsumeSSEEvents(ctx context.Context, r io.Reader, fn func(id, data string) error) (string, error) {
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1024<<10)
 
@@ -122,12 +134,14 @@ func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) (string, error)
 		lastID    string
 	)
 
-	flush := func() {
+	flush := func() error {
+		var err error
 		if len(dataLines) > 0 {
-			fmt.Fprintln(out, strings.Join(dataLines, "\n"))
+			err = fn(eventID, strings.Join(dataLines, "\n"))
 		}
 		dataLines = dataLines[:0]
 		eventID = ""
+		return err
 	}
 
 	for scanner.Scan() {
@@ -143,7 +157,9 @@ func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) (string, error)
 		// when delivered to the consumer; previously we overwrote on each
 		// `data:` line so multi-line events lost everything but the last.
 		if line == "" {
-			flush()
+			if err := flush(); err != nil {
+				return lastID, err
+			}
 			continue
 		}
 		if strings.HasPrefix(line, ":") {
@@ -163,7 +179,9 @@ func ConsumeSSE(ctx context.Context, r io.Reader, out io.Writer) (string, error)
 		}
 	}
 	// Flush any trailing event the server didn't terminate before EOF.
-	flush()
+	if err := flush(); err != nil {
+		return lastID, err
+	}
 
 	if err := scanner.Err(); err != nil && !isContextCanceled(err) {
 		return lastID, fmt.Errorf("read sse stream: %w", err)

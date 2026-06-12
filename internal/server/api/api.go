@@ -19,6 +19,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/github"
 	"github.com/heyblueteam/cobalt/internal/server/store"
+	"github.com/heyblueteam/cobalt/internal/server/sysstats"
 )
 
 // Handler is the per-package handler set. Constructor takes everything
@@ -46,6 +47,14 @@ type Handler struct {
 	// StartedAt is when the daemon process began. Used to compute
 	// uptime in GET /api/meta/info. Set by NewHandler.
 	StartedAt time.Time
+	// Sys returns a fresh host-stats sampler for one GET
+	// /api/server/stats request — per-request because CPU% is a delta
+	// between a sampler's consecutive samples (see SystemSampler). nil
+	// disables the endpoint (it returns 500); NewHandler always sets it.
+	Sys func() SystemSampler
+	// StatsInterval is the snapshot cadence for stats?follow=1. Zero
+	// means DefaultStatsInterval; tests shrink it.
+	StatsInterval time.Duration
 	// CronManager surfaces project-cron registration to the API
 	// handlers (`crons list`, project-delete cleanup). nil disables
 	// cron-related endpoints, which return empty lists.
@@ -85,6 +94,10 @@ type HandlerOpts struct {
 	Version     string
 	CronManager CronManager
 
+	// Sys overrides the host-stats sampler factory. nil means "sample
+	// the real host" (/proc + statfs on / and DataDir).
+	Sys func() SystemSampler
+
 	// WebhookDedupTTL controls the in-memory dedup window for
 	// X-GitHub-Delivery. Zero means "use the package default" (10m).
 	WebhookDedupTTL time.Duration
@@ -102,6 +115,11 @@ func NewHandler(opts HandlerOpts) *Handler {
 	if ttl == 0 {
 		ttl = DefaultWebhookDedupTTL
 	}
+	sys := opts.Sys
+	if sys == nil {
+		sampler := sysstats.New(statsMounts(opts.DataDir)...)
+		sys = func() SystemSampler { return sampler.Session() }
+	}
 	return &Handler{
 		DB:          opts.DB,
 		Caddy:       opts.Caddy,
@@ -116,6 +134,7 @@ func NewHandler(opts HandlerOpts) *Handler {
 		Version:     opts.Version,
 		StartedAt:   time.Now(),
 		CronManager: opts.CronManager,
+		Sys:         sys,
 	}
 }
 

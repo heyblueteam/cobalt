@@ -40,6 +40,7 @@ func newRootCmd() *cobra.Command {
 		newMetaCmd(),
 		newVolumesCmd(),
 		newLogsCmd(),
+		newStatsCmd(),
 		newRunCmd(),
 		newHistoryCmd(),
 		newLlmCmd(),

@@ -51,6 +51,14 @@ func TestCreateService_FullArgs(t *testing.T) {
 	if !argSequence(args, "--name", "api-3-web") {
 		t.Errorf("--name pair missing")
 	}
+	// Labels must land on both the service object and its task
+	// containers — stats attribution reads the container copy.
+	if !argSequence(args, "--label", "cobalt.project.id=7") {
+		t.Errorf("--label pair missing")
+	}
+	if !argSequence(args, "--container-label", "cobalt.project.id=7") {
+		t.Errorf("--container-label pair missing")
+	}
 	if !argSequence(args, "--replicas", "2") {
 		t.Errorf("--replicas pair missing")
 	}
