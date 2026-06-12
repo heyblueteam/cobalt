@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/heyblueteam/cobalt/internal/cliconfig"
 	"github.com/heyblueteam/cobalt/internal/output"
@@ -266,5 +267,19 @@ func TestStreamEndFatalVsRetry(t *testing.T) {
 	next, _ = retry.Update(snapMsg(sampleSnap()))
 	if live := next.(statsModel); live.lastErr != nil || live.status != "live" {
 		t.Errorf("snapshot did not clear error state: status=%q lastErr=%v", live.status, live.lastErr)
+	}
+}
+
+func TestPadTruncateRuneAware(t *testing.T) {
+	// "données" is 7 runes / 8 bytes: byte counting under-pads and can
+	// slice mid-rune.
+	if got := pad("données", 9); utf8.RuneCountInString(got) != 9 {
+		t.Errorf("pad = %q (%d runes), want 9 runes", got, utf8.RuneCountInString(got))
+	}
+	if got := truncate("données-réplica", 8); got != "données…" || !utf8.ValidString(got) {
+		t.Errorf("truncate = %q, want %q", got, "données…")
+	}
+	if got := truncate("web", 8); got != "web" {
+		t.Errorf("truncate short = %q", got)
 	}
 }

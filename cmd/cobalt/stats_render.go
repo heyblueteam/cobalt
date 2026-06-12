@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
@@ -286,17 +287,22 @@ func renderTable(rows []serviceRow, history map[string][]float64, showReplicas b
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// pad right-pads plain (unstyled) text to n display columns.
+// pad right-pads plain (unstyled) text to n display columns. Counted in
+// runes, not bytes — byte-counting under-pads non-ASCII names (fmt's %-Ns
+// pads by runes, so the two must agree for columns to line up).
 func pad(s string, n int) string {
-	if len(s) >= n {
-		return s
+	if c := utf8.RuneCountInString(s); c < n {
+		return s + strings.Repeat(" ", n-c)
 	}
-	return s + strings.Repeat(" ", n-len(s))
+	return s
 }
 
+// truncate caps s at n runes, ellipsis included. Counted in runes — a
+// byte cut can land mid-rune and emit invalid UTF-8.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-1] + "…"
+	return string(r[:n-1]) + "…"
 }
