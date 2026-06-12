@@ -72,6 +72,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/server/upgrade", h.ServerUpgrade)
 	mux.HandleFunc("GET /api/server/upgrade/{id}", h.GetServerUpgrade)
 	mux.HandleFunc("GET /api/server/upgrade/{id}/output", h.ServerUpgradeOutput)
+	mux.HandleFunc("GET /api/server/stats", h.ServerStats)
 }
 
 // RegisterPublic attaches public (unauthenticated) routes onto mux.

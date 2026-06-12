@@ -85,12 +85,24 @@ func (s *Sampler) Sample() (cobaltapi.SystemStats, error) {
 
 	for _, m := range s.Mounts {
 		used, total, err := s.Statfs(m)
-		if err != nil {
+		if err != nil || isDuplicateDisk(out.Disks, used, total) {
 			continue
 		}
 		out.Disks = append(out.Disks, cobaltapi.DiskStats{Mount: m, UsedBytes: used, TotalBytes: total})
 	}
 	return out, nil
+}
+
+// isDuplicateDisk drops mounts that resolve to a filesystem already
+// reported — the daemon's data dir usually lives on the root filesystem,
+// and listing the same disk twice reads as double the storage.
+func isDuplicateDisk(disks []cobaltapi.DiskStats, used, total uint64) bool {
+	for _, d := range disks {
+		if d.UsedBytes == used && d.TotalBytes == total {
+			return true
+		}
+	}
+	return false
 }
 
 // cpuTimes is the aggregate "cpu" line of /proc/stat, reduced to the two
