@@ -25,12 +25,17 @@ func TestStopFirstPhase_RemovesOnlyOldGenerationsOfFlaggedService(t *testing.T) 
 	t.Parallel()
 	project := store.Project{ID: 1, Name: "haraka"}
 	dep := store.Deployment{Number: 10}
+	// Names only: the real listServices populates just Name/Replicas from
+	// `docker service ls` — the label-derived ServiceInfo fields stay zero.
+	// Constructing fixtures the same way keeps this test honest about what
+	// the phase can actually see (the v1.2.0 bug was matching on fields the
+	// producer never fills).
 	d := &serviceDockerFake{services: []docker.ServiceInfo{
-		{Name: "haraka-9-smtp", ProjectID: 1, DeploymentNumber: 9, ServiceName: "smtp"},
-		{Name: "haraka-8-smtp", ProjectID: 1, DeploymentNumber: 8, ServiceName: "smtp"},
-		{Name: "haraka-10-smtp", ProjectID: 1, DeploymentNumber: 10, ServiceName: "smtp"}, // current gen — keep
-		{Name: "haraka-9-acme", ProjectID: 1, DeploymentNumber: 9, ServiceName: "acme"},   // not flagged — keep
-		{Name: "haraka-9-old-smtp", ProjectID: 1, DeploymentNumber: 9, ServiceName: "old-smtp"}, // name collision — keep
+		{Name: "haraka-9-smtp"},
+		{Name: "haraka-8-smtp"},
+		{Name: "haraka-10-smtp"},    // current gen — keep
+		{Name: "haraka-9-acme"},     // not flagged — keep
+		{Name: "haraka-9-old-smtp"}, // name collision — keep
 	}}
 	built := []BuiltService{
 		stopFirstBuilt("smtp", true),
@@ -56,7 +61,7 @@ func TestStopFirstPhase_NoFlaggedServices_TouchesNothing(t *testing.T) {
 	project := store.Project{ID: 1, Name: "api"}
 	dep := store.Deployment{Number: 2}
 	d := &serviceDockerFake{
-		services: []docker.ServiceInfo{{Name: "api-1-web", ProjectID: 1, DeploymentNumber: 1, ServiceName: "web"}},
+		services: []docker.ServiceInfo{{Name: "api-1-web"}},
 		listErr:  errors.New("must not even list"),
 	}
 	built := []BuiltService{stopFirstBuilt("web", false)}
@@ -74,7 +79,7 @@ func TestStopFirstPhase_RemoveFailureIsFatal(t *testing.T) {
 	project := store.Project{ID: 1, Name: "haraka"}
 	dep := store.Deployment{Number: 10}
 	d := &serviceDockerFake{
-		services:  []docker.ServiceInfo{{Name: "haraka-9-smtp", ProjectID: 1, DeploymentNumber: 9, ServiceName: "smtp"}},
+		services:  []docker.ServiceInfo{{Name: "haraka-9-smtp"}},
 		removeErr: errors.New("boom"),
 	}
 	built := []BuiltService{stopFirstBuilt("smtp", true)}

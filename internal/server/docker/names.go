@@ -23,16 +23,29 @@ func ServiceName(projectName string, deploymentNumber int, serviceName string) s
 // projectName is taken as known (not parsed back out) so a hyphenated project
 // name — or a hyphenated service name — doesn't make the split ambiguous.
 func WebGeneration(projectName, serviceName string) (int, bool) {
-	rest, ok := strings.CutPrefix(serviceName, projectName+"-")
+	return Generation(projectName, "web", serviceName)
+}
+
+// Generation parses the deployment number out of a full swarm service name —
+// the inverse of ServiceName(projectName, n, svcName) for one known project
+// and logical service. ok=false for other projects, other services, and
+// malformed names.
+//
+// Both projectName and svcName are taken as known (not parsed back out), so
+// hyphens in either never make the split ambiguous: "haraka-9-old-smtp" is
+// NOT a generation of svc "smtp" because the middle segment "9-old" isn't a
+// number.
+func Generation(projectName, svcName, fullName string) (int, bool) {
+	rest, ok := strings.CutPrefix(fullName, projectName+"-")
 	if !ok {
 		return 0, false
 	}
-	// rest is "{number}-{serviceName}", e.g. "114-web"; split on the first '-'.
+	// rest is "{number}-{svcName}", e.g. "114-web"; split on the first '-'.
 	i := strings.IndexByte(rest, '-')
 	if i <= 0 {
 		return 0, false
 	}
-	if rest[i+1:] != "web" {
+	if rest[i+1:] != svcName {
 		return 0, false
 	}
 	n, err := strconv.Atoi(rest[:i])
