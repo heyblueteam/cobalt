@@ -44,7 +44,7 @@ Cross-cutting conventions to lock in before we have many callers depending on th
 
 Per-repo `cobalt.json` parser.
 
-- [x] Service definition: `type`, `image`, `port`, `command`, `build`, `publicPath`, `publishedPorts`, `volumes`, `schedule`, `exposedInternally`, `timeout`, `health`, `extraSwarmParams`, `extraRunParams`
+- [x] Service definition: `type`, `image`, `port`, `command`, `build`, `publicPath`, `publishedPorts`, `volumes`, `schedule`, `exposedInternally`, `timeout`, `health`, `extraSwarmParams`, `extraRunParams`, `stopFirst`
 - [x] Hook services validated: `hook:deploy:start:before`, `hook:deploy:start:after` must be type=command with non-empty command
 - [x] Cron service type with per-field cron schedule validation
 - [x] Static-site service type (publicPath + image-not-required logic)

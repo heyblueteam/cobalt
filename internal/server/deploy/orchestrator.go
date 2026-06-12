@@ -222,6 +222,13 @@ func (o *Orchestrator) cutover(
 		log.Warn("set status swapping", "error", err)
 	}
 
+	// stopFirst services surrender their old generation before the new one
+	// starts — host-mode published ports can't be held by two generations at
+	// once. Anything stopped here is down until the new service is healthy.
+	if err := stopFirstPhase(ctx, o.Docker, *project, dep, built, out); err != nil {
+		return err
+	}
+
 	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, out)
 	if err != nil {
 		// Phase 1 failure: stop services we did start, no Caddy touch.

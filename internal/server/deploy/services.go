@@ -21,6 +21,7 @@ type ServiceDocker interface {
 	WaitForServiceHealthy(ctx context.Context, name string, replicas int, timeout time.Duration) error
 	RemoveService(ctx context.Context, name string) error
 	ListServicesForDeployment(ctx context.Context, projectID int64, deploymentNumber int) ([]docker.ServiceInfo, error)
+	ListServicesForProject(ctx context.Context, projectID int64) ([]docker.ServiceInfo, error)
 }
 
 // startServicesPhase creates and starts every long-running service in the

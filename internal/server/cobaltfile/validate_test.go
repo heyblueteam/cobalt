@@ -294,3 +294,42 @@ func TestValidate_BuildOverrideSkipsImageCheck(t *testing.T) {
 		t.Errorf("build: override should skip image check: %v", err)
 	}
 }
+
+func TestValidate_StopFirstContainerOnly(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"worker": {
+            "type": "cron",
+            "schedule": "* * * * *",
+            "command": "echo hi",
+            "stopFirst": true
+        }}
+    }`
+	_, err := Parse([]byte(src))
+	mustContain(t, err, "stopFirst only valid for type=container")
+}
+
+func TestValidate_StopFirstRejectedOnPublicWeb(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {"web": {"stopFirst": true}}
+    }`
+	_, err := Parse([]byte(src))
+	mustContain(t, err, "stopFirst would break zero-downtime cutover")
+}
+
+func TestValidate_StopFirstAllowedOnInternalServices(t *testing.T) {
+	t.Parallel()
+	src := `{
+        "version": "1.0",
+        "services": {
+            "web": {"exposedInternally": true, "stopFirst": true},
+            "smtp": {"type": "container", "stopFirst": true}
+        }
+    }`
+	if _, err := Parse([]byte(src)); err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+}
