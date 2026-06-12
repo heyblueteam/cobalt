@@ -12,14 +12,16 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
-// Sampler reads host statistics. CPU utilisation is a delta between
-// consecutive samples, so the Sampler is stateful: the first Sample of a
-// Sampler's lifetime reports CPUPercent 0.
+// Sampler is the host-stats configuration: where procfs lives and which
+// mounts to report. It holds no sampling state — CPU utilisation is a
+// delta between consecutive reads, so each consumer takes its own
+// Session; sharing one would interleave every consumer's measurement
+// windows (two dashboards sampling the same state see windows of
+// near-zero jiffies, and the CPU number degrades to 0 or noise).
 type Sampler struct {
 	// ProcRoot is the procfs mount to read from. Defaults to /proc;
 	// tests point it at a fixture directory.
@@ -29,9 +31,6 @@ type Sampler struct {
 	// Statfs resolves a mount's usage. Defaults to the real statfs(2);
 	// tests inject a fake.
 	Statfs func(path string) (used, total uint64, err error)
-
-	mu   sync.Mutex
-	prev cpuTimes
 }
 
 // New returns a Sampler reading the real /proc and the given mounts.
@@ -39,10 +38,24 @@ func New(mounts ...string) *Sampler {
 	return &Sampler{ProcRoot: "/proc", Mounts: mounts, Statfs: statfs}
 }
 
+// Session starts an independent sampling session. The first Sample of a
+// session reports CPUPercent 0 (no prior reading to delta against).
+func (s *Sampler) Session() *Session {
+	return &Session{conf: s}
+}
+
+// Session computes CPU deltas over its own lifetime. Not safe for
+// concurrent use — one session per connection/goroutine.
+type Session struct {
+	conf *Sampler
+	prev cpuTimes
+}
+
 // Sample reads one snapshot. Partial failures (one unreadable mount) are
 // not fatal — the affected section is zero/omitted — but an unreadable
 // procfs is, since the snapshot would be meaningless.
-func (s *Sampler) Sample() (cobaltapi.SystemStats, error) {
+func (se *Session) Sample() (cobaltapi.SystemStats, error) {
+	s := se.conf
 	var out cobaltapi.SystemStats
 
 	stat, err := os.ReadFile(filepath.Join(s.ProcRoot, "stat"))
@@ -54,10 +67,8 @@ func (s *Sampler) Sample() (cobaltapi.SystemStats, error) {
 		return out, err
 	}
 	out.CPUCount = count
-	s.mu.Lock()
-	out.CPUPercent = cpuPercent(s.prev, cur)
-	s.prev = cur
-	s.mu.Unlock()
+	out.CPUPercent = cpuPercent(se.prev, cur)
+	se.prev = cur
 
 	mem, err := os.ReadFile(filepath.Join(s.ProcRoot, "meminfo"))
 	if err != nil {

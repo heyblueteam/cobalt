@@ -47,9 +47,11 @@ type Handler struct {
 	// StartedAt is when the daemon process began. Used to compute
 	// uptime in GET /api/meta/info. Set by NewHandler.
 	StartedAt time.Time
-	// Sys samples host-level stats for GET /api/server/stats. nil
+	// Sys returns a fresh host-stats sampler for one GET
+	// /api/server/stats request — per-request because CPU% is a delta
+	// between a sampler's consecutive samples (see SystemSampler). nil
 	// disables the endpoint (it returns 500); NewHandler always sets it.
-	Sys SystemSampler
+	Sys func() SystemSampler
 	// StatsInterval is the snapshot cadence for stats?follow=1. Zero
 	// means DefaultStatsInterval; tests shrink it.
 	StatsInterval time.Duration
@@ -92,9 +94,9 @@ type HandlerOpts struct {
 	Version     string
 	CronManager CronManager
 
-	// Sys overrides the host-stats sampler. nil means "sample the real
-	// host" (/proc + statfs on / and DataDir).
-	Sys SystemSampler
+	// Sys overrides the host-stats sampler factory. nil means "sample
+	// the real host" (/proc + statfs on / and DataDir).
+	Sys func() SystemSampler
 
 	// WebhookDedupTTL controls the in-memory dedup window for
 	// X-GitHub-Delivery. Zero means "use the package default" (10m).
@@ -115,7 +117,8 @@ func NewHandler(opts HandlerOpts) *Handler {
 	}
 	sys := opts.Sys
 	if sys == nil {
-		sys = sysstats.New(statsMounts(opts.DataDir)...)
+		sampler := sysstats.New(statsMounts(opts.DataDir)...)
+		sys = func() SystemSampler { return sampler.Session() }
 	}
 	return &Handler{
 		DB:          opts.DB,

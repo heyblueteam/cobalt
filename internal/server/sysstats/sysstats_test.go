@@ -25,8 +25,9 @@ func TestSample(t *testing.T) {
 		Mounts:   []string{"/", "/var/lib/missing"},
 		Statfs:   fakeStatfs,
 	}
+	sess := s.Session()
 
-	first, err := s.Sample()
+	first, err := sess.Sample()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,12 +62,39 @@ func TestSample(t *testing.T) {
 
 	// Second sample from advanced counters: Δbusy=5100, Δtotal=11300.
 	s.ProcRoot = "testdata/proc2"
-	second, err := s.Sample()
+	second, err := sess.Sample()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := 100 * 5100.0 / 11300.0; !almostEqual(second.CPUPercent, want) {
 		t.Errorf("second sample CPUPercent = %v, want %v", second.CPUPercent, want)
+	}
+}
+
+// Sessions must not share delta state: a second consumer sampling in
+// between (another dashboard, a --json poller) used to shrink the first
+// consumer's measurement window to near zero, degrading CPU% to noise.
+func TestSessionsAreIndependent(t *testing.T) {
+	s := &Sampler{ProcRoot: "testdata/proc1", Statfs: fakeStatfs}
+	a, b := s.Session(), s.Session()
+
+	if _, err := a.Sample(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Sample(); err != nil {
+		t.Fatal(err)
+	}
+
+	s.ProcRoot = "testdata/proc2"
+	want := 100 * 5100.0 / 11300.0
+	for name, sess := range map[string]*Session{"a": a, "b": b} {
+		got, err := sess.Sample()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !almostEqual(got.CPUPercent, want) {
+			t.Errorf("session %s CPUPercent = %v, want %v (delta window corrupted by the other session)", name, got.CPUPercent, want)
+		}
 	}
 }
 

@@ -10,8 +10,11 @@ import (
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
-// SystemSampler provides host-level statistics — *sysstats.Sampler in
-// production, a fake in tests.
+// SystemSampler provides host-level statistics — a *sysstats.Session in
+// production, a fake in tests. CPU utilisation is a delta between a
+// sampler's consecutive Sample calls, so each request takes a fresh one
+// from Handler.Sys; sharing a sampler across requests would interleave
+// their measurement windows and degrade the CPU number to noise.
 type SystemSampler interface {
 	Sample() (cobaltapi.SystemStats, error)
 }
@@ -33,16 +36,17 @@ func (h *Handler) ServerStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	sys := h.Sys()
 	// Prime the CPU delta so docker's ~2s sampling window doubles as the
 	// measurement window for the host CPU number. The reading itself is
 	// discarded — only the stored counters matter.
-	_, _ = h.Sys.Sample()
+	_, _ = sys.Sample()
 	usages, err := h.Docker.StatsOnce(ctx)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "docker stats: "+err.Error())
 		return
 	}
-	snap, err := h.assembleStats(ctx, usages)
+	snap, err := h.assembleStats(ctx, sys, usages)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -62,10 +66,11 @@ func (h *Handler) serverStatsFollow(w http.ResponseWriter, r *http.Request) {
 		interval = DefaultStatsInterval
 	}
 	stream := h.Docker.StatsStream(ctx)
-	_, _ = h.Sys.Sample() // prime the CPU delta; reading discarded
+	sys := h.Sys()
+	_, _ = sys.Sample() // prime the CPU delta; reading discarded
 
 	emit := func() error {
-		snap, err := h.assembleStats(ctx, stream.Snapshot())
+		snap, err := h.assembleStats(ctx, sys, stream.Snapshot())
 		if err != nil {
 			return err
 		}
@@ -104,8 +109,8 @@ func (h *Handler) serverStatsFollow(w http.ResponseWriter, r *http.Request) {
 
 // assembleStats joins host stats, container usage, and ownership into one
 // wire snapshot.
-func (h *Handler) assembleStats(ctx context.Context, usages []docker.ContainerUsage) (cobaltapi.ServerStats, error) {
-	sys, err := h.Sys.Sample()
+func (h *Handler) assembleStats(ctx context.Context, sampler SystemSampler, usages []docker.ContainerUsage) (cobaltapi.ServerStats, error) {
+	sys, err := sampler.Sample()
 	if err != nil {
 		return cobaltapi.ServerStats{}, err
 	}

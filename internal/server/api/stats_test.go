@@ -67,7 +67,7 @@ func newStatsEnv(t *testing.T) (*httptest.Server, *fakeSysSampler) {
 		DB:     db,
 		Queue:  deploy.NewQueue(db),
 		Docker: docker.NewWithRunner(statsRunner{}),
-		Sys:    sys,
+		Sys:    func() SystemSampler { return sys },
 		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	h.Register(mux)
