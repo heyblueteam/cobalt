@@ -47,6 +47,10 @@ func (f *serviceDockerFake) ListServicesForDeployment(_ context.Context, _ int64
 	return f.services, f.listErr
 }
 
+func (f *serviceDockerFake) ListServicesForProject(_ context.Context, _ int64) ([]docker.ServiceInfo, error) {
+	return f.services, f.listErr
+}
+
 // findAttachment returns the NetworkAttachment matching name, or fails the
 // test if absent. Centralizes the "ordering is implementation detail, but
 // each network must be present exactly once" assertion the alias tests all
