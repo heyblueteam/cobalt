@@ -6,12 +6,27 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
+
+// reapMinAge is the minimum time since a deployment's cutover before its
+// superseded web generation may be reaped, regardless of data-plane probe
+// outcome. This is the backstop for the 2026-07-14 incident: a Cloudflare
+// edge machine can hold a pooled keep-alive connection to Caddy that
+// resolved (and cached, for the connection's lifetime) the old generation's
+// Docker DNS name. Reaping that name out from under a still-live pooled
+// connection leaves it dialing a deleted host indefinitely — bounded only by
+// however long Cloudflare takes to cycle that specific connection, which can
+// be well over 20 minutes. This floor doesn't eliminate that risk (only a
+// stable service name/VIP would), but it keeps the reap from firing within
+// the same tick as cutover, when the odds of a live pooled connection still
+// pointing at the old generation are highest.
+const reapMinAge = 5 * time.Minute
 
 // CaddyReconcileStore is the store subset the Caddy reconciler needs.
 type CaddyReconcileStore interface {
@@ -226,17 +241,23 @@ func reconcileProject(
 		// (the silent post-cutover 502 divergence; the admin GET above can't
 		// see it). Probe the data plane and force-repair if the running router
 		// disagrees.
-		corrected, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, domains[0])
+		outcome, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, domains[0])
 		if err != nil {
 			return false, err
 		}
-		if !corrected {
+		switch outcome {
+		case dataPlaneRepaired:
+			return true, nil
+		case dataPlaneConfirmed:
 			// Only reap a superseded web generation once the live router is
-			// confirmed (or unprobed-but-config-correct) on the new one — never
-			// while traffic might still be landing on the old build.
-			reapSupersededWeb(ctx, log, reaper, p, live.Number)
+			// GENUINELY confirmed on the new one — never on an unprobed,
+			// disabled, or inconclusive result. See reapMinAge's doc comment
+			// for why confirmation alone still isn't sufficient on its own.
+			reapSupersededWeb(ctx, log, reaper, p, *live)
+			return false, nil
+		default: // dataPlaneUnknown
+			return false, nil
 		}
-		return corrected, nil
 
 	case cobaltfile.TypeStatic, cobaltfile.TypeGenerator:
 		// We don't have a cheap "what is the current root?" probe (it
@@ -247,6 +268,27 @@ func reconcileProject(
 	return false, nil
 }
 
+// dataPlaneOutcome is the result of probing Caddy's running router, kept as
+// an explicit tri-state so callers can never conflate "we don't actually
+// know" with "we confirmed it's fine" — the two were collapsed into a single
+// bool before the 2026-07-14 incident, and the reconciler treated an
+// inconclusive probe as license to reap the superseded web service.
+type dataPlaneOutcome int
+
+const (
+	// dataPlaneUnknown means the probe gave no usable signal: disabled
+	// (nil prober), errored (Caddy unreachable), or returned no
+	// X-Cobalt-Deployment header (a pre-header handler). Never treat this
+	// as confirmation of anything.
+	dataPlaneUnknown dataPlaneOutcome = iota
+	// dataPlaneConfirmed means the router positively reported serving the
+	// desired deployment number, with no gateway error.
+	dataPlaneConfirmed
+	// dataPlaneRepaired means the router had diverged and this call issued
+	// a force-repair PATCH.
+	dataPlaneRepaired
+)
+
 // reconcileDataPlane probes Caddy's running router for the project's primary
 // domain and, when it diverges from the desired deployment, force-repairs with
 // a single ServeService PATCH — which makes Caddy recompile the route. That's
@@ -254,8 +296,10 @@ func reconcileProject(
 // one reload instead of three.
 //
 // A nil prober, an inconclusive probe (Caddy unreachable), or a "no header"
-// response (a pre-header handler) are all treated as "unknown" — never as
-// drift — so a fleet-wide daemon upgrade can't stampede force-rebuilds.
+// response (a pre-header handler) are all treated as dataPlaneUnknown — never
+// as drift, and never as confirmation — so a fleet-wide daemon upgrade can't
+// stampede force-rebuilds, and an unprobed project's superseded web service is
+// never reaped on the strength of "we didn't see anything wrong."
 func reconcileDataPlane(
 	ctx context.Context,
 	log *slog.Logger,
@@ -265,32 +309,34 @@ func reconcileDataPlane(
 	live store.Deployment,
 	web cobaltfile.Service,
 	domain string,
-) (bool, error) {
+) (dataPlaneOutcome, error) {
 	if dp == nil {
-		return false, nil
+		return dataPlaneUnknown, nil
 	}
 	want := strconv.Itoa(live.Number)
 	served, status, err := dp.ServedDeployment(ctx, domain)
 	if err != nil {
 		log.Debug("caddy reconcile: data-plane probe inconclusive",
 			"project_id", p.ID, "project", p.Name, "error", err)
-		return false, nil
+		return dataPlaneUnknown, nil
 	}
-	// Divergence = the router serves a different deployment, or 502/503/504s
-	// because it's dialing a dead upstream. served=="" (no header) is NOT
-	// divergence — treat unknown handlers as fine and let their next deploy
-	// stamp the header.
-	if !isGatewayStatus(status) && (served == "" || served == want) {
-		return false, nil
+	// served=="" (no header) is NOT divergence — treat unknown handlers as
+	// fine and let their next deploy stamp the header — but it's also not a
+	// positive confirmation, so it must not license a reap either.
+	if !isGatewayStatus(status) && served == "" {
+		return dataPlaneUnknown, nil
+	}
+	if !isGatewayStatus(status) && served == want {
+		return dataPlaneConfirmed, nil
 	}
 	log.Warn("caddy reconcile: upstream drifted (data plane)",
 		"project_id", p.ID, "project", p.Name,
 		"want", want, "served", served, "status", status)
 	container := docker.ServiceName(p.Name, live.Number, "web")
 	if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
-		return false, fmt.Errorf("repair upstream (data plane): %w", err)
+		return dataPlaneUnknown, fmt.Errorf("repair upstream (data plane): %w", err)
 	}
-	return true, nil
+	return dataPlaneRepaired, nil
 }
 
 func isGatewayStatus(status int) bool {
@@ -301,15 +347,31 @@ func isGatewayStatus(status int) bool {
 // older deployment than current. deploy.cleanupOldServices intentionally keeps
 // the most recent prior generation alive as a grace fallback (so a lagging
 // router serves the old build instead of 502ing); this reaps it once the live
-// deployment is confirmed serving. Best-effort and nil-safe.
+// deployment is confirmed serving AND at least reapMinAge has elapsed since
+// cutover (see its doc comment — confirmation alone doesn't rule out a
+// pooled client connection still pinned to the old service's DNS name).
+// Best-effort and nil-safe.
 func reapSupersededWeb(
 	ctx context.Context,
 	log *slog.Logger,
 	reaper ServiceReaper,
 	p store.Project,
-	currentNumber int,
+	live store.Deployment,
 ) {
 	if reaper == nil {
+		return
+	}
+	if live.FinishedAt == nil {
+		// A successful deployment should always have this set; if it
+		// somehow doesn't, don't guess at how long ago cutover happened —
+		// skip reaping this tick rather than risk reaping too early.
+		log.Debug("caddy reconcile: skipping reap, no cutover timestamp",
+			"project_id", p.ID, "current", live.Number)
+		return
+	}
+	if age := time.Since(time.Unix(*live.FinishedAt, 0)); age < reapMinAge {
+		log.Debug("caddy reconcile: skipping reap, within grace floor",
+			"project_id", p.ID, "current", live.Number, "age", age)
 		return
 	}
 	services, err := reaper.ListServicesForProject(ctx, p.ID)
@@ -320,7 +382,7 @@ func reapSupersededWeb(
 	}
 	for _, s := range services {
 		n, ok := docker.WebGeneration(p.Name, s.Name)
-		if !ok || n >= currentNumber {
+		if !ok || n >= live.Number {
 			continue
 		}
 		if err := reaper.RemoveService(ctx, s.Name); err != nil {
@@ -329,7 +391,7 @@ func reapSupersededWeb(
 			continue
 		}
 		log.Info("caddy reconcile: reaped superseded web service",
-			"name", s.Name, "project_id", p.ID, "current", currentNumber)
+			"name", s.Name, "project_id", p.ID, "current", live.Number)
 	}
 }
 
