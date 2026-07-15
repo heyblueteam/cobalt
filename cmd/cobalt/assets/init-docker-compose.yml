@@ -70,6 +70,16 @@ services:
     command: caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
     deploy:
       replicas: 1
+      # The host-mode ports above mean two generations can't run at once —
+      # they'd fight over 80/443. Swarm's default start-first ordering would
+      # leave a restart's new task Pending forever ("host-mode port already in
+      # use") while the old one keeps running, so a restart silently no-ops.
+      # stop-first is mandatory here: it accepts a brief (~1-2s) all-sites blip
+      # in exchange for the restart actually cycling.
+      update_config:
+        order: stop-first
+      rollback_config:
+        order: stop-first
       restart_policy:
         condition: any
       placement:

@@ -162,11 +162,19 @@ func (c *Client) ScaleService(ctx context.Context, name string, replicas int) er
 }
 
 // RestartService forces a rolling restart of an existing swarm service in
-// place — same config, fresh tasks — via `docker service update --force`.
-// The Caddy watchdog uses it to recover a wedged admin endpoint without a
-// human SSHing in to `docker restart`.
+// place — same config, fresh tasks. The Caddy watchdog uses it to recover a
+// wedged admin endpoint without a human SSHing in to `docker restart`.
+//
+// The restart is forced stop-first (old task removed before the new one
+// starts). Its only caller is the Caddy ingress service, which publishes
+// host-mode ports 80/443: two generations can't bind the same host port, so
+// the Swarm default start-first ordering leaves the new task Pending forever
+// ("no suitable node (host-mode port already in use)") while the wedged old
+// task keeps running — the restart silently no-ops. Passing the order here
+// also heals a service whose stored spec is start-first. The cost is a brief
+// (~1-2s) window with no Caddy bound, which the watchdog already accounts for.
 func (c *Client) RestartService(ctx context.Context, name string) error {
-	return c.run(ctx, "service", "update", "--force", name)
+	return c.run(ctx, "service", "update", "--force", "--update-order", "stop-first", name)
 }
 
 // ServiceInfo summarizes a swarm service's identity.
