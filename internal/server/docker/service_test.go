@@ -416,6 +416,21 @@ func TestScaleService(t *testing.T) {
 	}
 }
 
+func TestRestartService_ForcesStopFirst(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if err := c.RestartService(context.Background(), "cobalt_caddy"); err != nil {
+		t.Fatalf("RestartService: %v", err)
+	}
+	args := r.lastCall().Args
+	// stop-first is load-bearing: the caddy ingress publishes host-mode ports,
+	// so start-first (Swarm's default) deadlocks the restart on the bound port.
+	if !argSequence(args, "service", "update", "--force", "--update-order", "stop-first", "cobalt_caddy") {
+		t.Errorf("restart args = %v, want `service update --force --update-order stop-first cobalt_caddy`", args)
+	}
+}
+
 func TestListServicesForProject_Parses(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
