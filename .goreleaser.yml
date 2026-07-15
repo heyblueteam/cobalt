@@ -35,6 +35,16 @@ homebrew_casks:
       verified: "github.com/heyblueteam/cobalt"
     binaries:
       - "cobalt"
+    # The macOS binary is unsigned/unnotarized, so Homebrew installs it with a
+    # com.apple.quarantine marker and Gatekeeper blocks the first run ("cobalt
+    # Not Opened / could not verify … free of malware"). Strip the marker on
+    # install so `brew install`/`brew upgrade` just works. The real fix is
+    # Developer-ID signing + notarization (needs an Apple Developer account);
+    # this is the free stopgap until then.
+    hooks:
+      post:
+        install: |
+          system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/cobalt"]
 
 checksum:
   name_template: "checksums.txt"
