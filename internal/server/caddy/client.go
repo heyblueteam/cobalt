@@ -116,16 +116,27 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	return c.doLocked(ctx, method, path, body, out)
 }
 
-// retryableMethods are the HTTP methods our admin client retries on
-// transient failure. Caddy's admin API is idempotent on @id-keyed
-// PATCH/PUT/DELETE — running the same call twice produces the same
-// state. POSTs that target a numeric route position (e.g.
-// `/config/.../routes/0`) ARE NOT idempotent; we don't retry those.
-var retryableMethods = map[string]bool{
-	http.MethodGet:    true,
-	http.MethodPatch:  true,
-	http.MethodPut:    true,
-	http.MethodDelete: true,
+// isRetryable reports whether a failed admin call is safe to re-send.
+// Retrying is only safe when a call that timed out AFTER Caddy applied it
+// converges to the same state on replay:
+//
+//   - GET is read-only.
+//   - PATCH and DELETE are only issued against @id-keyed paths in this
+//     package; replaying them converges.
+//   - PUT is idempotent ONLY when @id-keyed. Against a positional route
+//     index (e.g. `/config/.../routes/0`) it is an INSERT — Caddy prepends
+//     rather than replaces — so re-sending a timed-out-but-applied call
+//     would duplicate the route. Those surface their error instead.
+//   - POST (`/load`) stays outside the retried set; the read-modify-write
+//     apply wrapping it lets the failure bubble to its caller.
+func isRetryable(method, path string) bool {
+	switch method {
+	case http.MethodGet, http.MethodPatch, http.MethodDelete:
+		return true
+	case http.MethodPut:
+		return strings.HasPrefix(path, "/id/")
+	}
+	return false
 }
 
 // retryBackoff is the per-attempt sleep schedule for retried admin
@@ -137,7 +148,7 @@ var retryBackoff = []time.Duration{0, 2 * time.Second, 8 * time.Second}
 // during a Caddy reload) but not permanent errors (4xx responses, JSON
 // marshal failures, context cancellation).
 func (c *Client) doLocked(ctx context.Context, method, path string, body, out any) error {
-	if !retryableMethods[method] {
+	if !isRetryable(method, path) {
 		return c.doOnce(ctx, method, path, body, out)
 	}
 	var lastErr error

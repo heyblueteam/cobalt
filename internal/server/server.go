@@ -293,8 +293,17 @@ func registerScheduledJobs(
 	})
 	dataPlaneProber := deploy.CaddyDataPlaneProber{Prober: dockerCli}
 	_ = sched.Schedule("caddy-reconcile", "@every 30s", func(ctx context.Context) {
-		if _, err := worker.ReconcileCaddyState(ctx, log, db, caddyCli, dataPlaneProber, dockerCli); err != nil {
+		corrections, err := worker.ReconcileCaddyState(ctx, log, db, caddyCli, dataPlaneProber, dockerCli)
+		if err != nil {
 			log.Warn("caddy reconcile failed", "error", err)
+			return
+		}
+		if corrections > 0 {
+			// A steady-state pass corrects nothing, so any nonzero count
+			// means Caddy's live state had drifted from the deployed truth.
+			// Keep this WARN stable and greppable — the 2026-06-02 upstream
+			// divergence ran 82 minutes with zero cobalt-side signal.
+			log.Warn("caddy reconcile corrected drift", "corrections", corrections)
 		}
 	})
 	caddyWatchdog := worker.NewCaddyWatchdog(caddyCli, dockerCli, worker.DefaultCaddyServiceName, log)
