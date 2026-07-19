@@ -9,17 +9,20 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
-// fakeCaddy is an httptest.Server that records every admin request and
-// answers @id GETs from an in-memory map. Enough fidelity for our wire-format
-// tests; not a real Caddy.
+// fakeCaddy is an httptest.Server that records every admin request, answers
+// @id GETs from an in-memory map, and holds a full-config document for the
+// GET /config/ + POST /load pair the read-modify-write route apply uses.
+// Enough fidelity for our wire-format tests; not a real Caddy.
 type fakeCaddy struct {
 	t      *testing.T
 	mu     sync.Mutex
 	calls  []recordedCall
 	byID   map[string]json.RawMessage
+	config json.RawMessage
 	server *httptest.Server
 }
 
@@ -29,12 +32,49 @@ type recordedCall struct {
 	Body   json.RawMessage
 }
 
+// fakeBootstrapConfig is the full-config document a pristine cobalt Caddy
+// holds: admin + logging blocks, and the cobalt server with only the daemon
+// host route installed by the bootstrap config.
+const fakeBootstrapConfig = `{"admin":{"listen":"unix//cobalt/caddy-socket/caddy.sock"},"apps":{"http":{"servers":{"cobalt":{"listen":[":80"],"routes":[{"@id":"cobalt-daemon-host","handle":[],"match":[{"host":["cobalt.example"]}],"terminal":true}]}}}},"logging":{}}`
+
 func newFakeCaddy(t *testing.T) *fakeCaddy {
 	t.Helper()
-	f := &fakeCaddy{t: t, byID: map[string]json.RawMessage{}}
+	f := &fakeCaddy{
+		t:      t,
+		byID:   map[string]json.RawMessage{},
+		config: json.RawMessage(fakeBootstrapConfig),
+	}
+	f.indexIDs(f.config)
 	f.server = httptest.NewServer(http.HandlerFunc(f.handle))
 	t.Cleanup(f.server.Close)
 	return f
+}
+
+// indexIDs walks a config document and registers every object carrying an
+// @id into byID, mirroring how real Caddy rebuilds its id index on load.
+func (f *fakeCaddy) indexIDs(doc json.RawMessage) {
+	var root any
+	if err := json.Unmarshal(doc, &root); err != nil {
+		return
+	}
+	var walk func(v any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			if id, ok := t["@id"].(string); ok && id != "" {
+				raw, _ := json.Marshal(t)
+				f.byID[id] = raw
+			}
+			for _, child := range t {
+				walk(child)
+			}
+		case []any:
+			for _, child := range t {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
 }
 
 func (f *fakeCaddy) handle(w http.ResponseWriter, r *http.Request) {
@@ -93,6 +133,19 @@ func (f *fakeCaddy) handle(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+	}
+
+	// Full-config read + atomic swap — the read-modify-write route apply.
+	if r.Method == http.MethodGet && r.URL.Path == "/config/" {
+		w.Write(f.config)
+		return
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/load" {
+		f.config = body
+		f.byID = map[string]json.RawMessage{}
+		f.indexIDs(body)
+		w.WriteHeader(http.StatusOK)
+		return
 	}
 
 	// PUT to /config/.../routes/0 — register the route under its @id.
@@ -173,10 +226,10 @@ func TestAddProjectRoute_BodyShape(t *testing.T) {
 		t.Fatalf("AddProjectRoute: %v", err)
 	}
 	call := f.lastCall(t)
-	if call.Method != http.MethodPut {
-		t.Errorf("method: got %s, want PUT", call.Method)
+	if call.Method != http.MethodPost {
+		t.Errorf("method: got %s, want POST", call.Method)
 	}
-	if call.Path != "/config/apps/http/servers/cobalt/routes/0" {
+	if call.Path != "/load" {
 		t.Errorf("path: got %s", call.Path)
 	}
 	bodyStr := string(call.Body)
@@ -188,6 +241,8 @@ func TestAddProjectRoute_BodyShape(t *testing.T) {
 		`"terminal":true`,
 		`"reverse_proxy"`,
 		c.PlaceholderUpstream,
+		// The rest of the live config rides along untouched in the load.
+		`"@id":"cobalt-daemon-host"`,
 	} {
 		if !strings.Contains(bodyStr, want) {
 			t.Errorf("body missing %q\nfull: %s", want, bodyStr)
@@ -402,5 +457,59 @@ func TestStaticSiteDeploymentPath(t *testing.T) {
 	want := "/cobalt/srv/myblog/deployments/5"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestRetryClassification(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		method, path string
+		want         bool
+	}{
+		{http.MethodGet, "/config/", true},
+		{http.MethodGet, "/id/cobalt-project-handler-2/upstreams/0/dial", true},
+		{http.MethodPatch, "/id/cobalt-project-handler-2", true},
+		{http.MethodDelete, "/id/cobalt-redirect-5", true},
+		// An @id-keyed PUT converges on replay; safe to retry.
+		{http.MethodPut, "/id/cobalt-project-2", true},
+		// A positional route PUT is an insert: re-sending a call that timed
+		// out after Caddy applied it would duplicate the route.
+		{http.MethodPut, "/config/apps/http/servers/cobalt/routes/0", false},
+		// The full-config load: POST stays outside the retried set.
+		{http.MethodPost, "/load", false},
+	}
+	for _, tc := range cases {
+		if got := isRetryable(tc.method, tc.path); got != tc.want {
+			t.Errorf("isRetryable(%s %s): got %v, want %v", tc.method, tc.path, got, tc.want)
+		}
+	}
+}
+
+func TestPositionalPutNotRetriedOnTransportError(t *testing.T) {
+	t.Parallel()
+	var attempts atomic.Int32
+	// Hijack + close: the client sees a transport-layer error (the
+	// transient shape the retry loop normally re-sends).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("response writer is not a hijacker")
+			return
+		}
+		if conn, _, err := hj.Hijack(); err == nil {
+			conn.Close()
+		}
+	}))
+	defer srv.Close()
+
+	c := NewHTTPClient(srv.URL, srv.Client())
+	err := c.do(context.Background(), http.MethodPut,
+		"/config/apps/http/servers/cobalt/routes/0", map[string]any{"@id": "x"}, nil)
+	if err == nil {
+		t.Fatal("expected a transport error")
+	}
+	if got := attempts.Load(); got != 1 {
+		t.Errorf("positional PUT attempted %d times, want exactly 1", got)
 	}
 }

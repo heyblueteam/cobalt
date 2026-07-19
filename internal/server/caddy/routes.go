@@ -2,6 +2,7 @@ package caddy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -34,8 +35,12 @@ func (c *Client) SetDomainsForProject(ctx context.Context, projectID int64, doma
 // domain matchers and the placeholder upstream. The deploy flow later calls
 // ServeService to swap in the real container.
 //
-// Caddy's admin API treats /config/.../routes/0 as "prepend to the routes
-// slice" — this is how every disco-style daemon adds new routes today.
+// Applied as a read-modify-write of the full config (applyCobaltRoutes)
+// rather than Caddy's positional `PUT .../routes/0`. The positional PUT is
+// a *prepend*, not a replace: re-running it — or re-sending a call that
+// timed out after Caddy had already applied it — inserts a duplicate route.
+// The atomic /load path drops any existing route carrying this project's
+// @id before inserting the new one, so the call is idempotent.
 func (c *Client) AddProjectRoute(ctx context.Context, projectID int64, domains []string) error {
 	body := map[string]any{
 		"@id": ProjectRouteID(projectID),
@@ -72,7 +77,25 @@ func (c *Client) AddProjectRoute(ctx context.Context, projectID int64, domains [
 		},
 		"terminal": true,
 	}
-	return c.do(ctx, http.MethodPut, "/config/apps/http/servers/cobalt/routes/0", body, nil)
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("caddy: marshal project route: %w", err)
+	}
+	id := ProjectRouteID(projectID)
+	return c.applyCobaltRoutes(ctx, func(routes []json.RawMessage) ([]json.RawMessage, error) {
+		// Prepend, matching the old routes/0 semantics (project routes sit
+		// ahead of the daemon-host route). Every route is host-matched and
+		// terminal, so relative order across distinct hosts doesn't change
+		// matching.
+		out := make([]json.RawMessage, 0, len(routes)+1)
+		out = append(out, raw)
+		for _, r := range routes {
+			if routeID(r) != id {
+				out = append(out, r)
+			}
+		}
+		return out, nil
+	})
 }
 
 // RemoveProjectRoute deletes the entire project route by its @id.
