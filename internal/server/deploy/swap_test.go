@@ -9,9 +9,14 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
+
+// notFoundErr mirrors what caddy.Client returns for a 404 — the exact shape
+// commitCaddySwap's caddy.IsNotFound check keys on.
+var notFoundErr = &caddy.HTTPError{Status: 404, Body: "unknown object ID 'cobalt-project-handler-7'"}
 
 // fakeSwapCaddy records every call so swap tests can assert exact
 // dispatch (container path vs static-site path vs no-op).
@@ -22,10 +27,19 @@ type fakeSwapCaddy struct {
 	verifyCalls     []verifyCall
 	serveSvcCalls   []serveSvcCall
 	staticCalls     []staticCall
+	addRouteCalls   []addRouteCall
 	setDomainsErr   error
-	verifyErr       error
 	serveSvcErr     error
-	staticErr       error
+	addRouteErr     error
+
+	// verifyErrs/staticErrs are consumed one per call, in order — lets a
+	// test script "404 on the first attempt, succeed on the retry" (the
+	// missing-route self-heal path). A single static error can still be
+	// set via verifyErr/staticErr, returned once the slice is exhausted.
+	verifyErrs []error
+	verifyErr  error
+	staticErrs []error
+	staticErr  error
 }
 
 type verifyCall struct {
@@ -45,6 +59,10 @@ type staticCall struct {
 	projectName      string
 	deploymentNumber int
 }
+type addRouteCall struct {
+	projectID int64
+	domains   []string
+}
 
 func (f *fakeSwapCaddy) SetDomainsForProject(_ context.Context, projectID int64, domains []string) error {
 	f.mu.Lock()
@@ -58,6 +76,9 @@ func (f *fakeSwapCaddy) VerifyServeService(_ context.Context, projectID int64, c
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.verifyCalls = append(f.verifyCalls, verifyCall{projectID, container, port, deploymentNumber})
+	if n := len(f.verifyCalls) - 1; n < len(f.verifyErrs) {
+		return f.verifyErrs[n]
+	}
 	return f.verifyErr
 }
 
@@ -72,7 +93,17 @@ func (f *fakeSwapCaddy) ServeStaticSite(_ context.Context, projectID int64, proj
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.staticCalls = append(f.staticCalls, staticCall{projectID, projectName, deploymentNumber})
+	if n := len(f.staticCalls) - 1; n < len(f.staticErrs) {
+		return f.staticErrs[n]
+	}
 	return f.staticErr
+}
+
+func (f *fakeSwapCaddy) AddProjectRoute(_ context.Context, projectID int64, domains []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.addRouteCalls = append(f.addRouteCalls, addRouteCall{projectID, domains})
+	return f.addRouteErr
 }
 
 type fakeSwapStore struct {
@@ -239,6 +270,97 @@ func TestCommitCaddySwap_VerifyErrorPropagates(t *testing.T) {
 	err := commitCaddySwap(context.Background(), cy, st, project, dep, cf)
 	if err == nil || !strings.Contains(err.Error(), "upstream not reflected") {
 		t.Errorf("expected verify error, got %v", err)
+	}
+}
+
+func TestCommitCaddySwap_ContainerRouteRecreatedOnMissingHandler(t *testing.T) {
+	t.Parallel()
+	// Reproduces the 2026-07-20 incident: Caddy's admin-API watchdog
+	// restarts Caddy between SetDomainsForProject's route check and this
+	// PATCH, so the handler @id the PATCH targets no longer exists. The
+	// swap must self-heal — recreate the route, retry once, succeed —
+	// rather than fail and revert the deploy.
+	cy := &fakeSwapCaddy{verifyErrs: []error{notFoundErr, nil}}
+	st := &fakeSwapStore{primaryDomains: []string{"api.example.com", "alt.example.com"}}
+	project, dep := newSwapFixtures()
+	cf := &cobaltfile.Cobaltfile{Services: map[string]cobaltfile.Service{
+		"web": {Type: cobaltfile.TypeContainer, Port: 3000},
+	}}
+	if err := commitCaddySwap(context.Background(), cy, st, project, dep, cf); err != nil {
+		t.Fatalf("commitCaddySwap: %v", err)
+	}
+	if len(cy.addRouteCalls) != 1 {
+		t.Fatalf("AddProjectRoute calls: %d, want 1", len(cy.addRouteCalls))
+	}
+	if got := cy.addRouteCalls[0]; got.projectID != 7 || len(got.domains) != 2 {
+		t.Errorf("AddProjectRoute args: %+v", got)
+	}
+	if len(cy.verifyCalls) != 2 {
+		t.Fatalf("VerifyServeService calls: %d, want 2 (original + retry)", len(cy.verifyCalls))
+	}
+}
+
+func TestCommitCaddySwap_StaticRouteRecreatedOnMissingHandler(t *testing.T) {
+	t.Parallel()
+	cy := &fakeSwapCaddy{staticErrs: []error{notFoundErr, nil}}
+	st := &fakeSwapStore{primaryDomains: []string{"site.example.com"}}
+	project, dep := newSwapFixtures()
+	cf := &cobaltfile.Cobaltfile{Services: map[string]cobaltfile.Service{
+		"web": {Type: cobaltfile.TypeStatic, PublicPath: "dist"},
+	}}
+	if err := commitCaddySwap(context.Background(), cy, st, project, dep, cf); err != nil {
+		t.Fatalf("commitCaddySwap: %v", err)
+	}
+	if len(cy.addRouteCalls) != 1 {
+		t.Fatalf("AddProjectRoute calls: %d, want 1", len(cy.addRouteCalls))
+	}
+	if len(cy.staticCalls) != 2 {
+		t.Fatalf("ServeStaticSite calls: %d, want 2 (original + retry)", len(cy.staticCalls))
+	}
+}
+
+func TestCommitCaddySwap_RouteRecreateFailurePropagates(t *testing.T) {
+	t.Parallel()
+	cy := &fakeSwapCaddy{
+		verifyErrs:  []error{notFoundErr},
+		addRouteErr: errors.New("caddy still unreachable"),
+	}
+	st := &fakeSwapStore{primaryDomains: []string{"x.example.com"}}
+	project, dep := newSwapFixtures()
+	cf := &cobaltfile.Cobaltfile{Services: map[string]cobaltfile.Service{
+		"web": {Type: cobaltfile.TypeContainer, Port: 3000},
+	}}
+	err := commitCaddySwap(context.Background(), cy, st, project, dep, cf)
+	if err == nil || !strings.Contains(err.Error(), "caddy still unreachable") {
+		t.Errorf("expected recreate-route error to propagate, got %v", err)
+	}
+	// Must not retry the PATCH if recreating the route itself failed —
+	// there's nothing to point it at.
+	if len(cy.verifyCalls) != 1 {
+		t.Errorf("VerifyServeService calls: %d, want 1 (no retry after failed recreate)", len(cy.verifyCalls))
+	}
+}
+
+func TestCommitCaddySwap_PersistentMissingHandlerFailsAfterOneRetry(t *testing.T) {
+	t.Parallel()
+	// The retry is a single attempt, not a loop — a Caddy that's still
+	// missing the route after recreation (or wedged some other way) must
+	// still fail the deploy rather than retry forever.
+	cy := &fakeSwapCaddy{verifyErrs: []error{notFoundErr, notFoundErr}}
+	st := &fakeSwapStore{primaryDomains: []string{"x.example.com"}}
+	project, dep := newSwapFixtures()
+	cf := &cobaltfile.Cobaltfile{Services: map[string]cobaltfile.Service{
+		"web": {Type: cobaltfile.TypeContainer, Port: 3000},
+	}}
+	err := commitCaddySwap(context.Background(), cy, st, project, dep, cf)
+	if err == nil || !strings.Contains(err.Error(), "unknown object ID") {
+		t.Errorf("expected persistent not-found error to propagate, got %v", err)
+	}
+	if len(cy.verifyCalls) != 2 {
+		t.Errorf("VerifyServeService calls: %d, want exactly 2", len(cy.verifyCalls))
+	}
+	if len(cy.addRouteCalls) != 1 {
+		t.Errorf("AddProjectRoute calls: %d, want exactly 1 (one recreate attempt, not a loop)", len(cy.addRouteCalls))
 	}
 }
 
