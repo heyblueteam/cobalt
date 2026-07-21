@@ -75,6 +75,10 @@ services:
   # Admin API runs over a unix socket shared with the cobalt container.
   caddy-ssl:
     image: caddy:${CADDY_VERSION:-2.7.6}
+    # tini as PID 1 reaps the ssl_client helpers busybox wget forks during the
+    # data-plane probe (dataplane.go); caddy itself never wait()s them, so
+    # without this they pile up as defunct zombies (~24k/day in prod).
+    init: true
     volumes:
       - caddy-data:/data
       - caddy-config:/config
