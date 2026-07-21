@@ -3,9 +3,12 @@ package deploy
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -34,12 +37,17 @@ type dataPlaneResult struct {
 // dataPlaneProbeTimeout bounds a single scheme's probe (plaintext or TLS).
 const dataPlaneProbeTimeout = 5 * time.Second
 
-// probeDataPlane issues a real HTTP request through Caddy's own listener from
-// inside the cobalt-caddy container, with Host set to the project's domain,
-// and reports the X-Cobalt-Deployment header the running router emits plus the
-// HTTP status. This is the only ground truth for "which deployment does the
-// compiled router actually serve" — every admin-API read reflects the config
-// tree, which can diverge from the running router.
+// caddyHTTPSAddress is Caddy's service address on the cobalt stack network.
+// Dialing it directly keeps the probe off the public DNS/Cloudflare path while
+// the request URL supplies the project domain for both HTTP Host and TLS SNI.
+const caddyHTTPSAddress = "caddy:443"
+
+// probeDataPlane issues a real HTTP request through Caddy's own listener, with
+// Host set to the project's domain, and reports the X-Cobalt-Deployment header
+// the running router emits plus the HTTP status. This is the only ground truth
+// for "which deployment does the compiled router actually serve" — every
+// admin-API read reflects the config tree, which can diverge from the running
+// router.
 //
 // It auto-detects cobalt's two topologies so the daemon needn't know its own
 // mode:
@@ -57,6 +65,10 @@ const dataPlaneProbeTimeout = 5 * time.Second
 // Returns an error only when neither scheme yields an HTTP response (Caddy
 // unreachable). Any HTTP answer — even a 502 — is a successful probe.
 func probeDataPlane(ctx context.Context, p ReadinessProber, domain string) (dataPlaneResult, error) {
+	return probeDataPlaneAt(ctx, p, domain, caddyHTTPSAddress)
+}
+
+func probeDataPlaneAt(ctx context.Context, p ReadinessProber, domain, httpsAddress string) (dataPlaneResult, error) {
 	if !isProbableHostname(domain) {
 		return dataPlaneResult{}, fmt.Errorf("data-plane probe: refusing to probe implausible host %q", domain)
 	}
@@ -68,7 +80,7 @@ func probeDataPlane(ctx context.Context, p ReadinessProber, domain string) (data
 		return res, nil
 	}
 	// 2) https :443 — the standalone topology.
-	if res, ok := probeHTTPS(ctx, p, container, domain); ok {
+	if res, ok := probeHTTPS(ctx, domain, httpsAddress); ok {
 		return res, nil
 	}
 	return dataPlaneResult{}, fmt.Errorf(
@@ -91,8 +103,8 @@ func probePlaintext(ctx context.Context, p ReadinessProber, container, domain st
 		domain,
 	)
 	var stdout bytes.Buffer
-	// nc exits non-zero on connection refused; we decide on parsed output, not
-	// exit code (mirrors the busybox-exit-code caveat on the wget path).
+	// nc exits non-zero on connection refused; decide on parsed output rather
+	// than its exit code.
 	_ = p.Exec(probeCtx, container, []string{"sh", "-c", script}, &stdout, io.Discard)
 
 	res, parsed := parseHTTPHead(stdout.String())
@@ -108,29 +120,52 @@ func probePlaintext(ctx context.Context, p ReadinessProber, container, domain st
 	return res, true
 }
 
-// probeHTTPS probes Caddy's :443 listener with busybox wget over TLS. wget -S
-// writes the response head to stderr; we parse there. Note busybox wget exits
-// non-zero on any 4xx/5xx even when a header is present, so we never gate on
-// the exit code — only on whether a status line was parsed.
-func probeHTTPS(ctx context.Context, p ReadinessProber, container, domain string) (dataPlaneResult, bool) {
+// probeHTTPS probes Caddy's :443 listener directly from the daemon. The
+// transport dials Caddy's private service address while retaining the project
+// domain as the request host and TLS SNI. Using https://localhost here would
+// make Caddy reject the handshake before it could return an HTTP response.
+func probeHTTPS(ctx context.Context, domain, address string) (dataPlaneResult, bool) {
 	probeCtx, cancel := context.WithTimeout(ctx, dataPlaneProbeTimeout)
 	defer cancel()
-	cmd := []string{
-		"wget", "-S", "-O", "/dev/null", "-T", "4",
-		"--no-check-certificate",
-		"--header", "Host: " + domain,
-		"https://localhost/",
+
+	dialer := &net.Dialer{}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, address)
+		},
+		TLSClientConfig: &tls.Config{
+			ServerName:         domain,
+			InsecureSkipVerify: true, //nolint:gosec // Same trust model as the former wget --no-check-certificate probe.
+		},
+		DisableKeepAlives: true,
 	}
-	var stderr bytes.Buffer
-	_ = p.Exec(probeCtx, container, cmd, io.Discard, &stderr)
-	return parseHTTPHead(stderr.String())
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, "https://"+domain+"/", nil)
+	if err != nil {
+		return dataPlaneResult{}, false
+	}
+	req.Host = domain
+	req.Close = true
+	resp, err := client.Do(req)
+	if err != nil {
+		return dataPlaneResult{}, false
+	}
+	defer resp.Body.Close()
+	return dataPlaneResult{
+		Served: resp.Header.Get(caddy.DeploymentHeader),
+		Status: resp.StatusCode,
+	}, true
 }
 
-// parseHTTPHead scans raw response text (an nc body or busybox `wget -S`
-// stderr) for the first HTTP status line and the X-Cobalt-Deployment header,
-// stopping at the first blank line (end of headers). Each line is left-trimmed
-// so it copes with wget's leading-space indentation. parsed is false when no
-// HTTP status line is present.
+// parseHTTPHead scans a raw plaintext response for the first HTTP status line
+// and the X-Cobalt-Deployment header, stopping at the first blank line (end of
+// headers). parsed is false when no HTTP status line is present.
 func parseHTTPHead(raw string) (res dataPlaneResult, parsed bool) {
 	for _, rawLine := range strings.Split(raw, "\n") {
 		line := strings.TrimSpace(rawLine)

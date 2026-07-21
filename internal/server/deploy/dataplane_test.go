@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +35,7 @@ func TestParseHTTPHead(t *testing.T) {
 			wantParsed: true, wantStatus: 502, wantServed: "",
 		},
 		{
-			// busybox `wget -S` indents each response-head line with spaces.
-			name:       "wget -S indented output",
+			name:       "indented response lines",
 			raw:        "Connecting to localhost:443\n  HTTP/1.1 200 OK\n  Server: Caddy\n  X-Cobalt-Deployment: 207\n\n",
 			wantParsed: true, wantStatus: 200, wantServed: "207",
 		},
@@ -100,10 +101,8 @@ func TestIsProbableHostname(t *testing.T) {
 	}
 }
 
-// fakeDataPlaneProber stands in for *docker.Client in waitDataPlaneServing tests. It
-// answers the :80 plaintext path (cmd[0]=="sh") with a canned HTTP response;
-// the :443 wget fallback always "fails to connect" so tests exercise the
-// plaintext branch deterministically.
+// fakeDataPlaneProber stands in for *docker.Client in waitDataPlaneServing
+// tests. It answers the :80 plaintext path with a canned HTTP response.
 type fakeDataPlaneProber struct {
 	plaintextResp string // written to stdout for the nc path; "" + err => :80 closed
 	plaintextErr  error
@@ -120,7 +119,7 @@ func (f *fakeDataPlaneProber) Exec(_ context.Context, _ string, cmd []string, st
 		}
 		return f.plaintextErr
 	}
-	return errors.New("wget: can't connect to remote host") // :443 closed
+	return errors.New("unexpected exec command")
 }
 
 type fakeDomainLister struct {
@@ -184,8 +183,8 @@ func TestWaitDataPlaneServing(t *testing.T) {
 			wantErr: true, errSubstr: "never converged",
 		},
 		{
-			name:   "probe infra broken (caddy unreachable) → soft pass",
-			prober: &fakeDataPlaneProber{plaintextErr: errors.New("nc failed")},
+			name:   "probe inconclusive (no deployment header) → soft pass",
+			prober: &fakeDataPlaneProber{plaintextResp: resp("200 OK", "")},
 			cf:     container, domains: []string{"api.example.com"},
 		},
 		{
@@ -216,5 +215,39 @@ func TestWaitDataPlaneServing(t *testing.T) {
 				t.Fatalf("want nil, got %v", err)
 			}
 		})
+	}
+}
+
+func TestProbeDataPlaneHTTPSFallbackUsesProjectDomainForHostAndSNI(t *testing.T) {
+	t.Parallel()
+	type observation struct {
+		host string
+		sni  string
+	}
+	observed := make(chan observation, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- observation{host: r.Host, sni: r.TLS.ServerName}
+		w.Header().Set("X-Cobalt-Deployment", "403")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	address := strings.TrimPrefix(server.URL, "https://")
+	prober := &fakeDataPlaneProber{
+		plaintextResp: resp("308 Permanent Redirect", ""),
+	}
+	result, err := probeDataPlaneAt(context.Background(), prober, "api.blue.app", address)
+	if err != nil {
+		t.Fatalf("probeDataPlaneAt: %v", err)
+	}
+	if result.Status != http.StatusNoContent || result.Served != "403" {
+		t.Fatalf("result = %+v, want status 204 served 403", result)
+	}
+	got := <-observed
+	if got.host != "api.blue.app" {
+		t.Errorf("Host = %q, want api.blue.app", got.host)
+	}
+	if got.sni != "api.blue.app" {
+		t.Errorf("SNI = %q, want api.blue.app", got.sni)
 	}
 }
