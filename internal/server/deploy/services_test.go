@@ -63,6 +63,11 @@ func (f *serviceDockerFake) WaitForServiceHealthy(_ context.Context, name string
 	return f.healthCheckErr
 }
 
+func (f *serviceDockerFake) WaitForServiceDeploymentHealthy(_ context.Context, name string, _ int, replicas int, timeout time.Duration) error {
+	f.healthChecks = append(f.healthChecks, healthCheckCall{name: name, replicas: replicas, timeout: timeout})
+	return f.healthCheckErr
+}
+
 func (f *serviceDockerFake) RemoveService(_ context.Context, name string) error {
 	f.removed = append(f.removed, name)
 	return f.removeErr

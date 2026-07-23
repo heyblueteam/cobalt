@@ -20,6 +20,7 @@ type ServiceDocker interface {
 	CreateService(ctx context.Context, opts docker.ServiceCreateOpts) error
 	ReconcileStableService(ctx context.Context, opts docker.ServiceCreateOpts) error
 	WaitForServiceHealthy(ctx context.Context, name string, replicas int, timeout time.Duration) error
+	WaitForServiceDeploymentHealthy(ctx context.Context, name string, deploymentNumber, replicas int, timeout time.Duration) error
 	RemoveService(ctx context.Context, name string) error
 	ListServicesForDeployment(ctx context.Context, projectID int64, deploymentNumber int) ([]docker.ServiceInfo, error)
 	ListServicesForProject(ctx context.Context, projectID int64) ([]docker.ServiceInfo, error)
@@ -88,7 +89,7 @@ func waitHealthyAll(
 		if stableWeb && b.Name == "web" {
 			name := docker.StablePublicWebServiceName(project.ID)
 			t0 := time.Now()
-			if err := d.WaitForServiceHealthy(ctx, name, replicaCount(b.Service), HealthcheckTimeout); err != nil {
+			if err := d.WaitForServiceDeploymentHealthy(ctx, name, dep.Number, replicaCount(b.Service), HealthcheckTimeout); err != nil {
 				return fmt.Errorf("deploy: wait healthy stable public web: %w", err)
 			}
 			fmt.Fprintf(out, "✅ stable public web healthy (%s)\n", time.Since(t0).Round(time.Second))

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -61,6 +62,43 @@ func (c *Client) WaitForServiceHealthy(ctx context.Context, name string, replica
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("waitHealthy %s: timeout after %s (healthy=%d running=%d)", name, timeout, healthy, running)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// WaitForServiceDeploymentHealthy waits only for the running task containers
+// created by deploymentNumber. Stable services retain the previous revision
+// during a start-first update, so aggregate service health is insufficient.
+func (c *Client) WaitForServiceDeploymentHealthy(ctx context.Context, name string, deploymentNumber, replicas int, timeout time.Duration) error {
+	if replicas < 1 {
+		replicas = 1
+	}
+	deadline := time.Now().Add(timeout)
+	filter := LabelDeploymentNumber + "=" + strconv.Itoa(deploymentNumber)
+	const pollInterval = 3 * time.Second
+	for {
+		healths := c.containerHealthForService(ctx, name, filter)
+		if len(healths) >= replicas {
+			healthy, withHealth := 0, 0
+			for _, health := range healths {
+				if health != "" {
+					withHealth++
+				}
+				if health == "healthy" {
+					healthy++
+				}
+			}
+			if withHealth == 0 || healthy >= replicas {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("waitHealthy %s deployment %d: timeout after %s", name, deploymentNumber, timeout)
 		}
 		select {
 		case <-ctx.Done():
@@ -145,13 +183,13 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 // container declared no HEALTHCHECK; missing entries (e.g. when the
 // inspect call fails) are simply skipped — the caller treats absence as
 // "no healthcheck declared" and falls back to task-state readiness.
-func (c *Client) containerHealthForService(ctx context.Context, serviceName string) []string {
-	out, err := c.output(
-		ctx,
-		"ps",
-		"--filter", "label=com.docker.swarm.service.name="+serviceName,
-		"--format", "{{.ID}}",
-	)
+func (c *Client) containerHealthForService(ctx context.Context, serviceName string, extraLabelFilters ...string) []string {
+	args := []string{"ps", "--filter", "label=com.docker.swarm.service.name=" + serviceName}
+	for _, filter := range extraLabelFilters {
+		args = append(args, "--filter", "label="+filter)
+	}
+	args = append(args, "--format", "{{.ID}}")
+	out, err := c.output(ctx, args...)
 	if err != nil {
 		return nil
 	}
@@ -159,11 +197,11 @@ func (c *Client) containerHealthForService(ctx context.Context, serviceName stri
 	if len(ids) == 0 {
 		return nil
 	}
-	args := append([]string{
+	inspectArgs := append([]string{
 		"inspect",
 		"--format", `{{if .State.Health}}{{.State.Health.Status}}{{end}}`,
 	}, ids...)
-	out2, err := c.output(ctx, args...)
+	out2, err := c.output(ctx, inspectArgs...)
 	if err != nil {
 		return nil
 	}
