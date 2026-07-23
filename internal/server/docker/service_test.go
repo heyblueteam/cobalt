@@ -150,7 +150,7 @@ func TestReconcileStableService_UpdatesStartFirst(t *testing.T) {
 		t.Fatalf("ReconcileStableService: %v", err)
 	}
 	args := r.lastCall().Args
-	for _, pair := range [][2]string{{"--update-order", "start-first"}, {"--update-failure-action", "rollback"}, {"--image", "api:4"}, {"--env-add", "PORT=3000"}} {
+	for _, pair := range [][2]string{{"--update-order", "start-first"}, {"--update-failure-action", "rollback"}, {"--rollback-order", "start-first"}, {"--image", "api:4"}, {"--env-add", "PORT=3000"}} {
 		if !argSequence(args, pair[0], pair[1]) {
 			t.Errorf("missing %q %q in %v", pair[0], pair[1], args)
 		}

@@ -172,6 +172,7 @@ func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateO
 		"--update-parallelism", "1",
 		"--update-failure-action", "rollback",
 		"--update-monitor", "90s",
+		"--rollback-order", "start-first",
 		"--image", opts.Image,
 	}
 	for _, l := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ServiceName, opts.DeploymentNumber) {
