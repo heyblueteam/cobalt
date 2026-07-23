@@ -185,9 +185,8 @@ func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateO
 			args = append(args, "--env-rm", k)
 		}
 	}
-	for _, n := range opts.Networks {
-		args = append(args, "--network-add", networkFlagValue(n))
-	}
+	// Stable public-web services always use their ID-based alias on cobalt-main.
+	// The attachment is created once and must not be added again on every update.
 	if opts.Replicas > 0 {
 		args = append(args, "--replicas", strconv.Itoa(opts.Replicas))
 	}
