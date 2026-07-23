@@ -81,6 +81,9 @@ func waitHTTPReady(
 		port = cobaltfile.DefaultPort
 	}
 	serviceName := docker.ServiceName(project.Name, dep.Number, "web")
+	if cf.UsesStablePublicWeb() {
+		serviceName = docker.StablePublicWebServiceName(project.ID)
+	}
 
 	fmt.Fprintf(out, "🩺 probing %s:%d for readiness\n", serviceName, port)
 

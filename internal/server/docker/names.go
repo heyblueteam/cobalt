@@ -15,6 +15,14 @@ func ServiceName(projectName string, deploymentNumber int, serviceName string) s
 	return fmt.Sprintf("%s-%d-%s", projectName, deploymentNumber, serviceName)
 }
 
+// StablePublicWebServiceName is the durable Swarm service name for a
+// project's publicly-routed web process. It is deliberately keyed by the
+// immutable project ID rather than its display name or deployment number, so
+// Caddy never holds a DNS name that disappears during generation cleanup.
+func StablePublicWebServiceName(projectID int64) string {
+	return fmt.Sprintf("cobalt-web-%d", projectID)
+}
+
 // WebGeneration parses the deployment number out of a project's `web` service
 // name — the inverse of ServiceName(projectName, n, "web"). It returns
 // ok=false for names that don't belong to this project or aren't the `web`

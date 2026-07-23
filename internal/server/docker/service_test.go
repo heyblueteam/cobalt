@@ -120,6 +120,64 @@ func TestCreateService_DefaultsForHealth(t *testing.T) {
 	}
 }
 
+func TestReconcileStableService_CreatesMissingService(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerErr("service inspect cobalt-web-7", errors.New("no such service"))
+	c := NewWithRunner(r)
+	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
+		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 3,
+		Name: "cobalt-web-7", Image: "api:3", Networks: []NetworkAttachment{{Name: "cobalt-main", Alias: "cobalt-web-7"}},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileStableService: %v", err)
+	}
+	if !argSequence(r.lastCall().Args, "--name", "cobalt-web-7") {
+		t.Errorf("create args = %v", r.lastCall().Args)
+	}
+}
+
+func TestReconcileStableService_UpdatesStartFirst(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
+		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
+		Name: "cobalt-web-7", Image: "api:4", EnvVars: map[string]string{"PORT": "3000"}, Replicas: 2,
+		Networks: []NetworkAttachment{{Name: "cobalt-main", Alias: "cobalt-web-7"}},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileStableService: %v", err)
+	}
+	args := r.lastCall().Args
+	for _, pair := range [][2]string{{"--update-order", "start-first"}, {"--update-failure-action", "rollback"}, {"--image", "api:4"}, {"--env-add", "PORT=3000"}, {"--network-add", "name=cobalt-main,alias=cobalt-web-7"}} {
+		if !argSequence(args, pair[0], pair[1]) {
+			t.Errorf("missing %q %q in %v", pair[0], pair[1], args)
+		}
+	}
+}
+
+func TestReconcileStableService_RemovesDeletedEnvironment(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerStdout("service inspect --format", `["KEEP=old","REMOVE=old"]`)
+	c := NewWithRunner(r)
+	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
+		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
+		Name: "cobalt-web-7", Image: "api:4", EnvVars: map[string]string{"KEEP": "new"},
+	})
+	if err != nil {
+		t.Fatalf("ReconcileStableService: %v", err)
+	}
+	args := r.lastCall().Args
+	if !argSequence(args, "--env-rm", "REMOVE") {
+		t.Errorf("deleted env was retained: %v", args)
+	}
+	if argSequence(args, "--env-rm", "KEEP") {
+		t.Errorf("desired env was removed: %v", args)
+	}
+}
+
 func TestCreateService_NoHealthFlag(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()

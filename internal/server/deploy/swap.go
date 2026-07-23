@@ -89,6 +89,9 @@ func commitCaddySwap(
 	switch web.Type {
 	case cobaltfile.TypeContainer:
 		container := docker.ServiceName(project.Name, dep.Number, "web")
+		if cf.UsesStablePublicWeb() {
+			container = docker.StablePublicWebServiceName(project.ID)
+		}
 		port := web.Port
 		err := cy.VerifyServeService(ctx, project.ID, container, port, dep.Number)
 		if caddy.IsNotFound(err) {
@@ -159,6 +162,9 @@ func revertCaddySwap(
 	switch web.Type {
 	case cobaltfile.TypeContainer:
 		container := docker.ServiceName(project.Name, prev.Number, "web")
+		if cf.UsesStablePublicWeb() {
+			container = docker.StablePublicWebServiceName(project.ID)
+		}
 		if err := cy.ServeService(ctx, project.ID, container, web.Port, prev.Number); err != nil {
 			log.Error("deploy.revertCaddySwap: container revert failed",
 				"project_id", project.ID, "want_upstream", container, "error", err)

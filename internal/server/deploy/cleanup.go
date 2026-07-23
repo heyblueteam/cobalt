@@ -37,6 +37,7 @@ func cleanupOldServices(
 	d CleanupDocker,
 	project store.Project,
 	dep store.Deployment,
+	stableWeb bool,
 	out io.Writer,
 ) {
 	services, err := d.ListServicesForProject(ctx, project.ID)
@@ -49,6 +50,13 @@ func cleanupOldServices(
 
 	var stale []string
 	for _, s := range services {
+		if s.Name == docker.StablePublicWebServiceName(project.ID) {
+			if stableWeb {
+				continue // durable Caddy upstream, managed separately from generations
+			}
+			stale = append(stale, s.Name) // explicit stable-mode revert
+			continue
+		}
 		if strings.HasPrefix(s.Name, currentPrefix) {
 			continue // current deployment — keep
 		}

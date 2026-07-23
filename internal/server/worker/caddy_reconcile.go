@@ -200,7 +200,7 @@ func reconcileProject(
 		if err := cy.AddProjectRoute(ctx, p.ID, domains); err != nil {
 			return false, fmt.Errorf("recreate route: %w", err)
 		}
-		return reapplyHandler(ctx, cy, p, *live, web)
+		return reapplyHandler(ctx, cy, p, *live, web, cf.UsesStablePublicWeb())
 	}
 
 	// Domains may have drifted since last deploy — but only PATCH when they
@@ -222,6 +222,9 @@ func reconcileProject(
 	switch web.Type {
 	case cobaltfile.TypeContainer:
 		want := docker.ServiceName(p.Name, live.Number, "web")
+		if cf.UsesStablePublicWeb() {
+			want = docker.StablePublicWebServiceName(p.ID)
+		}
 		got, err := cy.CurrentUpstream(ctx, p.ID)
 		if err != nil {
 			return false, fmt.Errorf("read current upstream: %w", err)
@@ -241,7 +244,7 @@ func reconcileProject(
 		// (the silent post-cutover 502 divergence; the admin GET above can't
 		// see it). Probe the data plane and force-repair if the running router
 		// disagrees.
-		outcome, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, domains[0])
+		outcome, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, cf.UsesStablePublicWeb(), domains[0])
 		if err != nil {
 			return false, err
 		}
@@ -308,6 +311,7 @@ func reconcileDataPlane(
 	p store.Project,
 	live store.Deployment,
 	web cobaltfile.Service,
+	stableWeb bool,
 	domain string,
 ) (dataPlaneOutcome, error) {
 	if dp == nil {
@@ -333,6 +337,9 @@ func reconcileDataPlane(
 		"project_id", p.ID, "project", p.Name,
 		"want", want, "served", served, "status", status)
 	container := docker.ServiceName(p.Name, live.Number, "web")
+	if stableWeb {
+		container = docker.StablePublicWebServiceName(p.ID)
+	}
 	if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
 		return dataPlaneUnknown, fmt.Errorf("repair upstream (data plane): %w", err)
 	}
@@ -403,10 +410,14 @@ func reapplyHandler(
 	p store.Project,
 	live store.Deployment,
 	web cobaltfile.Service,
+	stableWeb bool,
 ) (bool, error) {
 	switch web.Type {
 	case cobaltfile.TypeContainer:
 		container := docker.ServiceName(p.Name, live.Number, "web")
+		if stableWeb {
+			container = docker.StablePublicWebServiceName(p.ID)
+		}
 		if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
 			return false, fmt.Errorf("reapply container: %w", err)
 		}

@@ -25,6 +25,29 @@ func TestParse_Empty(t *testing.T) {
 	}
 }
 
+func TestUsesStablePublicWeb(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		cf   Cobaltfile
+		want bool
+	}{
+		{"eligible", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer}}}, true},
+		{"not opted in", Cobaltfile{Services: map[string]Service{"web": {Type: TypeContainer}}}, false},
+		{"published port", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, PublishedPorts: []PublishedPort{{PublishedAs: 80, FromContainerPort: 8000}}}}}, false},
+		{"volume", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, Volumes: []Volume{{Name: "data", DestinationPath: "/data"}}}}}, false},
+		{"extra swarm params", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--limit-cpu 1"}}}, false},
+		{"worker", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer}, "worker": {Type: TypeContainer}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.cf.UsesStablePublicWeb(); got != tc.want {
+				t.Errorf("UsesStablePublicWeb() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestParse_ContainerWithExtraSwarmParams(t *testing.T) {
 	t.Parallel()
 	src := `{

@@ -18,6 +18,7 @@ const HealthcheckTimeout = 5 * time.Minute
 // ServiceDocker is the docker subset the service phase uses.
 type ServiceDocker interface {
 	CreateService(ctx context.Context, opts docker.ServiceCreateOpts) error
+	ReconcileStableService(ctx context.Context, opts docker.ServiceCreateOpts) error
 	WaitForServiceHealthy(ctx context.Context, name string, replicas int, timeout time.Duration) error
 	RemoveService(ctx context.Context, name string) error
 	ListServicesForDeployment(ctx context.Context, projectID int64, deploymentNumber int) ([]docker.ServiceInfo, error)
@@ -39,11 +40,23 @@ func startServicesPhase(
 	built []BuiltService,
 	envVars map[string]string,
 	deploymentNetwork string,
+	stableWeb bool,
 	out io.Writer,
 ) ([]string, error) {
 	var started []string
 	for _, b := range built {
 		if !runsAsService(b.Service) {
+			continue
+		}
+		if stableWeb && b.Name == "web" {
+			fmt.Fprintf(out, "🚀 updating stable public web service\n")
+			opts := stablePublicWebServiceOpts(project, dep, b, envVars)
+			if err := d.ReconcileStableService(ctx, opts); err != nil {
+				return started, fmt.Errorf("deploy: reconcile stable public web: %w", err)
+			}
+			// A stable service may already serve the last successful deployment.
+			// Never add it to rollback cleanup, which would turn a failed update
+			// into an outage by deleting that known-good service.
 			continue
 		}
 		fmt.Fprintf(out, "🚀 starting service %s\n", b.Name)
@@ -64,11 +77,21 @@ func waitHealthyAll(
 	project store.Project,
 	dep store.Deployment,
 	built []BuiltService,
+	stableWeb bool,
 	out io.Writer,
 ) error {
 	first := true
 	for _, b := range built {
 		if !runsAsService(b.Service) {
+			continue
+		}
+		if stableWeb && b.Name == "web" {
+			name := docker.StablePublicWebServiceName(project.ID)
+			t0 := time.Now()
+			if err := d.WaitForServiceHealthy(ctx, name, replicaCount(b.Service), HealthcheckTimeout); err != nil {
+				return fmt.Errorf("deploy: wait healthy stable public web: %w", err)
+			}
+			fmt.Fprintf(out, "✅ stable public web healthy (%s)\n", time.Since(t0).Round(time.Second))
 			continue
 		}
 		if first {
@@ -177,6 +200,23 @@ func serviceCreateOpts(
 			DestinationPath: v.DestinationPath,
 		})
 	}
+	return opts
+}
+
+// stablePublicWebServiceOpts creates the one long-lived public web service.
+// It intentionally attaches only to cobalt-main: a deployment-specific
+// network would be deleted with the generation and would reintroduce the DNS
+// failure this service exists to prevent.
+func stablePublicWebServiceOpts(
+	project store.Project,
+	dep store.Deployment,
+	b BuiltService,
+	envVars map[string]string,
+) docker.ServiceCreateOpts {
+	opts := serviceCreateOpts(project, dep, b, envVars, "")
+	stableName := docker.StablePublicWebServiceName(project.ID)
+	opts.Name = stableName
+	opts.Networks = []docker.NetworkAttachment{{Name: MainNetworkName, Alias: stableName}}
 	return opts
 }
 
