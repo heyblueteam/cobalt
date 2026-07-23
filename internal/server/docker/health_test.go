@@ -24,6 +24,17 @@ func TestWaitForServiceHealthy_AllHealthy(t *testing.T) {
 	}
 }
 
+func TestWaitForServiceDeploymentHealthy_IgnoresPriorDeployment(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerStdout("ps --filter label=com.docker.swarm.service.name=cobalt-web-7 --filter label=cobalt.deployment.number=8", "new-task\n")
+	r.answerStdout("inspect --format", "healthy\n")
+	c := NewWithRunner(r)
+	if err := c.WaitForServiceDeploymentHealthy(context.Background(), "cobalt-web-7", 8, 1, 5*time.Second); err != nil {
+		t.Errorf("WaitForServiceDeploymentHealthy: %v", err)
+	}
+}
+
 func TestWaitForServiceHealthy_StartingTimesOut(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
