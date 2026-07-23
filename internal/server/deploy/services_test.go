@@ -13,6 +13,7 @@ import (
 
 type serviceDockerFake struct {
 	created        []docker.ServiceCreateOpts
+	stableCreated  []docker.ServiceCreateOpts
 	healthChecks   []healthCheckCall
 	removed        []string
 	services       []docker.ServiceInfo
@@ -31,6 +32,30 @@ type healthCheckCall struct {
 func (f *serviceDockerFake) CreateService(_ context.Context, opts docker.ServiceCreateOpts) error {
 	f.created = append(f.created, opts)
 	return f.createErr
+}
+
+func (f *serviceDockerFake) ReconcileStableService(_ context.Context, opts docker.ServiceCreateOpts) error {
+	f.stableCreated = append(f.stableCreated, opts)
+	return f.createErr
+}
+
+func TestStartServicesPhase_UsesStablePublicWeb(t *testing.T) {
+	t.Parallel()
+	d := &serviceDockerFake{}
+	project := store.Project{ID: 7, Name: "api"}
+	dep := store.Deployment{Number: 3}
+	built := []BuiltService{{Name: "web", Service: cobaltfile.Service{Type: cobaltfile.TypeContainer}, ImageTag: "api:3"}}
+	started, err := startServicesPhase(context.Background(), d, project, dep, built, nil, "cobalt-project-api-3", true, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(started) != 0 || len(d.created) != 0 || len(d.stableCreated) != 1 {
+		t.Fatalf("started=%v created=%v stable=%v", started, d.created, d.stableCreated)
+	}
+	got := d.stableCreated[0]
+	if got.Name != "cobalt-web-7" || len(got.Networks) != 1 || got.Networks[0].Name != MainNetworkName {
+		t.Errorf("stable opts = %+v", got)
+	}
 }
 
 func (f *serviceDockerFake) WaitForServiceHealthy(_ context.Context, name string, replicas int, timeout time.Duration) error {
@@ -233,7 +258,7 @@ func TestWaitHealthyAll_UsesMinReplicas(t *testing.T) {
 		},
 	}
 
-	if err := waitHealthyAll(context.Background(), d, project, dep, built, io.Discard); err != nil {
+	if err := waitHealthyAll(context.Background(), d, project, dep, built, false, io.Discard); err != nil {
 		t.Fatalf("waitHealthyAll: %v", err)
 	}
 	if len(d.healthChecks) != 1 {

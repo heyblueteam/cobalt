@@ -200,6 +200,19 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	if h.Caddy != nil {
+		if err := h.Caddy.RemoveProjectRoute(r.Context(), p.ID); err != nil {
+			h.Log.Warn("api: delete project: remove caddy route", "project_id", p.ID, "error", err)
+		}
+	}
+	// Stable public web has no deployment number, so generation cleanup cannot
+	// discover it after this project's rows are gone. A missing service is a
+	// no-op, and the captured project ID remains valid after the DB delete.
+	if h.Docker != nil {
+		if err := h.Docker.RemoveService(r.Context(), docker.StablePublicWebServiceName(p.ID)); err != nil {
+			h.Log.Warn("api: delete project: remove stable public web", "project_id", p.ID, "error", err)
+		}
+	}
 	h.cleanupProjectArtifacts(r.Context(), *p)
 	w.WriteHeader(http.StatusNoContent)
 }

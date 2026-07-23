@@ -176,6 +176,23 @@ func TestCommitCaddySwap_ContainerHappyPath(t *testing.T) {
 	}
 }
 
+func TestCommitCaddySwap_StablePublicWebUsesProjectIDEndpoint(t *testing.T) {
+	t.Parallel()
+	cy := &fakeSwapCaddy{}
+	st := &fakeSwapStore{primaryDomains: []string{"api.example.com"}}
+	project, dep := newSwapFixtures()
+	cf := &cobaltfile.Cobaltfile{StablePublicWeb: true, Services: map[string]cobaltfile.Service{
+		"web": {Type: cobaltfile.TypeContainer, Image: "default", Port: 3000},
+	}}
+
+	if err := commitCaddySwap(context.Background(), cy, st, project, dep, cf); err != nil {
+		t.Fatalf("commitCaddySwap: %v", err)
+	}
+	if len(cy.verifyCalls) != 1 || cy.verifyCalls[0].container != "cobalt-web-7" {
+		t.Errorf("VerifyServeService calls = %+v, want stable cobalt-web-7 endpoint", cy.verifyCalls)
+	}
+}
+
 func TestCommitCaddySwap_StaticAndGeneratorRouteToStaticSite(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

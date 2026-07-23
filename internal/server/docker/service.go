@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -56,12 +57,15 @@ type ServiceCreateOpts struct {
 	HealthInterval    time.Duration       // defaults to 3 seconds
 	Volumes           []ServiceVolume
 	ExtraParams       []string // pre-split, e.g. via SplitParams(extraSwarmParams)
+	// Name overrides the deployment-numbered default. Stable public web
+	// services use an ID-based name so their Caddy upstream survives deploys.
+	Name string
 }
 
 // CreateService creates a swarm service with the cobalt label set, env
 // vars, networks, ports, optional healthcheck, and optional extra params.
 func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) error {
-	name := ServiceName(opts.ProjectName, opts.DeploymentNumber, opts.ServiceName)
+	name := serviceNameForOpts(opts)
 	args := []string{
 		"service", "create",
 		// --detach=true returns as soon as Swarm accepts the spec.
@@ -142,6 +146,87 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 	args = append(args, ShellSplit(opts.Command)...)
 
 	return c.run(ctx, args...)
+}
+
+// ReconcileStableService creates a stable public-web service on its first
+// deploy and updates it in place thereafter. Swarm's start-first update order
+// keeps the service VIP continuously resolvable while tasks roll over.
+func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateOpts) error {
+	if opts.Name == "" {
+		return errors.New("stable service requires an explicit name")
+	}
+	if err := c.run(ctx, "service", "inspect", opts.Name); err != nil {
+		if !isNotFound(err) {
+			return err
+		}
+		return c.CreateService(ctx, opts)
+	}
+	oldEnv, err := c.stableServiceEnvKeys(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+
+	args := []string{
+		"service", "update", "--detach=true",
+		"--update-order", "start-first",
+		"--update-parallelism", "1",
+		"--update-failure-action", "rollback",
+		"--update-monitor", "90s",
+		"--image", opts.Image,
+	}
+	for _, l := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ServiceName, opts.DeploymentNumber) {
+		args = append(args, "--label-add", l, "--container-label-add", l)
+	}
+	for _, k := range sortedKeys(opts.EnvVars) {
+		args = append(args, "--env-add", k+"="+opts.EnvVars[k])
+	}
+	for _, k := range oldEnv {
+		if _, wanted := opts.EnvVars[k]; !wanted {
+			args = append(args, "--env-rm", k)
+		}
+	}
+	for _, n := range opts.Networks {
+		args = append(args, "--network-add", networkFlagValue(n))
+	}
+	if opts.Replicas > 0 {
+		args = append(args, "--replicas", strconv.Itoa(opts.Replicas))
+	}
+	if opts.HealthCommand != "" {
+		args = append(args, "--health-cmd", opts.HealthCommand)
+	}
+	if opts.Command != "" {
+		args = append(args, "--args", opts.Command)
+	}
+	return c.run(ctx, append(args, opts.Name)...)
+}
+
+func (c *Client) stableServiceEnvKeys(ctx context.Context, name string) ([]string, error) {
+	out, err := c.output(ctx, "service", "inspect", "--format", "{{json .Spec.TaskTemplate.ContainerSpec.Env}}", name)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 || string(out) == "null" {
+		return nil, nil
+	}
+	var env []string
+	if err := json.Unmarshal(out, &env); err != nil {
+		return nil, fmt.Errorf("inspect stable service env: %w", err)
+	}
+	keys := make([]string, 0, len(env))
+	for _, entry := range env {
+		if i := strings.IndexByte(entry, '='); i > 0 {
+			keys = append(keys, entry[:i])
+		}
+	}
+	sortStrings(keys)
+	return keys, nil
+}
+
+func serviceNameForOpts(opts ServiceCreateOpts) string {
+	if opts.Name != "" {
+		return opts.Name
+	}
+	return ServiceName(opts.ProjectName, opts.DeploymentNumber, opts.ServiceName)
 }
 
 // RemoveService removes a swarm service by name. Returns nil if the service

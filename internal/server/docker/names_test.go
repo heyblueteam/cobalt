@@ -8,6 +8,7 @@ func TestNames(t *testing.T) {
 		got, want string
 	}{
 		{ServiceName("api", 7, "web"), "api-7-web"},
+		{StablePublicWebServiceName(42), "cobalt-web-42"},
 		{NetworkName("api", 7), "cobalt-project-api-7"},
 		{HookContainerName("api", "hook:deploy:start:before", 7), "api-hook-deploy-start-before.7"},
 		{RunContainerName("api", 42), "api-run.42"},

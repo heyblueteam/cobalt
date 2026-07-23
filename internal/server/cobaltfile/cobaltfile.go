@@ -46,10 +46,11 @@ const (
 
 // Cobaltfile is the parsed contents of cobalt.json.
 type Cobaltfile struct {
-	Version  string             `json:"version"`
-	Name     string             `json:"name,omitempty"`
-	Services map[string]Service `json:"services,omitempty"`
-	Images   map[string]Image   `json:"images,omitempty"`
+	Version         string             `json:"version"`
+	Name            string             `json:"name,omitempty"`
+	Services        map[string]Service `json:"services,omitempty"`
+	Images          map[string]Image   `json:"images,omitempty"`
+	StablePublicWeb bool               `json:"stablePublicWeb,omitempty"`
 }
 
 // ServiceType is one of a fixed set of service kinds.
@@ -118,6 +119,28 @@ type Image struct {
 type Volume struct {
 	Name            string `json:"name"`
 	DestinationPath string `json:"destinationPath"`
+}
+
+// UsesStablePublicWeb reports whether the project can use Cobalt's durable
+// public-web service. The stable service only joins cobalt-main, so projects
+// needing a deployment-scoped network stay on the existing generation route.
+// Keep this deliberately conservative until service dependencies are modeled
+// explicitly in cobalt.json.
+func (cf *Cobaltfile) UsesStablePublicWeb() bool {
+	if !cf.StablePublicWeb {
+		return false
+	}
+	web, ok := cf.Services["web"]
+	if !ok || web.Type != TypeContainer || web.ExposedInternally || web.StopFirst ||
+		len(web.PublishedPorts) != 0 || len(web.Volumes) != 0 || web.ExtraSwarmParams != "" {
+		return false
+	}
+	for name, service := range cf.Services {
+		if name != "web" && service.Type == TypeContainer {
+			return false
+		}
+	}
+	return true
 }
 
 // PublishedPort exposes a container port on the host network.

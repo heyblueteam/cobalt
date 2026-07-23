@@ -229,13 +229,14 @@ func (o *Orchestrator) cutover(
 		return err
 	}
 
-	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, out)
+	stableWeb := cf.UsesStablePublicWeb()
+	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, stableWeb, out)
 	if err != nil {
 		// Phase 1 failure: stop services we did start, no Caddy touch.
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return err
 	}
-	if err := waitHealthyAll(ctx, o.Docker, *project, dep, built, out); err != nil {
+	if err := waitHealthyAll(ctx, o.Docker, *project, dep, built, stableWeb, out); err != nil {
 		_ = stopServices(context.Background(), o.Docker, startedServices)
 		return err
 	}
@@ -284,7 +285,7 @@ func (o *Orchestrator) cutover(
 	}
 
 	// POST-SUCCESS — clean up old services. Best effort.
-	cleanupOldServices(context.Background(), log, o.Docker, *project, dep, out)
+	cleanupOldServices(context.Background(), log, o.Docker, *project, dep, stableWeb, out)
 
 	// Cron reconciliation: register / update / remove project crons
 	// declared in the just-cut-over cobaltfile. Best effort; failure
