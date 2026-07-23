@@ -150,10 +150,13 @@ func TestReconcileStableService_UpdatesStartFirst(t *testing.T) {
 		t.Fatalf("ReconcileStableService: %v", err)
 	}
 	args := r.lastCall().Args
-	for _, pair := range [][2]string{{"--update-order", "start-first"}, {"--update-failure-action", "rollback"}, {"--image", "api:4"}, {"--env-add", "PORT=3000"}, {"--network-add", "name=cobalt-main,alias=cobalt-web-7"}} {
+	for _, pair := range [][2]string{{"--update-order", "start-first"}, {"--update-failure-action", "rollback"}, {"--image", "api:4"}, {"--env-add", "PORT=3000"}} {
 		if !argSequence(args, pair[0], pair[1]) {
 			t.Errorf("missing %q %q in %v", pair[0], pair[1], args)
 		}
+	}
+	if argHas(args, "--network-add") {
+		t.Errorf("stable update must retain its existing network attachment: %v", args)
 	}
 }
 
