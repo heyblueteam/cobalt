@@ -37,6 +37,12 @@ func TestUsesStablePublicWeb(t *testing.T) {
 		{"published port", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, PublishedPorts: []PublishedPort{{PublishedAs: 80, FromContainerPort: 8000}}}}}, false},
 		{"volume", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, Volumes: []Volume{{Name: "data", DestinationPath: "/data"}}}}}, false},
 		{"extra swarm params", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--limit-cpu 1"}}}, false},
+		{"host alias", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host host.docker.internal:host-gateway"}}}, true},
+		{"host alias equals form", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host=host.docker.internal:host-gateway"}}}, true},
+		{"two host aliases", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host a:1.2.3.4 --host b:5.6.7.8"}}}, true},
+		{"host alias missing value", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host"}}}, false},
+		{"host alias plus disallowed param", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host a:1.2.3.4 --limit-cpu 1"}}}, false},
+		{"host value not mistaken for a flag", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host --limit-cpu"}}}, true},
 		{"worker", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer}, "worker": {Type: TypeContainer}}}, false},
 	}
 	for _, tc := range cases {

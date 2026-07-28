@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -188,6 +189,27 @@ func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateO
 	}
 	// Stable public-web services always use their ID-based alias on cobalt-main.
 	// The attachment is created once and must not be added again on every update.
+	//
+	// Host aliases are the one extra swarm param the stable path accepts (see
+	// cobaltfile.UsesStablePublicWeb). `service update` only changes what it is
+	// handed, so without an explicit add/remove pass the create-time hosts would
+	// outlive any edit to cobalt.json -- silently, and forever. Reconcile them
+	// the same way env vars are reconciled just above.
+	oldHosts, err := c.stableServiceHosts(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+	wantHosts := hostParams(opts.ExtraParams)
+	for _, h := range wantHosts {
+		if !slices.Contains(oldHosts, h) {
+			args = append(args, "--host-add", h)
+		}
+	}
+	for _, h := range oldHosts {
+		if !slices.Contains(wantHosts, h) {
+			args = append(args, "--host-rm", h)
+		}
+	}
 	if opts.Replicas > 0 {
 		args = append(args, "--replicas", strconv.Itoa(opts.Replicas))
 	}
@@ -220,6 +242,54 @@ func (c *Client) stableServiceEnvKeys(ctx context.Context, name string) ([]strin
 	}
 	sortStrings(keys)
 	return keys, nil
+}
+
+// stableServiceHosts returns the service's custom host entries in the same
+// `hostname:value` shape the --host flag takes. Docker stores them the other
+// way round, space-separated ("host-gateway host.docker.internal"), so they
+// are flipped here rather than at every comparison site.
+func (c *Client) stableServiceHosts(ctx context.Context, name string) ([]string, error) {
+	out, err := c.output(ctx, "service", "inspect", "--format", "{{json .Spec.TaskTemplate.ContainerSpec.Hosts}}", name)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 || string(out) == "null" {
+		return nil, nil
+	}
+	var stored []string
+	if err := json.Unmarshal(out, &stored); err != nil {
+		return nil, fmt.Errorf("inspect stable service hosts: %w", err)
+	}
+	hosts := make([]string, 0, len(stored))
+	for _, entry := range stored {
+		value, hostname, found := strings.Cut(entry, " ")
+		if !found {
+			continue
+		}
+		hosts = append(hosts, hostname+":"+value)
+	}
+	sortStrings(hosts)
+	return hosts, nil
+}
+
+// hostParams pulls the `--host` values out of pre-split extra swarm params.
+// UsesStablePublicWeb has already rejected any project whose params contain
+// anything else, so unrecognised flags are simply skipped here.
+func hostParams(extra []string) []string {
+	hosts := make([]string, 0, len(extra))
+	for i := 0; i < len(extra); i++ {
+		switch {
+		case extra[i] == "--host":
+			if i+1 < len(extra) {
+				i++
+				hosts = append(hosts, extra[i])
+			}
+		case strings.HasPrefix(extra[i], "--host="):
+			hosts = append(hosts, strings.TrimPrefix(extra[i], "--host="))
+		}
+	}
+	sortStrings(hosts)
+	return hosts
 }
 
 func serviceNameForOpts(opts ServiceCreateOpts) string {
