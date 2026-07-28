@@ -132,7 +132,7 @@ func TestAddProjectRoute_TouchesOnlyOwnedRoutes(t *testing.T) {
 		t.Fatalf("an existing route was altered (redirect=%d project=%d daemon=%d)\nposted: %s",
 			idxRedirect, idxProject, idxDaemon, posted)
 	}
-	if !(idxRedirect < idxProject && idxProject < idxDaemon) {
+	if idxRedirect >= idxProject || idxProject >= idxDaemon {
 		t.Errorf("existing route order changed (redirect=%d project=%d daemon=%d)",
 			idxRedirect, idxProject, idxDaemon)
 	}
