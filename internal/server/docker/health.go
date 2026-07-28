@@ -82,18 +82,20 @@ func (c *Client) WaitForServiceDeploymentHealthy(ctx context.Context, name strin
 	filter := LabelDeploymentNumber + "=" + strconv.Itoa(deploymentNumber)
 	const pollInterval = 3 * time.Second
 	for {
-		healths := c.containerHealthForService(ctx, name, filter)
-		if len(healths) >= replicas {
-			healthy, withHealth := 0, 0
+		containers, healths := c.containerHealthForService(ctx, name, filter)
+		if containers >= replicas {
+			// No healthcheck declared: containers being up is the whole signal,
+			// matching WaitForServiceHealthy's task-state fallback.
+			if len(healths) == 0 {
+				return nil
+			}
+			healthy := 0
 			for _, health := range healths {
-				if health != "" {
-					withHealth++
-				}
 				if health == "healthy" {
 					healthy++
 				}
 			}
-			if withHealth == 0 || healthy >= replicas {
+			if healthy >= replicas {
 				return nil
 			}
 		}
@@ -162,7 +164,7 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 	// Layer in per-container health for Running tasks. Failures here are
 	// non-fatal: WaitForServiceHealthy already falls back to task-state
 	// readiness when no Health field is reported.
-	if healths := c.containerHealthForService(ctx, serviceName); len(healths) > 0 {
+	if _, healths := c.containerHealthForService(ctx, serviceName); len(healths) > 0 {
 		var idx int
 		for i := range statuses {
 			if statuses[i].State != "Running" {
@@ -178,12 +180,19 @@ func (c *Client) taskStatuses(ctx context.Context, serviceName string) ([]taskSt
 	return statuses, nil
 }
 
-// containerHealthForService returns the .State.Health.Status of every
-// container backing the named swarm service. Empty string means the
-// container declared no HEALTHCHECK; missing entries (e.g. when the
-// inspect call fails) are simply skipped — the caller treats absence as
-// "no healthcheck declared" and falls back to task-state readiness.
-func (c *Client) containerHealthForService(ctx context.Context, serviceName string, extraLabelFilters ...string) []string {
+// containerHealthForService returns how many containers back the named swarm
+// service, plus the .State.Health.Status of those whose image declares a
+// HEALTHCHECK. An empty verdict slice means no healthcheck is declared, and
+// callers fall back to task-state readiness.
+//
+// The count is deliberately taken from the container ids rather than from the
+// verdict lines. `output` trims the whole blob, so a service whose containers
+// all lack a healthcheck inspects to nothing but blank lines and arrives here
+// as "" — indistinguishable from one container. Counting that string reported
+// a single container however many were running, so no service with more than
+// one replica and no HEALTHCHECK could ever satisfy a caller waiting on its
+// replica count.
+func (c *Client) containerHealthForService(ctx context.Context, serviceName string, extraLabelFilters ...string) (int, []string) {
 	args := []string{"ps", "--filter", "label=com.docker.swarm.service.name=" + serviceName}
 	for _, filter := range extraLabelFilters {
 		args = append(args, "--filter", "label="+filter)
@@ -191,11 +200,11 @@ func (c *Client) containerHealthForService(ctx context.Context, serviceName stri
 	args = append(args, "--format", "{{.ID}}")
 	out, err := c.output(ctx, args...)
 	if err != nil {
-		return nil
+		return 0, nil
 	}
 	ids := strings.Fields(string(out))
 	if len(ids) == 0 {
-		return nil
+		return 0, nil
 	}
 	inspectArgs := append([]string{
 		"inspect",
@@ -203,11 +212,13 @@ func (c *Client) containerHealthForService(ctx context.Context, serviceName stri
 	}, ids...)
 	out2, err := c.output(ctx, inspectArgs...)
 	if err != nil {
-		return nil
+		return len(ids), nil
 	}
 	var healths []string
-	for _, line := range strings.Split(strings.TrimSpace(string(out2)), "\n") {
-		healths = append(healths, strings.TrimSpace(line))
+	for _, line := range strings.Split(string(out2), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			healths = append(healths, line)
+		}
 	}
-	return healths
+	return len(ids), healths
 }
