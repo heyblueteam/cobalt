@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // SupportedVersion is the only schema version cobaltfile understands today.
@@ -132,11 +133,38 @@ func (cf *Cobaltfile) UsesStablePublicWeb() bool {
 	}
 	web, ok := cf.Services["web"]
 	if !ok || web.Type != TypeContainer || web.ExposedInternally || web.StopFirst ||
-		len(web.PublishedPorts) != 0 || len(web.Volumes) != 0 || web.ExtraSwarmParams != "" {
+		len(web.PublishedPorts) != 0 || len(web.Volumes) != 0 ||
+		!stableSafeSwarmParams(web.ExtraSwarmParams) {
 		return false
 	}
 	for name, service := range cf.Services {
 		if name != "web" && service.Type == TypeContainer {
+			return false
+		}
+	}
+	return true
+}
+
+// stableSafeSwarmParams reports whether every extra swarm param is one the
+// stable service can carry without fighting the properties cobalt manages
+// itself. Only `--host` is allowed: it adds a /etc/hosts entry (the
+// host-gateway alias pattern) and touches nothing cobalt sets. Anything else
+// -- networks, ports, mounts, replicas, constraints -- either duplicates a
+// field the stable path already owns or pins the service to a
+// deployment-scoped resource, which is exactly what this service exists to
+// avoid. Widen this list only with a matching reconcile in
+// ReconcileStableService, or the param silently stops tracking cobalt.json.
+func stableSafeSwarmParams(extra string) bool {
+	params := strings.Fields(extra)
+	for i := 0; i < len(params); i++ {
+		switch {
+		case params[i] == "--host":
+			i++ // skip its value
+			if i >= len(params) {
+				return false
+			}
+		case strings.HasPrefix(params[i], "--host="):
+		default:
 			return false
 		}
 	}

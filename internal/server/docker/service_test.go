@@ -181,6 +181,61 @@ func TestReconcileStableService_RemovesDeletedEnvironment(t *testing.T) {
 	}
 }
 
+// A stable service is updated, never recreated, and `service update` only
+// changes what it is handed — so a host alias added or removed in cobalt.json
+// has to be reconciled explicitly or it never reaches the running service.
+func TestReconcileStableService_ReconcilesHostAliases(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerStdout(
+		"service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Hosts}}",
+		`["host-gateway host.docker.internal","1.2.3.4 stale.example"]`,
+	)
+	c := NewWithRunner(r)
+	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
+		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
+		Name: "cobalt-web-7", Image: "api:4",
+		ExtraParams: SplitParams("--host host.docker.internal:host-gateway --host fresh.example:5.6.7.8"),
+	})
+	if err != nil {
+		t.Fatalf("ReconcileStableService: %v", err)
+	}
+	args := r.lastCall().Args
+	if !argSequence(args, "--host-add", "fresh.example:5.6.7.8") {
+		t.Errorf("new host alias was not added: %v", args)
+	}
+	if !argSequence(args, "--host-rm", "stale.example:1.2.3.4") {
+		t.Errorf("host alias dropped from cobalt.json was retained: %v", args)
+	}
+	// Already present with the same value — re-adding it churns the spec for
+	// no reason and shows up as a pointless task rollover.
+	if argSequence(args, "--host-add", "host.docker.internal:host-gateway") {
+		t.Errorf("unchanged host alias was re-added: %v", args)
+	}
+	if argSequence(args, "--host-rm", "host.docker.internal:host-gateway") {
+		t.Errorf("unchanged host alias was removed: %v", args)
+	}
+}
+
+func TestReconcileStableService_NoHostFlagsWhenNoneConfigured(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
+		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
+		Name: "cobalt-web-7", Image: "api:4",
+	})
+	if err != nil {
+		t.Fatalf("ReconcileStableService: %v", err)
+	}
+	args := r.lastCall().Args
+	for _, w := range []string{"--host-add", "--host-rm"} {
+		if argHas(args, w) {
+			t.Errorf("unexpected %q in %v", w, args)
+		}
+	}
+}
+
 func TestCreateService_NoHealthFlag(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
