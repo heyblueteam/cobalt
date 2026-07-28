@@ -35,6 +35,40 @@ func TestWaitForServiceDeploymentHealthy_IgnoresPriorDeployment(t *testing.T) {
 	}
 }
 
+// An image with no HEALTHCHECK makes `docker inspect` emit one blank line per
+// container. Counting those lines is how the caller learns the containers are
+// up, so a multi-replica service must not collapse to a single element -- that
+// stalled every 4-replica cutover until the deploy timed out.
+func TestWaitForServiceDeploymentHealthy_MultiReplicaWithoutHealthcheck(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerStdout(
+		"ps --filter label=com.docker.swarm.service.name=cobalt-web-1 --filter label=cobalt.deployment.number=477",
+		"c1\nc2\nc3\nc4\n",
+	)
+	r.answerStdout("inspect --format", "\n\n\n\n")
+	c := NewWithRunner(r)
+	if err := c.WaitForServiceDeploymentHealthy(context.Background(), "cobalt-web-1", 477, 4, 5*time.Second); err != nil {
+		t.Errorf("WaitForServiceDeploymentHealthy: %v", err)
+	}
+}
+
+// The count must come from containers actually present, so a service that has
+// only rolled 2 of its 4 replicas is still considered not ready.
+func TestWaitForServiceDeploymentHealthy_WaitsForEveryReplica(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerStdout(
+		"ps --filter label=com.docker.swarm.service.name=cobalt-web-1 --filter label=cobalt.deployment.number=477",
+		"c1\nc2\n",
+	)
+	r.answerStdout("inspect --format", "\n\n")
+	c := NewWithRunner(r)
+	if err := c.WaitForServiceDeploymentHealthy(context.Background(), "cobalt-web-1", 477, 4, 200*time.Millisecond); err == nil {
+		t.Error("expected timeout while only 2 of 4 replicas were up")
+	}
+}
+
 func TestWaitForServiceHealthy_StartingTimesOut(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
