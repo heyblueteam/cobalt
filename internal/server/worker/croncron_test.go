@@ -245,9 +245,12 @@ func TestCronManager_FireRunsContainerWithExpectedShape(t *testing.T) {
 	if got.DeploymentNumber != 4 {
 		t.Errorf("deployment label: %+v", got)
 	}
+	// cobalt-main first — see docker.OneShotNetworks. The per-deployment
+	// overlay in the network-mode slot races its own realization on the node
+	// and fails container creation, which silently dropped cron fires.
 	if len(got.Networks) != 2 ||
-		got.Networks[0] != "cobalt-project-api-4" ||
-		got.Networks[1] != "cobalt-main" {
+		got.Networks[0] != "cobalt-main" ||
+		got.Networks[1] != "cobalt-project-api-4" {
 		t.Errorf("networks: %+v", got.Networks)
 	}
 	if got.EnvVars["USER_VAR"] != "user-value" {

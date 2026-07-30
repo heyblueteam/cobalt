@@ -219,3 +219,19 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+// The main network must come first: docker resolves the first --network as
+// the container's network mode without waiting for a swarm-scoped overlay to
+// be realized on the node, so a per-deployment overlay in that slot races its
+// own realization and fails container creation.
+func TestOneShotNetworksPutsMainFirst(t *testing.T) {
+	t.Parallel()
+	got := OneShotNetworks("cobalt-main", "cobalt-project-api-484")
+	want := []string{"cobalt-main", "cobalt-project-api-484"}
+	if !equalStrings(got, want) {
+		t.Errorf("OneShotNetworks: got %v, want %v", got, want)
+	}
+	if got[0] != "cobalt-main" {
+		t.Errorf("main network must be first for the network mode to resolve, got %q", got[0])
+	}
+}
