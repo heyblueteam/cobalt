@@ -105,3 +105,33 @@ func InternalImageName(projectName, imageName string, deploymentNumber int) stri
 func InternalImagePrefix(projectName string) string {
 	return fmt.Sprintf("cobalt/project-%s-", projectName)
 }
+
+// OneShotNetworks orders the `--network` list for a one-shot container
+// (`cobalt run`, cron fires) so the shared main network comes FIRST.
+//
+// Order is load-bearing, not cosmetic. `docker run` treats the first
+// `--network` as the container's network *mode* and resolves it without
+// waiting for a swarm-scoped overlay to be realized on the node. A
+// per-deployment overlay is only realized locally while some task is
+// attached to it, so putting it first makes container creation race that
+// realization and fail with a misleading error naming a network that
+// `docker network ls` happily lists:
+//
+//	failed to set up container networking: could not find a network
+//	matching network mode cobalt-project-<project>-<n>: network not found
+//
+// Measured on docker 29.0.3 against a project whose service was attached
+// only to the main network, 12 attempts per ordering:
+//
+//	deployment network first → 3/12 succeeded
+//	main network first       → 12/12 succeeded
+//
+// The main network always hosts long-running containers, so it is always
+// realized and resolves immediately. Additional networks attach after the
+// mode is set and are not affected.
+//
+// Passing both names explicitly keeps this package free of a dependency on
+// the deploy package, which owns the main network's name.
+func OneShotNetworks(mainNetwork, deploymentNetwork string) []string {
+	return []string{mainNetwork, deploymentNetwork}
+}

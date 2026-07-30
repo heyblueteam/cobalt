@@ -334,7 +334,7 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 		Image:            req.imageTag,
 		Command:          []string{"sh", "-c", req.command},
 		EnvVars:          req.envVars,
-		Networks:         []string{req.deploymentNetwork, deploy.MainNetworkName},
+		Networks:         docker.OneShotNetworks(deploy.MainNetworkName, req.deploymentNetwork),
 		Volumes:          req.volumes,
 		ExtraParams:      req.extraParams,
 		Stdin:            stdinR,

@@ -284,10 +284,10 @@ func (m *CronManager) cronJob(project store.Project, entry cronEntry) Job {
 			Command:          []string{"sh", "-c", entry.Command},
 			EnvVars:          envVars,
 			Volumes:          entry.Volumes,
-			Networks: []string{
-				docker.NetworkName(project.Name, entry.DeploymentNumber),
+			Networks: docker.OneShotNetworks(
 				"cobalt-main",
-			},
+				docker.NetworkName(project.Name, entry.DeploymentNumber),
+			),
 			Stdout: io.Discard,
 			Stderr: io.Discard,
 		}
