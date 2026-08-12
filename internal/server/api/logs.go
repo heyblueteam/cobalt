@@ -174,8 +174,10 @@ func (h *Handler) ProjectLogs(w http.ResponseWriter, r *http.Request) {
 	// thinks the stream succeeded — exit 0 hides a typo. Runs before
 	// the Docker-client guard so "service typo" wins over "daemon
 	// misconfigured" when both apply.
+	var cf *cobaltfile.Cobaltfile
 	if live.ResolvedCobaltfile != nil {
-		if cf, err := cobaltfile.Parse([]byte(*live.ResolvedCobaltfile)); err == nil {
+		if parsed, err := cobaltfile.Parse([]byte(*live.ResolvedCobaltfile)); err == nil {
+			cf = parsed
 			if _, ok := cf.Services[serviceName]; !ok {
 				writeError(w, http.StatusNotFound,
 					"service "+serviceName+" not found in deployment #"+
@@ -188,7 +190,7 @@ func (h *Handler) ProjectLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "daemon Docker client not configured")
 		return
 	}
-	fullName := docker.ServiceName(project.Name, live.Number, serviceName)
+	fullName := logsServiceName(project.Name, project.ID, live.Number, serviceName, cf)
 
 	sse, err := newSSE(w)
 	if err != nil {
@@ -275,4 +277,27 @@ func waitForFile(ctx context.Context, path string, budget time.Duration) (*os.Fi
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+}
+
+// logsServiceName resolves the swarm service `docker service logs` should
+// read for a project's logical service.
+//
+// The web service of a stable-public-web project lives under its durable
+// name, not the per-generation one — the same rule the deploy pipeline's
+// readiness probe applies. Building the generational name unconditionally
+// made `logs` fail with "no such task or service" for the default (web)
+// service of every project that opted in. A nil cobaltfile — deployments
+// recorded before the resolved cobaltfile was stored — keeps the
+// generational name, which is where those deployments' services live.
+func logsServiceName(
+	projectName string,
+	projectID int64,
+	deploymentNumber int,
+	serviceName string,
+	cf *cobaltfile.Cobaltfile,
+) string {
+	if serviceName == "web" && cf != nil && cf.UsesStablePublicWeb() {
+		return docker.StablePublicWebServiceName(projectID)
+	}
+	return docker.ServiceName(projectName, deploymentNumber, serviceName)
 }
