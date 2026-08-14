@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
@@ -255,5 +256,41 @@ func TestProjectLogs_UnknownService404(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(body), "bogus") {
 		t.Errorf("body %q does not name the bad service", string(body))
+	}
+}
+
+// TestLogsServiceName pins which swarm service `logs` reads: the durable
+// stable-web name for an opted-in project's web service, the generational
+// name for everything else — other services, projects that didn't opt in,
+// and deployments recorded before the resolved cobaltfile was stored.
+func TestLogsServiceName(t *testing.T) {
+	t.Parallel()
+
+	stable, err := cobaltfile.Parse([]byte(
+		`{"version":"1.0","stablePublicWeb":true,"services":{"web":{"type":"container","image":"default","port":3000}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := cobaltfile.Parse([]byte(
+		`{"version":"1.0","services":{"web":{"type":"container","image":"default","port":3000}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		service string
+		cf      *cobaltfile.Cobaltfile
+		want    string
+	}{
+		{"stable web uses durable name", "web", stable, "cobalt-web-7"},
+		{"non-stable web keeps generational name", "web", plain, "proj-42-web"},
+		{"non-web service of a stable project keeps generational name", "worker", stable, "proj-42-worker"},
+		{"nil cobaltfile keeps generational name", "web", nil, "proj-42-web"},
+	}
+	for _, tc := range cases {
+		if got := logsServiceName("proj", 7, 42, tc.service, tc.cf); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
