@@ -55,4 +55,10 @@ type PruneResponse struct {
 	InstallationsRemoved int `json:"installationsRemoved"`
 	ReposAdded           int `json:"reposAdded"`
 	ReposRemoved         int `json:"reposRemoved"`
+	// ReposUpdated counts local rows refreshed in place because their
+	// GitHub-side metadata drifted (rename, visibility, default branch).
+	ReposUpdated int `json:"reposUpdated"`
+	// ProjectsRetargeted counts projects whose github_repo was followed
+	// through a detected rename.
+	ProjectsRetargeted int `json:"projectsRetargeted"`
 }

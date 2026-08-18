@@ -196,6 +196,29 @@ func (db *DB) UpdateProjectSource(ctx context.Context, id int64, githubRepo, bra
 	return nil
 }
 
+// RetargetProjectsGithubRepo points every project tracking oldFullName
+// at newFullName. Branch, path, domains, env vars, and deployment
+// history are untouched. Returns how many projects were retargeted
+// (zero is not an error — most renames touch repos no project tracks).
+//
+// Used when GitHub reports a repository rename: project rows reference
+// repos by name string, so without this the next push (which arrives
+// under the NEW name) matches no project and is silently dropped.
+func (db *DB) RetargetProjectsGithubRepo(ctx context.Context, oldFullName, newFullName string) (int64, error) {
+	resp, err := db.ExecuteSingle(ctx, `
+        UPDATE projects
+        SET github_repo = ?, updated_at = strftime('%s', 'now')
+        WHERE github_repo = ?
+    `, newFullName, oldFullName)
+	if err != nil {
+		return 0, err
+	}
+	if len(resp.Results) == 0 {
+		return 0, nil
+	}
+	return resp.Results[0].RowsAffected, nil
+}
+
 // OtherProjectsWithSameSource returns the count of projects (other than
 // projectID) that share the same (github_repo, branch, path) tuple as
 // projectID. Returns 0 with no error when projectID doesn't exist —

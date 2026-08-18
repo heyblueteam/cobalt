@@ -158,8 +158,11 @@ func newGithubAppsPruneCmd() *cobra.Command {
 		Short: "Remove stale GitHub Apps and refresh repo list",
 		Long: `Cross-references cobalt's local DB with GitHub's current state.
 
-Removes apps and installations that no longer exist on GitHub, and adds repos
-from installations that were previously missing.
+Removes apps and installations that no longer exist on GitHub, adds repos
+from installations that were previously missing, and refreshes repos whose
+GitHub-side metadata drifted (renames, visibility, default branch). When a
+rename is detected, projects tracking the old repo name are retargeted to
+the new one.
 
 Examples:
   cobalt github apps prune`,
@@ -181,6 +184,8 @@ Examples:
 				[2]string{"Installations removed", strconv.FormatInt(int64(resp.InstallationsRemoved), 10)},
 				[2]string{"Repos added", strconv.FormatInt(int64(resp.ReposAdded), 10)},
 				[2]string{"Repos removed", strconv.FormatInt(int64(resp.ReposRemoved), 10)},
+				[2]string{"Repos updated", strconv.FormatInt(int64(resp.ReposUpdated), 10)},
+				[2]string{"Projects retargeted", strconv.FormatInt(int64(resp.ProjectsRetargeted), 10)},
 			)
 			return nil
 		}),
