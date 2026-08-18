@@ -21,6 +21,7 @@ const (
 	EventPush                     = "push"
 	EventInstallation             = "installation"
 	EventInstallationRepositories = "installation_repositories"
+	EventRepository               = "repository"
 )
 
 // VerifySignature returns nil iff signatureHeader is a valid HMAC-SHA256
@@ -168,6 +169,26 @@ type InstallationRepositoriesEvent struct {
 	RepositoriesRemoved []InstallationEventRepo       `json:"repositories_removed"`
 }
 
+// RepositoryEvent fires on repository lifecycle changes (renamed,
+// transferred, archived, ...). We act on "renamed": the repo's ID is
+// stable across renames, so it anchors the update of our cached
+// full_name. Schema:
+// https://docs.github.com/en/webhooks/webhook-events-and-payloads#repository
+type RepositoryEvent struct {
+	Action     string              `json:"action"` // "renamed", "transferred", ...
+	Repository RepositoryEventRepo `json:"repository"`
+}
+
+// RepositoryEventRepo is the subset of the repository event's
+// "repository" object we use. FullName carries the NEW name; the old
+// name is recovered from our own DB row keyed by the stable ID.
+type RepositoryEventRepo struct {
+	ID            int64  `json:"id"`
+	FullName      string `json:"full_name"`
+	Private       bool   `json:"private"`
+	DefaultBranch string `json:"default_branch"`
+}
+
 // ParsePush, ParseInstallation, and ParseInstallationRepositories decode
 // the typed event from the raw webhook body. They exist so the webhook
 // receiver can dispatch to the right struct after looking at HeaderEvent.
@@ -189,6 +210,14 @@ func ParseInstallation(b []byte) (*InstallationEvent, error) {
 
 func ParseInstallationRepositories(b []byte) (*InstallationRepositoriesEvent, error) {
 	var ev InstallationRepositoriesEvent
+	if err := json.Unmarshal(b, &ev); err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
+func ParseRepository(b []byte) (*RepositoryEvent, error) {
+	var ev RepositoryEvent
 	if err := json.Unmarshal(b, &ev); err != nil {
 		return nil, err
 	}

@@ -440,6 +440,123 @@ func TestWebhook_UnhandledEventIsNoOp(t *testing.T) {
 	}
 }
 
+// TestWebhook_RepositoryRenamedUpdatesRepoAndProjects: a repository
+// event with action "renamed" must refresh the cached full_name on the
+// github_app_repos row (matched by the rename-stable repo ID) AND
+// retarget projects tracking the old name. Without both, deploys break
+// in two different ways: token resolution (which joins on full_name)
+// falls back to anonymous clones that fail on private repos, and pushes
+// arriving under the new name match no project at all.
+func TestWebhook_RepositoryRenamedUpdatesRepoAndProjects(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	ctx := context.Background()
+
+	instID, _ := e.db.CreateGithubAppInstallation(ctx, store.GithubAppInstallation{
+		AppID: e.app.ID, InstallationID: 777, AccountLogin: "acme",
+	})
+	_, _ = e.db.AddGithubAppRepo(ctx, store.GithubAppRepo{
+		InstallationID: instID, RepoID: 4242, FullName: "acme/oldname", Private: true,
+	})
+	_, _ = e.db.CreateProject(ctx, store.Project{
+		Name: "api", GithubRepo: "acme/oldname", Branch: "main",
+	})
+	// A project on a different repo must NOT be retargeted.
+	_, _ = e.db.CreateProject(ctx, store.Project{
+		Name: "other", GithubRepo: "acme/unrelated", Branch: "main",
+	})
+
+	payload := map[string]any{
+		"action": "renamed",
+		"repository": map[string]any{
+			"id":             4242,
+			"full_name":      "acme/newname",
+			"private":        true,
+			"default_branch": "main",
+		},
+	}
+	resp := e.post(t, "repository", "delivery-rename-1", payload)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status: %d, want 202", resp.StatusCode)
+	}
+
+	repo, err := e.db.GetGithubRepoByRepoID(ctx, 4242)
+	if err != nil {
+		t.Fatalf("GetGithubRepoByRepoID: %v", err)
+	}
+	if repo.FullName != "acme/newname" {
+		t.Errorf("repo full_name: %q, want acme/newname", repo.FullName)
+	}
+	if repo.InstallationID != instID {
+		t.Errorf("installation id changed: %d, want %d", repo.InstallationID, instID)
+	}
+
+	p, err := e.db.GetProjectByName(ctx, "api")
+	if err != nil {
+		t.Fatalf("GetProjectByName: %v", err)
+	}
+	if p.GithubRepo != "acme/newname" {
+		t.Errorf("project github_repo: %q, want acme/newname", p.GithubRepo)
+	}
+	other, err := e.db.GetProjectByName(ctx, "other")
+	if err != nil {
+		t.Fatalf("GetProjectByName(other): %v", err)
+	}
+	if other.GithubRepo != "acme/unrelated" {
+		t.Errorf("unrelated project was retargeted: %q", other.GithubRepo)
+	}
+}
+
+// TestWebhook_RepositoryRenameOfUntrackedRepoIsNoOp: renames of repos
+// this daemon never registered must be absorbed silently.
+func TestWebhook_RepositoryRenameOfUntrackedRepoIsNoOp(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	payload := map[string]any{
+		"action": "renamed",
+		"repository": map[string]any{
+			"id": 999999, "full_name": "acme/ghost", "private": false,
+		},
+	}
+	resp := e.post(t, "repository", "delivery-rename-2", payload)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Errorf("status: %d, want 202", resp.StatusCode)
+	}
+}
+
+// TestWebhook_RepositoryNonRenameActionIsNoOp: other repository-event
+// actions (archived, publicized, ...) must not touch stored state.
+func TestWebhook_RepositoryNonRenameActionIsNoOp(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	ctx := context.Background()
+	instID, _ := e.db.CreateGithubAppInstallation(ctx, store.GithubAppInstallation{
+		AppID: e.app.ID, InstallationID: 778, AccountLogin: "acme",
+	})
+	_, _ = e.db.AddGithubAppRepo(ctx, store.GithubAppRepo{
+		InstallationID: instID, RepoID: 5151, FullName: "acme/keepme", Private: true,
+	})
+
+	payload := map[string]any{
+		"action": "archived",
+		"repository": map[string]any{
+			"id": 5151, "full_name": "acme/keepme", "private": true,
+		},
+	}
+	resp := e.post(t, "repository", "delivery-rename-3", payload)
+	resp.Body.Close()
+
+	repo, err := e.db.GetGithubRepoByRepoID(ctx, 5151)
+	if err != nil {
+		t.Fatalf("repo should still exist: %v", err)
+	}
+	if repo.FullName != "acme/keepme" {
+		t.Errorf("full_name changed on non-rename action: %q", repo.FullName)
+	}
+}
+
 // Anchor the cobaltapi import so removing webhook.go's references
 // doesn't accidentally drop coverage.
 var _ = cobaltapi.GithubApp{}

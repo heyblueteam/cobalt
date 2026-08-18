@@ -69,8 +69,10 @@ func (h *Handler) ListGithubAppRepos(w http.ResponseWriter, r *http.Request) {
 
 // PruneGithubApps implements POST /api/github-apps/prune. Synchronously
 // reconciles local DB state with GitHub: removes apps GitHub no longer
-// has, removes installations GitHub no longer has, and adds/removes
-// repos to match GitHub's view of each installation.
+// has, removes installations GitHub no longer has, adds/removes repos to
+// match GitHub's view of each installation, and refreshes repos whose
+// metadata drifted in place (rename, visibility, default branch) —
+// following renames through to the projects that track them.
 func (h *Handler) PruneGithubApps(w http.ResponseWriter, r *http.Request) {
 	apps, err := h.DB.ListGithubApps(r.Context())
 	if err != nil {
@@ -146,14 +148,23 @@ func (h *Handler) pruneInstallation(
 	if err != nil {
 		return
 	}
-	localByRepoID := map[int64]struct{}{}
+	localByRepoID := map[int64]store.GithubAppRepo{}
 	for _, r := range localRepos {
-		localByRepoID[r.RepoID] = struct{}{}
+		localByRepoID[r.RepoID] = r
 	}
 
-	// Add GitHub-side repos not yet local.
+	// Add GitHub-side repos not yet local; refresh local rows whose
+	// metadata drifted (renamed repo, visibility flip, default-branch
+	// change). Repo IDs are stable across renames, so a rename shows up
+	// here as an existing ID with a different full_name — and a stale
+	// full_name breaks installation-token resolution, which resolves
+	// repo → installation by name.
 	for _, r := range githubRepos {
-		if _, ok := localByRepoID[r.ID]; ok {
+		local, exists := localByRepoID[r.ID]
+		if exists &&
+			local.FullName == r.FullName &&
+			local.Private == r.Private &&
+			local.DefaultBranch == r.DefaultBranch {
 			continue
 		}
 		if _, err := h.DB.AddGithubAppRepo(ctx, store.GithubAppRepo{
@@ -161,11 +172,30 @@ func (h *Handler) pruneInstallation(
 			RepoID:         r.ID,
 			FullName:       r.FullName,
 			Private:        r.Private,
+			DefaultBranch:  r.DefaultBranch,
 		}); err != nil {
-			h.Log.Error("prune: add repo", "full_name", r.FullName, "error", err)
+			h.Log.Error("prune: upsert repo", "full_name", r.FullName, "error", err)
 			continue
 		}
-		resp.ReposAdded++
+		if !exists {
+			resp.ReposAdded++
+			continue
+		}
+		resp.ReposUpdated++
+		// A name change also strands projects tracking the old name:
+		// pushes arrive under the new name and match nothing. Follow
+		// the rename through to the projects table.
+		if local.FullName != r.FullName {
+			n, err := h.DB.RetargetProjectsGithubRepo(ctx, local.FullName, r.FullName)
+			if err != nil {
+				h.Log.Error("prune: retarget projects",
+					"from", local.FullName, "to", r.FullName, "error", err)
+				continue
+			}
+			resp.ProjectsRetargeted += int(n)
+			h.Log.Info("prune: repo renamed",
+				"from", local.FullName, "to", r.FullName, "projects_retargeted", n)
+		}
 	}
 	// Remove local repos no longer on GitHub.
 	for _, r := range localRepos {

@@ -50,6 +50,37 @@ func (db *DB) RemoveGithubAppRepo(ctx context.Context, repoID int64) error {
 	return nil
 }
 
+// GetGithubRepoByRepoID looks a repo up by its GitHub-side ID — the one
+// identifier that survives renames and transfers.
+func (db *DB) GetGithubRepoByRepoID(ctx context.Context, repoID int64) (*GithubAppRepo, error) {
+	resp, err := db.QuerySingle(ctx, `
+        SELECT id, installation_id, repo_id, full_name, private, default_branch, created_at
+        FROM github_app_repos WHERE repo_id = ?
+    `, repoID)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	row := results[0].Values[0]
+	var r GithubAppRepo
+	r.ID = toInt64(row[0])
+	r.InstallationID = toInt64(row[1])
+	r.RepoID = toInt64(row[2])
+	r.FullName = toString(row[3])
+	r.Private = toInt64(row[4]) != 0
+	if row[5] != nil {
+		r.DefaultBranch = toString(row[5])
+	}
+	r.CreatedAt = toInt64(row[6])
+	return &r, nil
+}
+
 func (db *DB) GetGithubRepoByFullName(ctx context.Context, fullName string) (*GithubAppRepo, error) {
 	resp, err := db.QuerySingle(ctx, `
         SELECT id, installation_id, repo_id, full_name, private, default_branch, created_at

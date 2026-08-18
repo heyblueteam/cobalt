@@ -73,6 +73,8 @@ func (h *Handler) WebhookGithub(w http.ResponseWriter, r *http.Request) {
 		h.handleInstallation(r.Context(), body, app.ID)
 	case github.EventInstallationRepositories:
 		h.handleInstallationRepositories(r.Context(), body)
+	case github.EventRepository:
+		h.handleRepository(r.Context(), body)
 	default:
 		// Silently ignore — we only subscribed to push + installation
 		// events but GitHub may deliver others. Log so we notice if
@@ -189,6 +191,60 @@ func (h *Handler) handleInstallation(ctx context.Context, body []byte, localAppI
 	default:
 		// suspend / unsuspend / new_permissions_accepted etc. — ignore.
 	}
+}
+
+// handleRepository processes repository lifecycle events. Only
+// "renamed" is acted on: GitHub identifies the repo by its stable ID,
+// we look up our cached row under that ID, refresh its full_name, and
+// retarget any projects still tracking the old name.
+//
+// Without this, a rename leaves two stale name references behind:
+// github_app_repos.full_name (breaks installation-token resolution, so
+// deploys of private repos fall back to anonymous clones and fail) and
+// projects.github_repo (pushes arrive under the new name, match no
+// project, and are silently dropped).
+func (h *Handler) handleRepository(ctx context.Context, body []byte) {
+	ev, err := github.ParseRepository(body)
+	if err != nil {
+		h.Log.Warn("webhook: parse repository", "error", err)
+		return
+	}
+	if ev.Action != "renamed" {
+		return // archived / publicized / transferred etc. — ignore.
+	}
+
+	local, err := h.DB.GetGithubRepoByRepoID(ctx, ev.Repository.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		// A repo this daemon never tracked; nothing to update.
+		return
+	}
+	if err != nil {
+		h.Log.Error("webhook: lookup repo for rename", "repo_id", ev.Repository.ID, "error", err)
+		return
+	}
+	if local.FullName == ev.Repository.FullName {
+		return // already current (e.g. replayed delivery)
+	}
+
+	if _, err := h.DB.AddGithubAppRepo(ctx, store.GithubAppRepo{
+		InstallationID: local.InstallationID,
+		RepoID:         ev.Repository.ID,
+		FullName:       ev.Repository.FullName,
+		Private:        ev.Repository.Private,
+		DefaultBranch:  ev.Repository.DefaultBranch,
+	}); err != nil {
+		h.Log.Error("webhook: update renamed repo", "full_name", ev.Repository.FullName, "error", err)
+		return
+	}
+
+	retargeted, err := h.DB.RetargetProjectsGithubRepo(ctx, local.FullName, ev.Repository.FullName)
+	if err != nil {
+		h.Log.Error("webhook: retarget projects after rename",
+			"from", local.FullName, "to", ev.Repository.FullName, "error", err)
+		return
+	}
+	h.Log.Info("webhook: repository renamed",
+		"from", local.FullName, "to", ev.Repository.FullName, "projects_retargeted", retargeted)
 }
 
 // handleInstallationRepositories processes added / removed events when
