@@ -36,6 +36,11 @@ version: "3.9"
 
 x-cobalt-base: &cobalt-base
   image: ghcr.io/heyblueteam/cobalt:${COBALT_VERSION:-latest}
+  # tini as PID 1 reaps the detached `git maintenance run --auto` that
+  # `git fetch` forks on every deploy (deploy/prepare.go). The daemon is
+  # PID 1 in its own container and never wait()s reparented orphans, so
+  # without this each deploy leaves a permanent zombie.
+  init: true
   depends_on:
     rqlite:
       condition: service_healthy

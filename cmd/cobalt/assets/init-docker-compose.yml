@@ -96,6 +96,11 @@ services:
 
   cobalt:
     image: ${COBALT_IMAGE}
+    # tini as PID 1 reaps the detached `git maintenance run --auto` that
+    # `git fetch` forks on every deploy (deploy/prepare.go). The daemon is
+    # PID 1 in its own container and never wait()s reparented orphans, so
+    # without this each deploy leaves a permanent zombie.
+    init: true
     # depends_on is preserved for the local-dev `docker compose up`
     # workflow — `docker stack deploy` ignores it. The daemon's
     # rqlite client retries on connection refused, so swarm not
