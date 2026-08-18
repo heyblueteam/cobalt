@@ -276,7 +276,7 @@ func TestBuildManifest(t *testing.T) {
 	if m.Public {
 		t.Error("Public should be false")
 	}
-	if len(m.Events) != 1 || m.Events[0] != "push" {
+	if len(m.Events) != 2 || !inSlice(m.Events, "push") || !inSlice(m.Events, "repository") {
 		t.Errorf("Events: %v", m.Events)
 	}
 	if m.Permissions["contents"] != "read" {
