@@ -66,7 +66,7 @@ type Manifest struct {
 	HookAttrs   ManifestHookAttrs `json:"hook_attributes"`
 	RedirectURL string            `json:"redirect_url"`        // where GitHub redirects after creation
 	Public      bool              `json:"public"`              // we always set false
-	Events      []string          `json:"default_events"`      // ["push"]
+	Events      []string          `json:"default_events"`      // ["push", "repository"]
 	Permissions map[string]string `json:"default_permissions"` // {"contents":"read"}
 	SetupURL    string            `json:"setup_url,omitempty"`
 }
@@ -126,7 +126,7 @@ func BuildManifest(daemonHost, name, pendingAppID string) Manifest {
 		HookAttrs:   ManifestHookAttrs{URL: "https://" + daemonHost + "/webhooks/github"},
 		RedirectURL: "https://" + daemonHost + "/github-apps/" + pendingAppID + "/created",
 		Public:      false,
-		Events:      []string{"push"},
+		Events:      []string{"push", "repository"},
 		Permissions: map[string]string{"contents": "read", "metadata": "read"},
 	}
 }
