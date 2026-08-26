@@ -14,6 +14,7 @@ type BuildOpts struct {
 	ProjectName      string
 	ImageName        string // logical name from cobaltfile.images.<name>
 	DeploymentNumber int
+	Commit           string // resolved source SHA; exposed as the COBALT_COMMIT build arg
 	Dockerfile       string // relative to Context
 	Context          string // build context dir
 	EnvSecrets       map[string]string
@@ -82,6 +83,13 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	}
 	if opts.NoCache {
 		args = append(args, "--no-cache")
+	}
+	// Source identity is public build metadata, not a secret. A fixed build
+	// argument lets Dockerfiles stamp assets, error reports, and telemetry with
+	// the exact revision Cobalt checked out. Omit it for callers that do not
+	// have a source commit (for example isolated docker primitive tests).
+	if opts.Commit != "" {
+		args = append(args, "--build-arg", "COBALT_COMMIT="+opts.Commit)
 	}
 	for _, label := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ImageName, opts.DeploymentNumber) {
 		args = append(args, "--label", label)

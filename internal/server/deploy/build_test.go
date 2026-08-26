@@ -201,6 +201,31 @@ func TestBuilder_PropagatesEnvSecrets(t *testing.T) {
 	}
 }
 
+func TestBuilder_PropagatesResolvedCommit(t *testing.T) {
+	t.Parallel()
+	cf := &cobaltfile.Cobaltfile{
+		Version:  "1.0",
+		Services: map[string]cobaltfile.Service{"web": {Image: "default", Port: 8000}},
+		Images:   map[string]cobaltfile.Image{"default": {Dockerfile: "Dockerfile", Context: "."}},
+	}
+	d := &fakeImageBuilder{}
+	b := NewBuilder(d, &fakeEnv{}, &fakeProjectQuerier{}, "")
+
+	_, err := b.Build(
+		context.Background(),
+		store.Project{ID: 1, Name: "x"},
+		store.Deployment{Number: 1},
+		&Workspace{Cobaltfile: cf, Commit: "abc123def456"},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := d.calls[0].Commit; got != "abc123def456" {
+		t.Errorf("Commit: got %q, want resolved workspace SHA", got)
+	}
+}
+
 // TestBuilder_PrebuiltImageSkipsBuild proves that when `svc.Image` is
 // NOT a key in `cf.Images`, the builder treats it as a pre-built docker
 // registry reference: no docker build is invoked, and the resulting

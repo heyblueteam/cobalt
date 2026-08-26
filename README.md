@@ -84,6 +84,15 @@ cobalt env set DATABASE_URL=postgres://...
 cobalt deploy
 ```
 
+For Dockerfile builds, Cobalt also provides the exact checked-out revision as
+the public `COBALT_COMMIT` build argument. Declare it only where the build needs
+source identity:
+
+```dockerfile
+ARG COBALT_COMMIT
+RUN echo "Building ${COBALT_COMMIT}"
+```
+
 ### 3. View your deployment
 
 ```bash
