@@ -156,6 +156,7 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 			ProjectName:      project.Name,
 			ImageName:        svc.Image,
 			DeploymentNumber: dep.Number,
+			Commit:           ws.Commit,
 			Dockerfile:       filepath.Join(ws.Path, img.Dockerfile),
 			Context:          filepath.Join(ws.Path, img.Context),
 			EnvSecrets:       envSecrets,

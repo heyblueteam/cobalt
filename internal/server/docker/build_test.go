@@ -16,6 +16,7 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 		ProjectName:      "api",
 		ImageName:        "default",
 		DeploymentNumber: 3,
+		Commit:           "abc123def456",
 		Dockerfile:       "Dockerfile",
 		Context:          "src",
 		EnvSecrets: map[string]string{
@@ -85,10 +86,27 @@ func TestBuild_DeterministicArgs(t *testing.T) {
 	if !argHas(args, "--no-cache", "-f", "Dockerfile") {
 		t.Errorf("missing flags: %v", args)
 	}
+	if !argSequence(args, "--build-arg", "COBALT_COMMIT=abc123def456") {
+		t.Errorf("resolved commit build arg missing: %v", args)
+	}
 
 	// Build context comes last.
 	if args[len(args)-1] != "src" {
 		t.Errorf("context: got %q", args[len(args)-1])
+	}
+}
+
+func TestBuild_EmptyCommitOmitsBuildArg(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if _, err := c.Build(context.Background(), BuildOpts{
+		ProjectName: "api", ImageName: "default", DeploymentNumber: 1,
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if argHas(r.lastCall().Args, "COBALT_COMMIT=") {
+		t.Errorf("empty commit build arg should be omitted: %v", r.lastCall().Args)
 	}
 }
 
