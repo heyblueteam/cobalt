@@ -136,7 +136,7 @@ func (h *Handler) runV2(ctx context.Context, conn *websocket.Conn, req runReques
 		Stderr:           carriers.childStderr,
 		TTY:              tty,
 	}
-	runErr := h.Docker.Run(runCtx, runOpts)
+	runErr := h.runContainer(runCtx, runOpts)
 
 	// Make the pumps see EOF so they exit. In TTY mode that means
 	// closing the master (slave-side close from container exit

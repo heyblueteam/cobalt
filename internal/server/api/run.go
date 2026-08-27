@@ -26,6 +26,13 @@ import (
 // We don't want a slow client to indefinitely back up our docker copy.
 const runWriteTimeout = 10 * time.Second
 
+// runContainerCleanupTimeout bounds the best-effort removal that follows
+// every cobalt run session. The cleanup uses a context detached from the
+// request because the common leak path is precisely a canceled request:
+// exec.CommandContext kills the attached `docker run` client, but Docker
+// keeps the container alive and `--rm` cannot remove it until it exits.
+const runContainerCleanupTimeout = 10 * time.Second
+
 // runMaxLifetime hard-caps any single cobalt run session. Forgotten
 // interactive shells, runaway loops, etc. — none of them get to hold a
 // container open indefinitely. 1 h matches the rough upper bound of
@@ -82,6 +89,29 @@ func newRunLifecycle(parent context.Context, conn *websocket.Conn) (context.Cont
 		}
 	}()
 	return ctx, cancel
+}
+
+// runContainer starts one cobalt run container and always removes that exact
+// container after the attached docker client returns. Normal exits are still
+// handled by `docker run --rm`; RemoveContainer treats that already-missing
+// container as success. On client disconnect or lifetime expiry, this explicit
+// removal stops the still-running container that the killed docker CLI leaves
+// behind.
+//
+// Keep the command result authoritative. A cleanup failure is logged for
+// operators but must not turn a successful command into a failure or
+// hide its real exit code.
+func (h *Handler) runContainer(ctx context.Context, opts docker.RunOpts) error {
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runContainerCleanupTimeout)
+		defer cancel()
+		if err := h.Docker.RemoveContainer(cleanupCtx, opts.ContainerName); err != nil {
+			h.Log.Warn("run: container cleanup failed",
+				"container", opts.ContainerName,
+				"error", err)
+		}
+	}()
+	return h.Docker.Run(ctx, opts)
 }
 
 // runRequest carries the resolved-once request fields shared by every
@@ -341,7 +371,7 @@ func (h *Handler) runV1(ctx context.Context, conn *websocket.Conn, req runReques
 		Stdout:           stdoutW,
 		Stderr:           stderrW,
 	}
-	runErr := h.Docker.Run(runCtx, runOpts)
+	runErr := h.runContainer(runCtx, runOpts)
 
 	// Closing the write halves makes the pumps see EOF and drain.
 	// Closing stdinR releases the kernel handle the child held; with

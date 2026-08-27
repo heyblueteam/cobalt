@@ -46,6 +46,57 @@ type runFakeDocker struct {
 	lastRunArgs []string
 }
 
+// runCleanupRunner records the docker run and docker rm calls made by
+// runContainer. Its callbacks receive the actual context so tests can prove
+// cleanup survives cancellation of the run session.
+type runCleanupRunner struct {
+	mu       sync.Mutex
+	calls    [][]string
+	onRun    func(context.Context) error
+	onRemove func(context.Context) error
+}
+
+func (f *runCleanupRunner) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	return f.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
+}
+
+func (f *runCleanupRunner) RunWithEnv(
+	ctx context.Context,
+	_ map[string]string,
+	args []string,
+	_ io.Reader,
+	_, _ io.Writer,
+) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, append([]string(nil), args...))
+	f.mu.Unlock()
+
+	if len(args) == 0 {
+		return nil
+	}
+	switch args[0] {
+	case "run":
+		if f.onRun != nil {
+			return f.onRun(ctx)
+		}
+	case "rm":
+		if f.onRemove != nil {
+			return f.onRemove(ctx)
+		}
+	}
+	return nil
+}
+
+func (f *runCleanupRunner) snapshotCalls() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([][]string, len(f.calls))
+	for i := range f.calls {
+		out[i] = append([]string(nil), f.calls[i]...)
+	}
+	return out
+}
+
 func (f *runFakeDocker) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return f.RunWithEnv(ctx, nil, args, stdin, stdout, stderr)
 }
@@ -329,6 +380,98 @@ func TestRun_RealExitCodePropagated(t *testing.T) {
 	last := frames[len(frames)-1]
 	if last.Code != 42 {
 		t.Errorf("exit code: %d, want 42", last.Code)
+	}
+}
+
+func TestRunContainer_AlwaysRemovesExactContainerAndPreservesRunResult(t *testing.T) {
+	t.Parallel()
+
+	runFailure := errors.New("run failed")
+	cleanupFailure := errors.New("cleanup failed")
+	for _, tc := range []struct {
+		name       string
+		runErr     error
+		cleanupErr error
+	}{
+		{name: "normal exit"},
+		{name: "run failure", runErr: runFailure},
+		{name: "cleanup failure does not fail successful run", cleanupErr: cleanupFailure},
+		{name: "cleanup failure does not replace run result", runErr: runFailure, cleanupErr: cleanupFailure},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &runCleanupRunner{
+				onRun:    func(context.Context) error { return tc.runErr },
+				onRemove: func(context.Context) error { return tc.cleanupErr },
+			}
+			h := &Handler{
+				Docker: docker.NewWithRunner(runner),
+				Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+			opts := docker.RunOpts{
+				ContainerName: "api-run.123",
+				Image:         "api:1",
+				Command:       []string{"true"},
+			}
+
+			gotErr := h.runContainer(context.Background(), opts)
+			if !errors.Is(gotErr, tc.runErr) {
+				t.Fatalf("runContainer error: got %v, want %v", gotErr, tc.runErr)
+			}
+			calls := runner.snapshotCalls()
+			if len(calls) != 2 {
+				t.Fatalf("docker calls: got %v, want run then rm", calls)
+			}
+			if got := strings.Join(calls[0], " "); !strings.Contains(got, "run --rm --name api-run.123") {
+				t.Errorf("run call: got %q", got)
+			}
+			if got, want := strings.Join(calls[1], " "), "rm --force api-run.123"; got != want {
+				t.Errorf("cleanup call: got %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestRunContainer_CancellationStillRemovesContainer(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan struct{})
+	cleanupContextErr := make(chan error, 1)
+	runner := &runCleanupRunner{
+		onRun: func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		},
+		onRemove: func(ctx context.Context) error {
+			cleanupContextErr <- ctx.Err()
+			return nil
+		},
+	}
+	h := &Handler{
+		Docker: docker.NewWithRunner(runner),
+		Log:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	opts := docker.RunOpts{
+		ContainerName: "api-run.456",
+		Image:         "api:1",
+		Command:       []string{"sleep", "forever"},
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.runContainer(runCtx, opts) }()
+	<-started
+	cancel()
+
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("runContainer error: got %v, want context.Canceled", err)
+	}
+	if err := <-cleanupContextErr; err != nil {
+		t.Fatalf("cleanup inherited canceled run context: %v", err)
+	}
+	calls := runner.snapshotCalls()
+	if len(calls) != 2 || strings.Join(calls[1], " ") != "rm --force api-run.456" {
+		t.Fatalf("docker calls: got %v, want canceled run then exact container removal", calls)
 	}
 }
 
