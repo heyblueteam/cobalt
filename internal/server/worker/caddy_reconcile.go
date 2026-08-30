@@ -244,7 +244,7 @@ func reconcileProject(
 		// (the silent post-cutover 502 divergence; the admin GET above can't
 		// see it). Probe the data plane and force-repair if the running router
 		// disagrees.
-		outcome, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, cf.UsesStablePublicWeb(), domains[0])
+		outcome, err := reconcileDataPlane(ctx, log, cy, dp, p, *live, web, cf.UsesStablePublicWeb(), domains)
 		if err != nil {
 			return false, err
 		}
@@ -292,11 +292,14 @@ const (
 	dataPlaneRepaired
 )
 
-// reconcileDataPlane probes Caddy's running router for the project's primary
-// domain and, when it diverges from the desired deployment, force-repairs with
-// a single ServeService PATCH — which makes Caddy recompile the route. That's
-// cheaper and safer than delete+recreate: no window with no route (404), and
-// one reload instead of three.
+// reconcileDataPlane probes Caddy's running router through each primary domain
+// until one returns a conclusive result. A domain with unavailable direct TLS
+// can be valid through an edge redirect, so it must not prevent another domain
+// from confirming the shared project route. When a conclusive probe diverges
+// from the desired deployment, this force-repairs with a single ServeService
+// PATCH — which makes Caddy recompile the route. That's cheaper and safer than
+// delete+recreate: no window with no route (404), and one reload instead of
+// three.
 //
 // A nil prober, an inconclusive probe (Caddy unreachable), or a "no header"
 // response (a pre-header handler) are all treated as dataPlaneUnknown — never
@@ -312,38 +315,41 @@ func reconcileDataPlane(
 	live store.Deployment,
 	web cobaltfile.Service,
 	stableWeb bool,
-	domain string,
+	domains []string,
 ) (dataPlaneOutcome, error) {
 	if dp == nil {
 		return dataPlaneUnknown, nil
 	}
 	want := strconv.Itoa(live.Number)
-	served, status, err := dp.ServedDeployment(ctx, domain)
-	if err != nil {
-		log.Debug("caddy reconcile: data-plane probe inconclusive",
-			"project_id", p.ID, "project", p.Name, "error", err)
-		return dataPlaneUnknown, nil
+	for _, domain := range domains {
+		served, status, err := dp.ServedDeployment(ctx, domain)
+		if err != nil {
+			log.Debug("caddy reconcile: data-plane probe inconclusive",
+				"project_id", p.ID, "project", p.Name, "domain", domain, "error", err)
+			continue
+		}
+		// served=="" (no header) is NOT divergence — treat unknown handlers as
+		// fine and let their next deploy stamp the header — but it's also not a
+		// positive confirmation, so try another domain before giving up.
+		if !isGatewayStatus(status) && served == "" {
+			continue
+		}
+		if !isGatewayStatus(status) && served == want {
+			return dataPlaneConfirmed, nil
+		}
+		log.Warn("caddy reconcile: upstream drifted (data plane)",
+			"project_id", p.ID, "project", p.Name, "domain", domain,
+			"want", want, "served", served, "status", status)
+		container := docker.ServiceName(p.Name, live.Number, "web")
+		if stableWeb {
+			container = docker.StablePublicWebServiceName(p.ID)
+		}
+		if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
+			return dataPlaneUnknown, fmt.Errorf("repair upstream (data plane): %w", err)
+		}
+		return dataPlaneRepaired, nil
 	}
-	// served=="" (no header) is NOT divergence — treat unknown handlers as
-	// fine and let their next deploy stamp the header — but it's also not a
-	// positive confirmation, so it must not license a reap either.
-	if !isGatewayStatus(status) && served == "" {
-		return dataPlaneUnknown, nil
-	}
-	if !isGatewayStatus(status) && served == want {
-		return dataPlaneConfirmed, nil
-	}
-	log.Warn("caddy reconcile: upstream drifted (data plane)",
-		"project_id", p.ID, "project", p.Name,
-		"want", want, "served", served, "status", status)
-	container := docker.ServiceName(p.Name, live.Number, "web")
-	if stableWeb {
-		container = docker.StablePublicWebServiceName(p.ID)
-	}
-	if err := cy.ServeService(ctx, p.ID, container, web.Port, live.Number); err != nil {
-		return dataPlaneUnknown, fmt.Errorf("repair upstream (data plane): %w", err)
-	}
-	return dataPlaneRepaired, nil
+	return dataPlaneUnknown, nil
 }
 
 func isGatewayStatus(status int) bool {

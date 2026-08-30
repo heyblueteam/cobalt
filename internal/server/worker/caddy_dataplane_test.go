@@ -22,6 +22,19 @@ func (f fakeDataPlaneProber) ServedDeployment(context.Context, string) (string, 
 	return f.served, f.status, f.err
 }
 
+type domainProbeResult struct {
+	served string
+	status int
+	err    error
+}
+
+type domainDataPlaneProber map[string]domainProbeResult
+
+func (f domainDataPlaneProber) ServedDeployment(_ context.Context, domain string) (string, int, error) {
+	result := f[domain]
+	return result.served, result.status, result.err
+}
+
 // fakeReaper records RemoveService calls and serves a fixed service list.
 type fakeReaper struct {
 	services []docker.ServiceInfo
@@ -161,6 +174,32 @@ func TestReconcile_DataPlaneHealthy_ReapsSupersededWebOnly(t *testing.T) {
 	}
 	if len(reaper.removed) != 1 || reaper.removed[0] != "api-6-web" {
 		t.Errorf("expected to reap only api-6-web, got %v", reaper.removed)
+	}
+}
+
+func TestReconcile_InconclusiveDomain_TriesNextDomain(t *testing.T) {
+	t.Parallel()
+	st, cy := inSyncFixture(t)
+	st.domains[1] = []string{"legacy.example.com", "api.example.com"}
+	dp := domainDataPlaneProber{
+		"legacy.example.com": {err: context.DeadlineExceeded},
+		"api.example.com":    {served: "7", status: 200},
+	}
+	reaper := &fakeReaper{services: []docker.ServiceInfo{
+		{Name: "api-7-web"},
+		{Name: "api-6-web"},
+	}}
+
+	corrected, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, dp, reaper)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if corrected != 0 || len(cy.serveCalls) != 0 {
+		t.Errorf("healthy fallback domain must not repair: corrected=%d serveCalls=%d",
+			corrected, len(cy.serveCalls))
+	}
+	if len(reaper.removed) != 1 || reaper.removed[0] != "api-6-web" {
+		t.Errorf("expected confirmation from api.example.com to permit reap, got %v", reaper.removed)
 	}
 }
 

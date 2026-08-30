@@ -266,7 +266,6 @@ func waitDataPlaneServing(
 	if len(domains) == 0 {
 		return nil
 	}
-	domain := domains[0]
 	want := strconv.Itoa(dep.Number)
 
 	fmt.Fprintf(out, "🔎 confirming the live router serves deployment #%d\n", dep.Number)
@@ -278,21 +277,27 @@ func waitDataPlaneServing(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		res, err := probeDataPlane(ctx, p, domain)
-		switch {
-		case err != nil:
-			lastDetail = err.Error()
-		case res.Served == want:
-			fmt.Fprintf(out, "✅ live router serves deployment #%d\n", dep.Number)
-			return nil
-		case isGatewayError(res.Status):
-			sawDivergence = true
-			lastDetail = fmt.Sprintf("router returned %d (dialing a dead upstream)", res.Status)
-		case res.Served != "" && res.Served != want:
-			sawDivergence = true
-			lastDetail = fmt.Sprintf("router still serves deployment %s, want %s", res.Served, want)
-		default:
-			lastDetail = fmt.Sprintf("no deployment header yet (status %d)", res.Status)
+		for _, domain := range domains {
+			res, err := probeDataPlane(ctx, p, domain)
+			switch {
+			case err != nil:
+				if !sawDivergence {
+					lastDetail = fmt.Sprintf("%s: %s", domain, err)
+				}
+			case res.Served == want:
+				fmt.Fprintf(out, "✅ live router serves deployment #%d\n", dep.Number)
+				return nil
+			case isGatewayError(res.Status):
+				sawDivergence = true
+				lastDetail = fmt.Sprintf("%s: router returned %d (dialing a dead upstream)", domain, res.Status)
+			case res.Served != "" && res.Served != want:
+				sawDivergence = true
+				lastDetail = fmt.Sprintf("%s: router still serves deployment %s, want %s", domain, res.Served, want)
+			default:
+				if !sawDivergence {
+					lastDetail = fmt.Sprintf("%s: no deployment header yet (status %d)", domain, res.Status)
+				}
+			}
 		}
 		if time.Now().After(deadline) {
 			break
