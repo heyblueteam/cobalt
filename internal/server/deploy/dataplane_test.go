@@ -104,8 +104,10 @@ func TestIsProbableHostname(t *testing.T) {
 // fakeDataPlaneProber stands in for *docker.Client in waitDataPlaneServing
 // tests. It answers the :80 plaintext path with a canned HTTP response.
 type fakeDataPlaneProber struct {
-	plaintextResp string // written to stdout for the nc path; "" + err => :80 closed
-	plaintextErr  error
+	plaintextResp     string // written to stdout for the nc path; "" + err => :80 closed
+	plaintextByDomain map[string]string
+	plaintextErr      error
+	probedDomains     []string
 }
 
 func (f *fakeDataPlaneProber) FindContainerByLabel(context.Context, string) (string, error) {
@@ -114,8 +116,16 @@ func (f *fakeDataPlaneProber) FindContainerByLabel(context.Context, string) (str
 
 func (f *fakeDataPlaneProber) Exec(_ context.Context, _ string, cmd []string, stdout, _ io.Writer) error {
 	if len(cmd) > 0 && cmd[0] == "sh" { // plaintext :80 path
-		if f.plaintextResp != "" {
-			_, _ = io.WriteString(stdout, f.plaintextResp)
+		response := f.plaintextResp
+		for domain, domainResponse := range f.plaintextByDomain {
+			if strings.Contains(cmd[2], "'"+domain+"'") {
+				f.probedDomains = append(f.probedDomains, domain)
+				response = domainResponse
+				break
+			}
+		}
+		if response != "" {
+			_, _ = io.WriteString(stdout, response)
 		}
 		return f.plaintextErr
 	}
@@ -215,6 +225,29 @@ func TestWaitDataPlaneServing(t *testing.T) {
 				t.Fatalf("want nil, got %v", err)
 			}
 		})
+	}
+}
+
+func TestWaitDataPlaneServing_InconclusiveDomain_TriesNextDomain(t *testing.T) {
+	container := &cobaltfile.Cobaltfile{Services: map[string]cobaltfile.Service{
+		"web": {Type: cobaltfile.TypeContainer, Port: 3000},
+	}}
+	prober := &fakeDataPlaneProber{plaintextByDomain: map[string]string{
+		"legacy.example.com": resp("200 OK", ""),
+		"api.example.com":    resp("200 OK", "5"),
+	}}
+	st := fakeDomainLister{domains: []string{"legacy.example.com", "api.example.com"}}
+	project := store.Project{ID: 1, Name: "api"}
+	dep := store.Deployment{Number: 5}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	err := waitDataPlaneServing(context.Background(), prober, st, project, dep, container, log, io.Discard)
+	if err != nil {
+		t.Fatalf("waitDataPlaneServing: %v", err)
+	}
+	if len(prober.probedDomains) != 2 || prober.probedDomains[0] != "legacy.example.com" ||
+		prober.probedDomains[1] != "api.example.com" {
+		t.Fatalf("probed domains = %v, want both domains in order", prober.probedDomains)
 	}
 }
 
