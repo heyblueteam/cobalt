@@ -107,13 +107,14 @@ func (h *Handler) handlePush(ctx context.Context, body []byte, _ int64) {
 	enqueued := 0
 	for _, p := range projects {
 		// Monorepo case: if the project is scoped to a sub-path and no
-		// file under that sub-path was touched by this push, skip.
-		// TouchesPath is conservative — it returns true when the push
-		// is truncated (>=20 commits) or has no commits listed, so we
-		// never skip on incomplete information.
-		if !ev.TouchesPath(p.Path) {
+		// file under that sub-path — or any of its extra watch paths —
+		// was touched by this push, skip. TouchesPath is conservative —
+		// it returns true when the push is truncated (>=2048 commits) or
+		// has no commits listed, so we never skip on incomplete
+		// information.
+		if !touchesProject(ev, p) {
 			h.Log.Info("webhook: skip deploy (path not touched)",
-				"project", p.Name, "path", p.Path, "commit", ev.After)
+				"project", p.Name, "path", p.Path, "watchPaths", p.WatchPaths, "commit", ev.After)
 			continue
 		}
 		req := deploy.EnqueueRequest{ProjectID: p.ID, CommitSHA: ev.After}
@@ -129,6 +130,23 @@ func (h *Handler) handlePush(ctx context.Context, body []byte, _ int64) {
 	if enqueued > 0 && h.Dispatcher != nil {
 		h.Dispatcher.Notify()
 	}
+}
+
+// touchesProject reports whether a push touched the project's Path or
+// any of its extra WatchPaths. A project whose build reads code outside
+// its Path (e.g. a repo-root shared/ folder COPY'd into the image)
+// lists that folder in WatchPaths so pushes touching only it still
+// deploy.
+func touchesProject(ev *github.PushEvent, p store.Project) bool {
+	if ev.TouchesPath(p.Path) {
+		return true
+	}
+	for _, wp := range p.WatchPathsList() {
+		if ev.TouchesPath(wp) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleInstallation processes installation:created / installation:deleted.

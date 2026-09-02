@@ -112,7 +112,12 @@ func (h *Handler) UpdateProjectSource(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.DB.UpdateProjectSource(r.Context(), p.ID, req.GithubRepo, req.Branch, req.Path); err != nil {
+	// nil WatchPaths = keep current (see ProjectUpdateSourceRequest).
+	watchPaths := p.WatchPaths
+	if req.WatchPaths != nil {
+		watchPaths = *req.WatchPaths
+	}
+	if err := h.DB.UpdateProjectSource(r.Context(), p.ID, req.GithubRepo, req.Branch, req.Path, watchPaths); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "project not found")
 			return
@@ -253,6 +258,7 @@ func projectToAPI(p store.Project) cobaltapi.Project {
 		GithubRepo: p.GithubRepo,
 		Branch:     p.Branch,
 		Path:       p.Path,
+		WatchPaths: p.WatchPaths,
 		CreatedAt:  p.CreatedAt,
 		UpdatedAt:  p.UpdatedAt,
 	}
@@ -314,6 +320,11 @@ func validateProjectUpdateSource(req cobaltapi.ProjectUpdateSourceRequest) error
 	}
 	if err := validator.ValidateProjectPath(req.Path); err != nil {
 		return err
+	}
+	if req.WatchPaths != nil {
+		if err := validator.ValidateWatchPaths(*req.WatchPaths); err != nil {
+			return err
+		}
 	}
 	return nil
 }

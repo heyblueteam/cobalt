@@ -190,7 +190,7 @@ func (db *DB) ListGithubReposForInstallation(ctx context.Context, installationID
 func (db *DB) FindProjectsForRepoBranch(ctx context.Context, fullName, branch string) ([]Project, error) {
 	resp, err := db.QuerySingle(ctx, `
         SELECT id, name, github_repo, branch, path,
-               github_app_installation_id, created_at, updated_at
+               github_app_installation_id, created_at, updated_at, watch_paths
         FROM projects
         WHERE github_repo = ?
           AND (branch = ? OR (branch = '' AND ? IN ('main', 'master')))

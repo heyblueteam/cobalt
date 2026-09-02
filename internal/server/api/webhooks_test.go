@@ -560,3 +560,61 @@ func TestWebhook_RepositoryNonRenameActionIsNoOp(t *testing.T) {
 // Anchor the cobaltapi import so removing webhook.go's references
 // doesn't accidentally drop coverage.
 var _ = cobaltapi.GithubApp{}
+
+// TestWebhook_PushEnqueuesProjectWhenWatchPathTouched pins the
+// watch-paths extension of the path filter: a project scoped to `api/`
+// with watchPaths "shared" deploys when a push touches only shared/,
+// while a sibling project on the same repo+branch without that watch
+// path does not — proving the check runs per project and consults
+// watch_paths, not just path.
+func TestWebhook_PushEnqueuesProjectWhenWatchPathTouched(t *testing.T) {
+	t.Parallel()
+	e := newWebhookEnv(t)
+	ctx := context.Background()
+	apiID, err := e.db.CreateProject(ctx, store.Project{
+		Name: "api", GithubRepo: "acme/monorepo", Branch: "main", Path: "api",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.UpdateProjectSource(ctx, apiID, "acme/monorepo", "main", "api", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.db.CreateProject(ctx, store.Project{
+		Name: "web", GithubRepo: "acme/monorepo", Branch: "main", Path: "web",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	payload := map[string]any{
+		"ref":   "refs/heads/main",
+		"after": "abc123",
+		"repository": map[string]any{
+			"id": 1, "full_name": "acme/monorepo",
+		},
+		"commits": []map[string]any{
+			{"modified": []string{"shared/filter-ir/fold.ts"}},
+		},
+	}
+	resp := e.post(t, "push", "delivery-1", payload)
+	resp.Body.Close()
+	deps, _ := e.db.QueuedDeployments(ctx)
+	if len(deps) != 1 {
+		t.Fatalf("queued: %d, want 1 (push touched shared/, only api watches it)", len(deps))
+	}
+	if deps[0].ProjectID != apiID {
+		t.Errorf("queued project: %d, want %d (api)", deps[0].ProjectID, apiID)
+	}
+
+	// A push touching neither path nor watch paths still skips both.
+	payload["after"] = "def456"
+	payload["commits"] = []map[string]any{
+		{"modified": []string{"docs/readme.md"}},
+	}
+	resp = e.post(t, "push", "delivery-2", payload)
+	resp.Body.Close()
+	deps, _ = e.db.QueuedDeployments(ctx)
+	if len(deps) != 1 {
+		t.Errorf("queued: %d, want still 1 (docs-only push must not deploy)", len(deps))
+	}
+}
