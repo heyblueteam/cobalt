@@ -35,28 +35,39 @@ type Deployment struct {
 	FinishedAt *int64
 }
 
-var activeKeepImageStatuses = []cobaltapi.State{
+var inFlightKeepStatuses = []cobaltapi.State{
 	cobaltapi.StateQueued,
 	cobaltapi.StateFetching,
 	cobaltapi.StateBuilding,
 	cobaltapi.StateSwapping,
-	cobaltapi.StateSuccess,
 }
 
+// ActiveDeploymentNumbers returns deployments that must remain available:
+// every in-flight deployment and the current (latest successful) deployment.
+// Historical successes are retained separately by the image cleanup policy.
 func (db *DB) ActiveDeploymentNumbers(ctx context.Context, projectID int64) ([]int, error) {
-	statusStrings := make([]string, len(activeKeepImageStatuses))
-	for i, s := range activeKeepImageStatuses {
+	statusStrings := make([]string, len(inFlightKeepStatuses))
+	for i, s := range inFlightKeepStatuses {
 		statusStrings[i] = string(s)
 	}
 
-	inClause := placeholders(len(activeKeepImageStatuses))
-	q := `SELECT number FROM deployments WHERE project_id = ? AND status IN (` + inClause + `)`
+	inClause := placeholders(len(inFlightKeepStatuses))
+	q := `SELECT number FROM deployments
+		WHERE project_id = ? AND (
+			status IN (` + inClause + `)
+			OR number = (
+				SELECT MAX(number) FROM deployments
+				WHERE project_id = ? AND status = ?
+			)
+		)
+		ORDER BY number`
 
-	args := make([]any, 0, len(activeKeepImageStatuses)+1)
+	args := make([]any, 0, len(inFlightKeepStatuses)+3)
 	args = append(args, projectID)
 	for _, s := range statusStrings {
 		args = append(args, s)
 	}
+	args = append(args, projectID, string(cobaltapi.StateSuccess))
 
 	stmt, err := rqlitehttp.NewSQLStatement(q, args...)
 	if err != nil {

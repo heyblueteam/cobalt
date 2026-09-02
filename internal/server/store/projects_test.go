@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -412,6 +413,7 @@ func TestActiveDeploymentNumbers(t *testing.T) {
 
 	for i, status := range []cobaltapi.State{
 		cobaltapi.StateSuccess,
+		cobaltapi.StateSuccess,
 		cobaltapi.StateBuilding,
 		cobaltapi.StateFailed,
 		cobaltapi.StateCanceled,
@@ -429,8 +431,9 @@ func TestActiveDeploymentNumbers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ActiveDeploymentNumbers: %v", err)
 	}
-	if len(got) != 3 {
-		t.Errorf("got %v, want 3 image-keeping deployments", got)
+	want := []int{2, 3, 6}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v (in-flight plus latest success)", got, want)
 	}
 }
 
