@@ -206,6 +206,13 @@ Examples:
 					return err
 				}
 			}
+			if cmd.Flags().Changed("watch-paths") {
+				wp := cmd.Flag("watch-paths").Value.String()
+				if err := validator.ValidateWatchPaths(wp); err != nil {
+					return err
+				}
+				req.WatchPaths = &wp
+			}
 
 			project, err := cl.UpdateProjectSource(cmd.Context(), name, req)
 			if err != nil {
@@ -215,10 +222,14 @@ Examples:
 			if pathDisplay == "" {
 				pathDisplay = "(repo root)"
 			}
-			output.PrintLines(fmt.Sprintf(
+			line := fmt.Sprintf(
 				"Project %s retargeted: %s@%s path=%s",
 				project.Name, project.GithubRepo, project.Branch, pathDisplay,
-			))
+			)
+			if project.WatchPaths != "" {
+				line += " watchPaths=" + project.WatchPaths
+			}
+			output.PrintLines(line)
 			output.PrintLines("Run `cobalt deploy --project " + project.Name + "` to act on the new source.")
 			return nil
 		}),
@@ -226,6 +237,7 @@ Examples:
 	cmd.Flags().String("github", "", "github repo as owner/repo (leave unset to keep current)")
 	cmd.Flags().String("branch", "", "git branch to deploy (leave unset to keep current)")
 	cmd.Flags().String("path", "", "sub-directory inside the repo (leave unset to keep current)")
+	cmd.Flags().String("watch-paths", "", "comma-separated extra sub-paths that also trigger deploys, e.g. \"shared\" (empty string clears; leave unset to keep current)")
 	return cmd
 }
 

@@ -66,3 +66,32 @@ func TestValidateProjectPath(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateWatchPaths(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"empty_list", "", false},
+		{"single", "shared", false},
+		{"multi_with_space", "shared, packages/ui", false},
+		{"nested", "services/shared", false},
+		{"empty_entry", "shared,,api", true},
+		{"trailing_comma_only_entry", ",", true},
+		{"parent_traversal", "shared,../escape", true},
+		{"leading_slash", "/shared", true},
+		{"dot", ".", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := ValidateWatchPaths(c.in)
+			if (err != nil) != c.wantErr {
+				t.Fatalf("ValidateWatchPaths(%q) = %v, wantErr=%v", c.in, err, c.wantErr)
+			}
+			if c.wantErr && !errors.Is(err, ErrProjectPathInvalid) {
+				t.Errorf("ValidateWatchPaths(%q): want ErrProjectPathInvalid, got %v", c.in, err)
+			}
+		})
+	}
+}

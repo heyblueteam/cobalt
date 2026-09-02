@@ -72,3 +72,25 @@ func ValidateProjectPath(p string) error {
 	}
 	return nil
 }
+
+// ValidateWatchPaths validates a comma-separated list of extra
+// repo-relative sub-paths that trigger a deploy when touched, in
+// addition to the project's Path. Each entry follows the same rules as
+// ValidateProjectPath. An empty string means "no extra paths"; an empty
+// entry inside a non-empty list is a mistake, not repo root — watching
+// the whole repo is what an empty Path already means.
+func ValidateWatchPaths(csv string) error {
+	if csv == "" {
+		return nil
+	}
+	for _, entry := range strings.Split(csv, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return fmt.Errorf("%w: empty watch path entry", ErrProjectPathInvalid)
+		}
+		if err := ValidateProjectPath(entry); err != nil {
+			return err
+		}
+	}
+	return nil
+}

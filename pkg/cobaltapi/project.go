@@ -12,7 +12,13 @@ type Project struct {
 	// cobalt.json and Dockerfile contexts live. Empty (the default)
 	// means the repo root. Set when one repo hosts multiple deployments
 	// (monorepo layout, e.g. "api", "services/web").
-	Path                    string `json:"path,omitempty"`
+	Path string `json:"path,omitempty"`
+	// WatchPaths is an optional comma-separated list of extra
+	// repo-relative sub-paths that also trigger a deploy when a push
+	// touches them, in addition to Path. Used when a project's build
+	// reads code outside its Path (e.g. a monorepo `shared/` folder
+	// COPY'd into several projects' images).
+	WatchPaths              string `json:"watchPaths,omitempty"`
 	GithubAppInstallationID *int64 `json:"githubAppInstallationId,omitempty"`
 	CreatedAt               int64  `json:"createdAt"`
 	UpdatedAt               int64  `json:"updatedAt"`
@@ -51,4 +57,10 @@ type ProjectUpdateSourceRequest struct {
 	GithubRepo string `json:"githubRepo"`
 	Branch     string `json:"branch"`
 	Path       string `json:"path"`
+	// WatchPaths, when non-nil, replaces the project's comma-separated
+	// extra deploy-trigger paths (empty string clears them). Nil keeps
+	// the current value — pointer semantics so CLIs built before this
+	// field existed cannot silently wipe it, which would silently stop
+	// deploys for pushes that only touch a watched path.
+	WatchPaths *string `json:"watchPaths,omitempty"`
 }
