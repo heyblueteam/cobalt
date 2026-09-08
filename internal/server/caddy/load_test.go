@@ -209,3 +209,56 @@ func TestApplyCobaltRoutes_UnrecognizedConfigFailsLoud(t *testing.T) {
 		t.Errorf("apply must not POST /load on an unrecognized config, got %d loads", n)
 	}
 }
+
+// rtLegacyConfig is a live document from a host bootstrapped before
+// WriteInitConfig pinned `protocols`: the cobalt server block has no such
+// key, so Caddy defaults to h1+h2+h3 and advertises HTTP/3.
+const rtLegacyConfig = `{"admin":` + rtAdminBlock +
+	`,"apps":{"http":{"servers":{"cobalt":{"listen":[":80"],"logs":{},"routes":[` +
+	rtRedirectRoute + `,` + rtProjectRoute + `,` + rtDaemonRoute +
+	`]}}},"tls":` + rtTLSApp + `},"logging":` + rtLoggingBlock + `}`
+
+func TestApplyCobaltRoutes_BackfillsMissingProtocols(t *testing.T) {
+	t.Parallel()
+	f := newLoadCapturingCaddy(t, rtLegacyConfig)
+	c := NewHTTPClient(f.server.URL, f.server.Client())
+
+	err := c.applyCobaltRoutes(context.Background(), func(routes []json.RawMessage) ([]json.RawMessage, error) {
+		return routes, nil
+	})
+	if err != nil {
+		t.Fatalf("applyCobaltRoutes: %v", err)
+	}
+	posted := f.lastLoad(t)
+
+	// The only change is the added protocols key, in its alphabetical
+	// slot between logs and routes; everything else is byte-identical to
+	// the pinned document.
+	if posted != rtLiveConfig {
+		t.Errorf("legacy config not backfilled to the pinned document\n got: %s\nwant: %s", posted, rtLiveConfig)
+	}
+	if !strings.Contains(posted, `"protocols":["h1","h2"]`) {
+		t.Errorf("protocols not pinned to h1/h2: %s", posted)
+	}
+}
+
+func TestApplyCobaltRoutes_KeepsExplicitProtocols(t *testing.T) {
+	t.Parallel()
+	// An operator who deliberately enabled HTTP/3 must not be reverted.
+	h3 := strings.Replace(rtLiveConfig, `"protocols":["h1","h2"]`, `"protocols":["h1","h2","h3"]`, 1)
+	if h3 == rtLiveConfig {
+		t.Fatal("test fixture did not contain the protocols key")
+	}
+	f := newLoadCapturingCaddy(t, h3)
+	c := NewHTTPClient(f.server.URL, f.server.Client())
+
+	err := c.applyCobaltRoutes(context.Background(), func(routes []json.RawMessage) ([]json.RawMessage, error) {
+		return routes, nil
+	})
+	if err != nil {
+		t.Fatalf("applyCobaltRoutes: %v", err)
+	}
+	if posted := f.lastLoad(t); posted != h3 {
+		t.Errorf("explicit protocols altered\n got: %s\nwant: %s", posted, h3)
+	}
+}

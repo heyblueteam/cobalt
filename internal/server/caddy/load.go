@@ -7,6 +7,10 @@ import (
 	"net/http"
 )
 
+// defaultProtocols is the protocol list WriteInitConfig writes for the
+// cobalt server; applyCobaltRoutes backfills it on configs that predate it.
+const defaultProtocols = `["h1","h2"]`
+
 // applyCobaltRoutes performs a read-modify-write of the `cobalt` HTTP
 // server's routes slice: GET the full live config from /config/, hand the
 // slice to mutate, and POST the merged document back via /load — Caddy's
@@ -47,6 +51,18 @@ func (c *Client) applyCobaltRoutes(ctx context.Context, mutate func(routes []jso
 	cobaltSrv, err := rawObject(servers, "cobalt")
 	if err != nil {
 		return err
+	}
+	// Pin the server to TCP-only HTTP (h1/h2) when no explicit protocol
+	// list exists. WriteInitConfig has set this on fresh installs since
+	// 2026-05, but hosts bootstrapped before then carry a config without
+	// the key, and Caddy 2.7 then defaults to h1+h2+h3 and advertises
+	// `Alt-Svc: h3=":443"` on every response. cobalt only publishes TCP
+	// 443 on the swarm, so the UDP handshake browsers attempt is dropped
+	// silently by the host firewall (2026-09-08 incident). Setting the key
+	// only when absent keeps a deliberate operator choice — including a
+	// future real HTTP/3 rollout — untouched.
+	if _, ok := cobaltSrv["protocols"]; !ok {
+		cobaltSrv["protocols"] = json.RawMessage(defaultProtocols)
 	}
 	var routes []json.RawMessage
 	if raw, ok := cobaltSrv["routes"]; ok {
