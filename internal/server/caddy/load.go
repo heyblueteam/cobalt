@@ -11,6 +11,10 @@ import (
 // cobalt server; applyCobaltRoutes backfills it on configs that predate it.
 const defaultProtocols = `["h1","h2"]`
 
+// defaultGracePeriod bounds how long a superseded Caddy server keeps its
+// existing connections after a reload; see WriteInitConfig.
+const defaultGracePeriod = `"30s"`
+
 // applyCobaltRoutes performs a read-modify-write of the `cobalt` HTTP
 // server's routes slice: GET the full live config from /config/, hand the
 // slice to mutate, and POST the merged document back via /load — Caddy's
@@ -43,6 +47,15 @@ func (c *Client) applyCobaltRoutes(ctx context.Context, mutate func(routes []jso
 	httpApp, err := rawObject(apps, "http")
 	if err != nil {
 		return err
+	}
+	// Backfill the http app's grace_period the same way protocols is
+	// backfilled below: hosts bootstrapped before WriteInitConfig wrote it
+	// run with Caddy's eternal default, which is what let a Cloudflare
+	// keep-alive connection outlive the reaped upstream it was pinned to
+	// (2026-07-14, 2026-09-06). Only when absent, so an operator's explicit
+	// value survives.
+	if _, ok := httpApp["grace_period"]; !ok {
+		httpApp["grace_period"] = json.RawMessage(defaultGracePeriod)
 	}
 	servers, err := rawObject(httpApp, "servers")
 	if err != nil {
