@@ -23,11 +23,11 @@ var _ *sql.DB = nil // enforce that we don't accidentally use database/sql
 // single GitHub repo. See `pkg/cobaltapi/validator.ValidateProjectPath`
 // for the shape rules.
 type Project struct {
-	ID                      int64
-	Name                    string
-	GithubRepo              string
-	Branch                  string
-	Path string
+	ID         int64
+	Name       string
+	GithubRepo string
+	Branch     string
+	Path       string
 	// WatchPaths is a comma-separated list of extra repo-relative
 	// sub-paths that also trigger a deploy when touched, in addition to
 	// Path. Empty means none. See Project.WatchPathsList.
