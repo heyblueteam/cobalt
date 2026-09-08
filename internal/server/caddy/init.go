@@ -35,6 +35,14 @@ func WriteInitConfig(path, daemonHost string, behindTunnel bool) error {
 		},
 		"apps": map[string]any{
 			"http": map[string]any{
+				// Bound how long a superseded server keeps its existing
+				// connections after a config reload. Caddy's default is
+				// eternal, so a long-lived edge connection (Cloudflare
+				// keep-alive) stayed pinned to the old server and its old
+				// upstream name until the reaper removed that service, then
+				// failed with "no such host" for as long as the edge kept the
+				// connection open. 30s is far inside reapMinAge (5m).
+				"grace_period": "30s",
 				"servers": map[string]any{
 					"cobalt": map[string]any{
 						"listen":    []any{listen},

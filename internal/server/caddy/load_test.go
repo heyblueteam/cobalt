@@ -29,7 +29,7 @@ const (
 // (alphabetical) key order, so an untouched round trip must reproduce the
 // document byte-for-byte.
 const rtLiveConfig = `{"admin":` + rtAdminBlock +
-	`,"apps":{"http":{"servers":{"cobalt":{"listen":[":80"],"logs":{},"protocols":["h1","h2"],"routes":[` +
+	`,"apps":{"http":{"grace_period":"30s","servers":{"cobalt":{"listen":[":80"],"logs":{},"protocols":["h1","h2"],"routes":[` +
 	rtRedirectRoute + `,` + rtProjectRoute + `,` + rtDaemonRoute +
 	`]}}},"tls":` + rtTLSApp + `},"logging":` + rtLoggingBlock + `}`
 
@@ -211,8 +211,9 @@ func TestApplyCobaltRoutes_UnrecognizedConfigFailsLoud(t *testing.T) {
 }
 
 // rtLegacyConfig is a live document from a host bootstrapped before
-// WriteInitConfig pinned `protocols`: the cobalt server block has no such
-// key, so Caddy defaults to h1+h2+h3 and advertises HTTP/3.
+// WriteInitConfig pinned `protocols` and `grace_period`: neither key is
+// present, so Caddy defaults to h1+h2+h3 (advertising HTTP/3) and to an
+// eternal grace period on reload.
 const rtLegacyConfig = `{"admin":` + rtAdminBlock +
 	`,"apps":{"http":{"servers":{"cobalt":{"listen":[":80"],"logs":{},"routes":[` +
 	rtRedirectRoute + `,` + rtProjectRoute + `,` + rtDaemonRoute +
@@ -231,14 +232,38 @@ func TestApplyCobaltRoutes_BackfillsMissingProtocols(t *testing.T) {
 	}
 	posted := f.lastLoad(t)
 
-	// The only change is the added protocols key, in its alphabetical
-	// slot between logs and routes; everything else is byte-identical to
-	// the pinned document.
+	// The only changes are the added grace_period and protocols keys, each
+	// in its alphabetical slot; everything else is byte-identical to the
+	// pinned document.
 	if posted != rtLiveConfig {
 		t.Errorf("legacy config not backfilled to the pinned document\n got: %s\nwant: %s", posted, rtLiveConfig)
 	}
 	if !strings.Contains(posted, `"protocols":["h1","h2"]`) {
 		t.Errorf("protocols not pinned to h1/h2: %s", posted)
+	}
+	if !strings.Contains(posted, `"grace_period":"30s"`) {
+		t.Errorf("grace_period not backfilled: %s", posted)
+	}
+}
+
+func TestApplyCobaltRoutes_KeepsExplicitGracePeriod(t *testing.T) {
+	t.Parallel()
+	// An operator who chose a different drain window must not be reverted.
+	custom := strings.Replace(rtLiveConfig, `"grace_period":"30s"`, `"grace_period":"2m"`, 1)
+	if custom == rtLiveConfig {
+		t.Fatal("test fixture did not contain the grace_period key")
+	}
+	f := newLoadCapturingCaddy(t, custom)
+	c := NewHTTPClient(f.server.URL, f.server.Client())
+
+	err := c.applyCobaltRoutes(context.Background(), func(routes []json.RawMessage) ([]json.RawMessage, error) {
+		return routes, nil
+	})
+	if err != nil {
+		t.Fatalf("applyCobaltRoutes: %v", err)
+	}
+	if posted := f.lastLoad(t); posted != custom {
+		t.Errorf("explicit grace_period altered\n got: %s\nwant: %s", posted, custom)
 	}
 }
 
