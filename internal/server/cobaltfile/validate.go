@@ -11,6 +11,13 @@ import (
 // already run (Parse calls it; manually-constructed Cobaltfiles can call
 // applyDefaults via the unexported method or rely on Default()).
 func (cf *Cobaltfile) Validate() error {
+	if n := cf.WebGraceSeconds(); n < 60 || n > 86400 {
+		return fmt.Errorf("cobaltfile: webRetirement.gracePeriodSeconds must be between 60 and 86400")
+	}
+	if n := cf.MaxWebGenerations(); n < 2 || n > 100 {
+		return fmt.Errorf("cobaltfile: webRetirement.maxGenerations must be between 2 and 100")
+	}
+
 	if cf.Version != SupportedVersion {
 		return fmt.Errorf(
 			"cobaltfile: unsupported version %q (cobalt v1 only supports %q)",

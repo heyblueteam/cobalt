@@ -12,6 +12,8 @@ import (
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
 
+const reapMinAge = time.Duration(cobaltfile.DefaultWebGraceSeconds) * time.Second
+
 // fakeDataPlaneProber returns a canned ServedDeployment for every domain.
 type fakeDataPlaneProber struct {
 	served string
@@ -47,7 +49,7 @@ func (f *fakeReaper) ListServicesForProject(context.Context, int64) ([]docker.Se
 	return f.services, f.listErr
 }
 
-func (f *fakeReaper) RemoveService(_ context.Context, name string) error {
+func (f *fakeReaper) RetireService(_ context.Context, name string) error {
 	f.removed = append(f.removed, name)
 	return nil
 }
@@ -438,5 +440,15 @@ func TestReconcile_CutoverOwnershipSkipsDestructiveReap(t *testing.T) {
 	}
 	if len(reaper.removed) != 0 {
 		t.Fatalf("reaper touched endpoint owned by a cutover: %v", reaper.removed)
+	}
+}
+
+func TestReconcile_ReapsDuringBuild(t *testing.T) {
+	st, cy := inSyncFixture(t)
+	st.active = map[int64]*store.Deployment{1: {Number: 8, Status: cobaltapi.StateBuilding}}
+	reaper := &fakeReaper{services: []docker.ServiceInfo{{Name: "api-6-web"}, {Name: "api-7-web"}}}
+	_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, fakeDataPlaneProber{served: "7", status: 200}, reaper)
+	if err != nil || len(reaper.removed) != 1 || reaper.removed[0] != "api-6-web" {
+		t.Fatalf("err=%v removed=%v", err, reaper.removed)
 	}
 }

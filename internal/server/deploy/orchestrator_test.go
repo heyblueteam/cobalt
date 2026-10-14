@@ -767,3 +767,40 @@ func TestOrchestrator_CaddyFailsAfterServicesRunning_VerifiesServiceRmCall(t *te
 		t.Error("expected service rm call (cleanup after Caddy failure)")
 	}
 }
+
+func TestCutoverCapacityGateRunsBeforeHooksAndServices(t *testing.T) {
+	o, d, _, db, project := setupOrchestrator(t)
+	ctx := context.Background()
+	raw := `{"version":"1.0","services":{"web":{"port":3000}}}`
+	for n := 1; n <= 2; n++ {
+		id, err := db.CreateDeployment(ctx, store.Deployment{ProjectID: project.ID, Number: n, Status: cobaltapi.StateQueued})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetResolvedCobaltfile(ctx, id, raw); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetDeploymentStatus(ctx, id, cobaltapi.StateSuccess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d.stdout["service ls"] = "api-1-web\t4/4\napi-2-web\t4/4\n"
+	// No positive route probe, so neither a normal deploy nor a rollback may
+	// start a third generation. Both use Cutover.
+	for _, rollback := range []bool{false, true} {
+		dep := store.Deployment{ProjectID: project.ID, Number: 3}
+		if rollback {
+			target := int64(1)
+			dep.RollbackOf = &target
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Millisecond)
+		err := o.Cutover(waitCtx, &project, dep, defaultBuilt(), defaultWorkspace().Cobaltfile, nil, io.Discard)
+		cancel()
+		if err == nil {
+			t.Fatal("started over-budget deployment")
+		}
+		if d.hasCall("service create") || d.hasCall("run ") || d.hasCall("network create") {
+			t.Fatalf("started work before admission: %v", d.calls)
+		}
+	}
+}

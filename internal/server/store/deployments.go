@@ -497,3 +497,25 @@ func boolToInt(b bool) int {
 	}
 	return 0
 }
+
+// FirstSuccessfulDeploymentAfter identifies the cutover that retired a numbered
+// web generation. Failed/queued attempts cannot start its drain clock. Rollbacks
+// have new deployment numbers and follow the same rule.
+func (db *DB) FirstSuccessfulDeploymentAfter(ctx context.Context, projectID int64, number, through int) (*Deployment, error) {
+	resp, err := db.QuerySingle(ctx,
+		`SELECT `+deploymentSelectCols+` FROM deployments
+   WHERE project_id = ? AND status = ? AND number > ? AND number <= ?
+   ORDER BY number ASC LIMIT 1`,
+		projectID, string(cobaltapi.StateSuccess), number, through)
+	if err != nil {
+		return nil, err
+	}
+	if hasError, _, errMsg := resp.HasError(); hasError {
+		return nil, errors.New(errMsg)
+	}
+	results := resp.GetQueryResults()
+	if len(results) == 0 || len(results[0].Values) == 0 {
+		return nil, ErrNotFound
+	}
+	return scanDeploymentRow(results[0].Values[0]), nil
+}

@@ -6,31 +6,19 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
+	"github.com/heyblueteam/cobalt/internal/server/webretirement"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
-
-// reapMinAge is the minimum time since a deployment's cutover before its
-// superseded web generation may be reaped, regardless of data-plane probe
-// outcome. This is the backstop for the 2026-07-14 incident: a Cloudflare
-// edge machine can hold a pooled keep-alive connection to Caddy that
-// resolved (and cached, for the connection's lifetime) the old generation's
-// Docker DNS name. Reaping that name out from under a still-live pooled
-// connection leaves it dialing a deleted host indefinitely — bounded only by
-// however long Cloudflare takes to cycle that specific connection, which can
-// be well over 20 minutes. This floor doesn't eliminate that risk (only a
-// stable service name/VIP would), but it keeps the reap from firing within
-// the same tick as cutover, when the odds of a live pooled connection still
-// pointing at the old generation are highest.
-const reapMinAge = 5 * time.Minute
 
 // CaddyReconcileStore is the store subset the Caddy reconciler needs.
 type CaddyReconcileStore interface {
+	webretirement.Store
 	ListProjects(ctx context.Context) ([]store.Project, error)
 	GetLastSuccessfulDeployment(ctx context.Context, projectID int64) (*store.Deployment, error)
 	// ListPrimaryDomainsForProject returns the project's primary
@@ -64,10 +52,7 @@ type DataPlaneProber interface {
 // uses it to reap a superseded `*-web` generation kept alive for grace (see
 // deploy.cleanupOldServices) once the data plane confirms the current
 // deployment is serving. A nil reaper disables reaping.
-type ServiceReaper interface {
-	ListServicesForProject(ctx context.Context, projectID int64) ([]docker.ServiceInfo, error)
-	RemoveService(ctx context.Context, name string) error
-}
+type ServiceReaper = webretirement.Docker
 
 // CaddyReconcileTarget is the Caddy subset the reconciler talks to.
 type CaddyReconcileTarget interface {
@@ -153,17 +138,13 @@ func reconcileProject(
 	}
 	defer unlock()
 
-	// Stand down while a deploy is in flight. A deploy owns its project's
-	// Caddy state end-to-end (start services → swap upstream → verify →
-	// mark success). The reconciler's notion of "desired" is the LAST
-	// SUCCESSFUL deployment, which is stale during a deploy: acting on it
-	// here PATCHes the upstream back to the previous container while the
-	// deploy is swapping to the new one, so the deploy's verify reads the
-	// reverted value and fails ("serve verify drifted"). Skip until the
-	// deploy reaches a terminal state; the post-deploy state is then
-	// authoritative and we reconcile against it normally.
-	if _, err := st.ActiveDeploymentForProject(ctx, p.ID); err == nil {
-		return false, nil
+	// Fetch/build do not change routes or services. Reap during these phases
+	// so a long build cannot retain old pools. Cutover owns the same lock;
+	// StateSwapping also covers the gap before its terminal status is saved.
+	if active, err := st.ActiveDeploymentForProject(ctx, p.ID); err == nil {
+		if active.Status == cobaltapi.StateSwapping {
+			return false, nil
+		}
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return false, fmt.Errorf("check active deployment: %w", err)
 	}
@@ -264,9 +245,13 @@ func reconcileProject(
 		case dataPlaneConfirmed:
 			// Only reap a superseded web generation once the live router is
 			// GENUINELY confirmed on the new one — never on an unprobed,
-			// disabled, or inconclusive result. See reapMinAge's doc comment
-			// for why confirmation alone still isn't sufficient on its own.
-			reapSupersededWeb(ctx, log, reaper, p, *live, cf.UsesStablePublicWeb())
+			// disabled, or inconclusive result. The shared retirement policy
+			// also requires the retiring cutover's grace to have elapsed.
+			if reaper != nil {
+				if err := webretirement.Reap(ctx, log, st, reaper, p, *live, cf); err != nil {
+					return false, err
+				}
+			}
 			return false, nil
 		default: // dataPlaneUnknown
 			return false, nil
@@ -364,60 +349,6 @@ func reconcileDataPlane(
 
 func isGatewayStatus(status int) bool {
 	return status == 502 || status == 503 || status == 504
-}
-
-// reapSupersededWeb removes any of the project's `*-web` services from an
-// older deployment than current. deploy.cleanupOldServices intentionally keeps
-// every prior web endpoint alive as a grace fallback (so a lagging
-// router serves the old build instead of 502ing); this reaps them once the live
-// deployment is confirmed serving AND at least reapMinAge has elapsed since
-// cutover (see its doc comment — confirmation alone doesn't rule out a
-// pooled client connection still pinned to the old service's DNS name).
-// Best-effort and nil-safe.
-func reapSupersededWeb(
-	ctx context.Context,
-	log *slog.Logger,
-	reaper ServiceReaper,
-	p store.Project,
-	live store.Deployment,
-	stableWeb bool,
-) {
-	if reaper == nil {
-		return
-	}
-	if live.FinishedAt == nil {
-		// A successful deployment should always have this set; if it
-		// somehow doesn't, don't guess at how long ago cutover happened —
-		// skip reaping this tick rather than risk reaping too early.
-		log.Debug("caddy reconcile: skipping reap, no cutover timestamp",
-			"project_id", p.ID, "current", live.Number)
-		return
-	}
-	if age := time.Since(time.Unix(*live.FinishedAt, 0)); age < reapMinAge {
-		log.Debug("caddy reconcile: skipping reap, within grace floor",
-			"project_id", p.ID, "current", live.Number, "age", age)
-		return
-	}
-	services, err := reaper.ListServicesForProject(ctx, p.ID)
-	if err != nil {
-		log.Debug("caddy reconcile: list services for reap failed",
-			"project_id", p.ID, "error", err)
-		return
-	}
-	for _, s := range services {
-		n, ok := docker.WebGeneration(p.Name, s.Name)
-		retiredStable := s.Name == docker.StablePublicWebServiceName(p.ID) && !stableWeb
-		if !retiredStable && (!ok || n >= live.Number) {
-			continue
-		}
-		if err := reaper.RemoveService(ctx, s.Name); err != nil {
-			log.Warn("caddy reconcile: reap superseded web service failed",
-				"name", s.Name, "project_id", p.ID, "error", err)
-			continue
-		}
-		log.Info("caddy reconcile: reaped superseded web service",
-			"name", s.Name, "project_id", p.ID, "current", live.Number)
-	}
 }
 
 // reapplyHandler re-PATCHes the right handler kind onto a freshly
