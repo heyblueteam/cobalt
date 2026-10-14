@@ -52,6 +52,7 @@ type Cobaltfile struct {
 	Services        map[string]Service `json:"services,omitempty"`
 	Images          map[string]Image   `json:"images,omitempty"`
 	StablePublicWeb bool               `json:"stablePublicWeb,omitempty"`
+	WebRetirement   *WebRetirement     `json:"webRetirement,omitempty"`
 }
 
 // ServiceType is one of a fixed set of service kinds.
@@ -336,4 +337,30 @@ func (cf *Cobaltfile) shouldAddDefaultImage() bool {
 		return true
 	}
 	return false
+}
+
+// WebRetirement controls running web services, not archived frontend assets.
+// Pointer fields distinguish an omitted setting from an invalid explicit zero.
+type WebRetirement struct {
+	GracePeriodSeconds *int `json:"gracePeriodSeconds,omitempty"`
+	MaxGenerations     *int `json:"maxGenerations,omitempty"`
+}
+
+const (
+	DefaultWebGraceSeconds   = 300
+	DefaultMaxWebGenerations = 2
+)
+
+func (cf *Cobaltfile) WebGraceSeconds() int {
+	if cf.WebRetirement != nil && cf.WebRetirement.GracePeriodSeconds != nil {
+		return *cf.WebRetirement.GracePeriodSeconds
+	}
+	return DefaultWebGraceSeconds
+}
+
+func (cf *Cobaltfile) MaxWebGenerations() int {
+	if cf.WebRetirement != nil && cf.WebRetirement.MaxGenerations != nil {
+		return *cf.WebRetirement.MaxGenerations
+	}
+	return DefaultMaxWebGenerations
 }

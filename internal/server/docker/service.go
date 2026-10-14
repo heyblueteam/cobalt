@@ -566,3 +566,44 @@ func isNotFound(err error) bool {
 }
 
 var errNotFound = errors.New("not found")
+
+// RetireService waits for terminal task states before removing the service.
+// Desired replicas=0 (or an accepted service rm) does not prove that tasks
+// have released their resources. Keep the object countable until they stop.
+func (c *Client) RetireService(ctx context.Context, name string) error {
+	if err := c.run(ctx, "service", "scale", "--detach=true", name+"=0"); err != nil {
+		if isNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	for {
+		out, err := c.output(ctx, "service", "ps", name, "--no-trunc", "--format", "{{.CurrentState}}")
+		if err != nil {
+			if isNotFound(err) {
+				return nil
+			}
+			return err
+		}
+		stopped := true
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			switch fields[0] {
+			case "Shutdown", "Complete", "Failed", "Rejected", "Remove":
+			default:
+				stopped = false // including Running, Starting, Preparing and Orphaned
+			}
+		}
+		if stopped {
+			return c.RemoveService(ctx, name)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}

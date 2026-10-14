@@ -733,3 +733,11 @@ func TestReconcile_ActiveDeploymentCheckError_DoesNotHaltSweep(t *testing.T) {
 func nullStr(raw string) *string {
 	return &raw
 }
+
+func (f *fakeReconcileStore) FirstSuccessfulDeploymentAfter(_ context.Context, projectID int64, number, through int) (*store.Deployment, error) {
+	d := f.lastByID[projectID]
+	if d == nil || d.Number <= number || d.Number > through {
+		return nil, store.ErrNotFound
+	}
+	return d, nil
+}

@@ -117,15 +117,15 @@ A requested stable configuration that is ineligible still uses numbered routing
 for compatibility, but deployment output and daemon logs now explain why.
 
 Numbered web endpoints, and a stable endpoint being replaced by numbered
-routing, are retired only by the reconciler after it confirms the new route and
-waits its five-minute grace floor. A subsequent deploy cannot bypass that gate.
+routing, are retired only after route confirmation and their configured drain
+grace. A subsequent deploy cannot bypass that gate.
 Cutover (including rollback) and reconciliation use the same per-project lock;
 a tick skips busy projects instead of blocking the fleet or deleting a stable
 endpoint activated by a concurrent cutover. Internal-only and static destinations
 keep their existing cleanup policy because they have no public container-route reaper.
-With continuous deployments, old endpoints remain until there is a five-minute
-quiet window; plan capacity for that overlap. The Caddy reload grace must remain
-shorter than the retirement window (the default is 30 seconds).
+Each numbered endpoint uses the successful cutover that first replaced it as
+its drain start. Later deployments do not reset that clock. Cleanup also runs
+during fetch/build, while service cutover remains mutually exclusive with cleanup.
 
 To run the pooled-HTTP and shared-asset regression, point `DOCKER_HOST` at a
 **disposable** Docker daemon and run:
@@ -139,3 +139,60 @@ The test initializes and leaves a Swarm on that daemon. It does not use a
 production server. It keeps an HTTP/1.1 client connection through Caddy open
 across an image update and checks that the new build and old assets remain
 available without failed requests.
+
+
+## Web retirement and deployment capacity
+
+Running services and archived frontend files have different lifetimes. An old
+browser tab may need old JavaScript files for days; keep those files in a shared
+asset archive or object storage. Keeping API processes alive is not asset retention.
+
+Each project can set this optional policy in `cobalt.json`:
+
+```json
+{
+  "version": "1.0",
+  "webRetirement": {
+    "gracePeriodSeconds": 300,
+    "maxGenerations": 2
+  }
+}
+```
+
+- `gracePeriodSeconds`: 60–86400 seconds; default 300. Keep it longer than
+  your Caddy HTTP reload grace (Cobalt's default is 30 seconds). This is a
+  minimum after a successful cutover, not a guarantee that arbitrary long-lived
+  requests complete. Applications must handle reconnects and graceful shutdown.
+- `maxGenerations`: 2–100; default 2. Counts the current public web generation,
+  retained generations, and the replacement about to start. It limits generations,
+  not replicas or database connections. Budget all replicas, workers, migration
+  hooks, external clients, and start-first overlap separately.
+
+After building, a deployment waits **before hooks or service startup** if another
+generation would exceed the limit. The old route must positively serve the
+current deployment and the drain grace must expire before an old service is
+scaled to zero. Cobalt waits for that scale-down to converge before removing the
+service and admitting its replacement. A failed or unknown probe never authorizes
+retirement. A cleanup error fails the pending deploy without switching traffic.
+
+The capacity wait is cancelable and bounded by the larger of the current and
+incoming grace periods plus two minutes. If it expires, fix the probe/cleanup
+failure or wait for a longer historical grace, then retry. The running deployment
+remains unchanged. An upgrade with several old services does not force-delete
+them; the next rollout waits for safe retirement.
+
+The gate applies to public container web services, including rollback and
+stable-service updates (which reserve one slot for start-first task overlap).
+Internal-only, static, and generator services keep their existing policies.
+Numbered retirement times come from persisted successful deployment history, so
+they survive daemon restarts. Missing history/timestamps fail closed. A stable
+endpoint reverting to numbered routing conservatively uses the latest successful
+cutover time. The grace recorded by the retiring cutover is preserved even if a
+later configuration shortens its grace.
+
+No application names, database assumptions, or deployment-specific limits are
+built into this policy. Existing projects get the defaults after a daemon upgrade;
+a custom policy takes effect through their next deployment. Upgrade the daemon
+before deploying configuration with the new keys. Earlier daemons reject unknown
+keys in stored configuration, so reverting the daemon also requires restoring
+compatible application configuration.

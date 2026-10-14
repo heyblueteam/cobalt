@@ -67,3 +67,33 @@ func TestGetLastSuccessfulDeployment_IgnoresFailedAndQueued(t *testing.T) {
 		t.Errorf("Number: %d, want 1", got.Number)
 	}
 }
+
+func TestFirstSuccessfulDeploymentAfter(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	pid, err := db.CreateProject(ctx, Project{Name: "retire", GithubRepo: "h/retire", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, status := range []cobaltapi.State{cobaltapi.StateSuccess, cobaltapi.StateFailed, cobaltapi.StateSuccess, cobaltapi.StateSuccess} {
+		id, err := db.CreateDeployment(ctx, Deployment{ProjectID: pid, Number: i + 1, Status: cobaltapi.StateQueued})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := db.SetDeploymentStatus(ctx, id, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := db.FirstSuccessfulDeploymentAfter(ctx, pid, 1, 4)
+	if err != nil || got.Number != 3 || got.FinishedAt == nil {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	for _, bounds := range [][2]int{{1, 2}, {4, 4}} {
+		if _, err := db.FirstSuccessfulDeploymentAfter(ctx, pid, bounds[0], bounds[1]); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("bounds=%v err=%v", bounds, err)
+		}
+	}
+	if _, err := db.FirstSuccessfulDeploymentAfter(ctx, pid+999, 1, 4); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
+	}
+}

@@ -206,6 +206,14 @@ func (o *Orchestrator) cutover(
 	unlock := projectlock.Lock(project.ID)
 	defer unlock()
 
+	var probe retirementProber
+	if o.DataPlaneProber != nil {
+		probe = CaddyDataPlaneProber{Prober: o.DataPlaneProber}
+	}
+	if err := waitForWebCapacity(ctx, log, o.DB, o.Docker, o.Caddy, probe, *project, cf, out, 2*time.Second); err != nil {
+		return err
+	}
+
 	if err := EnsureMainNetwork(ctx, o.Docker); err != nil {
 		return fmt.Errorf("deploy: ensure main network: %w", err)
 	}

@@ -687,3 +687,36 @@ func TestReconcileStableService_MountReadFailureDoesNotUpdate(t *testing.T) {
 		})
 	}
 }
+
+func TestRetireServiceWaitsForStoppedReplicas(t *testing.T) {
+	r := newFakeRunner()
+	c := NewWithRunner(r)
+	if err := c.RetireService(context.Background(), "api-1-web"); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.calls) != 3 || !argSequence(r.calls[0].Args, "scale", "--detach=true", "api-1-web=0") || !argSequence(r.calls[2].Args, "service", "rm", "api-1-web") {
+		t.Fatalf("calls=%v", r.calls)
+	}
+	r = newFakeRunner()
+	r.answerErr("service scale", errors.New("tasks not stopped"))
+	c = NewWithRunner(r)
+	if err := c.RetireService(context.Background(), "api-1-web"); err == nil || len(r.calls) != 1 {
+		t.Fatalf("err=%v calls=%v", err, r.calls)
+	}
+}
+
+func TestRetireServiceDoesNotCountStoppingTasksAsFree(t *testing.T) {
+	r := newFakeRunner()
+	r.answerStdout("service ps", "Running 1 minute ago")
+	c := NewWithRunner(r)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := c.RetireService(ctx, "api-1-web"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	for _, call := range r.calls {
+		if argSequence(call.Args, "service", "rm") {
+			t.Fatalf("removed before tasks stopped: %v", r.calls)
+		}
+	}
+}

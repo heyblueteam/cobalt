@@ -208,3 +208,13 @@ MIT License — see [LICENSE](LICENSE) for details.
 ---
 
 Built by [Blue](https://blue.cc)
+
+
+### Bound overlapping web deployments
+
+Cobalt retains old public web services briefly while connections drain. Configure
+`webRetirement.gracePeriodSeconds` (default 300) and
+`webRetirement.maxGenerations` (default 2) in `cobalt.json`. A rollout waits
+before starting a replacement if it would exceed the generation limit. This does
+not control old frontend asset retention. See
+[web retirement and deployment capacity](docs/architecture.md#web-retirement-and-deployment-capacity).
