@@ -11,6 +11,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 )
 
@@ -143,6 +144,15 @@ func reconcileProject(
 	reaper ServiceReaper,
 	p store.Project,
 ) (bool, error) {
+	// The dispatcher may start a cutover after the active-deployment read.
+	// Stable endpoints have no generation in their name, so exclusion must
+	// cover the state snapshot, route probe and destructive reap as one unit.
+	unlock, acquired := projectlock.TryLock(p.ID)
+	if !acquired {
+		return false, nil
+	}
+	defer unlock()
+
 	// Stand down while a deploy is in flight. A deploy owns its project's
 	// Caddy state end-to-end (start services → swap upstream → verify →
 	// mark success). The reconciler's notion of "desired" is the LAST
@@ -256,7 +266,7 @@ func reconcileProject(
 			// GENUINELY confirmed on the new one — never on an unprobed,
 			// disabled, or inconclusive result. See reapMinAge's doc comment
 			// for why confirmation alone still isn't sufficient on its own.
-			reapSupersededWeb(ctx, log, reaper, p, *live)
+			reapSupersededWeb(ctx, log, reaper, p, *live, cf.UsesStablePublicWeb())
 			return false, nil
 		default: // dataPlaneUnknown
 			return false, nil
@@ -358,8 +368,8 @@ func isGatewayStatus(status int) bool {
 
 // reapSupersededWeb removes any of the project's `*-web` services from an
 // older deployment than current. deploy.cleanupOldServices intentionally keeps
-// the most recent prior generation alive as a grace fallback (so a lagging
-// router serves the old build instead of 502ing); this reaps it once the live
+// every prior web endpoint alive as a grace fallback (so a lagging
+// router serves the old build instead of 502ing); this reaps them once the live
 // deployment is confirmed serving AND at least reapMinAge has elapsed since
 // cutover (see its doc comment — confirmation alone doesn't rule out a
 // pooled client connection still pinned to the old service's DNS name).
@@ -370,6 +380,7 @@ func reapSupersededWeb(
 	reaper ServiceReaper,
 	p store.Project,
 	live store.Deployment,
+	stableWeb bool,
 ) {
 	if reaper == nil {
 		return
@@ -395,7 +406,8 @@ func reapSupersededWeb(
 	}
 	for _, s := range services {
 		n, ok := docker.WebGeneration(p.Name, s.Name)
-		if !ok || n >= live.Number {
+		retiredStable := s.Name == docker.StablePublicWebServiceName(p.ID) && !stableWeb
+		if !retiredStable && (!ok || n >= live.Number) {
 			continue
 		}
 		if err := reaper.RemoveService(ctx, s.Name); err != nil {

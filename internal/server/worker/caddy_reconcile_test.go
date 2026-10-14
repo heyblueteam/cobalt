@@ -154,7 +154,6 @@ func mustCobaltfileJSON(t *testing.T, cf *cobaltfile.Cobaltfile) string {
 // --- tests ---
 
 func TestReconcile_NoCorrectionWhenInSync(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -189,7 +188,6 @@ func TestReconcile_NoCorrectionWhenInSync(t *testing.T) {
 }
 
 func TestReconcile_PatchesUpstreamOnDrift(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -230,7 +228,6 @@ func TestReconcile_PatchesUpstreamOnDrift(t *testing.T) {
 }
 
 func TestReconcile_RecreatesMissingRoute(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -268,7 +265,6 @@ func TestReconcile_RecreatesMissingRoute(t *testing.T) {
 }
 
 func TestReconcile_StaticSiteRecreatesViaServeStaticSite(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -302,7 +298,6 @@ func TestReconcile_StaticSiteRecreatesViaServeStaticSite(t *testing.T) {
 }
 
 func TestReconcile_StaticSiteSkipsDriftCheck(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -330,7 +325,6 @@ func TestReconcile_StaticSiteSkipsDriftCheck(t *testing.T) {
 }
 
 func TestReconcile_NoLastSuccessSkipsProject(t *testing.T) {
-	t.Parallel()
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}}, // never deployed
 		lastByID: map[int64]*store.Deployment{},
@@ -346,7 +340,6 @@ func TestReconcile_NoLastSuccessSkipsProject(t *testing.T) {
 }
 
 func TestReconcile_MissingResolvedCobaltfileSkips(t *testing.T) {
-	t.Parallel()
 	st := &fakeReconcileStore{
 		projects: []store.Project{{ID: 1, Name: "api"}},
 		lastByID: map[int64]*store.Deployment{
@@ -362,7 +355,6 @@ func TestReconcile_MissingResolvedCobaltfileSkips(t *testing.T) {
 }
 
 func TestReconcile_NoDomainsSkips(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -388,7 +380,6 @@ func TestReconcile_NoDomainsSkips(t *testing.T) {
 }
 
 func TestReconcile_NoWebServiceSkipsCaddy(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -417,7 +408,6 @@ func TestReconcile_NoWebServiceSkipsCaddy(t *testing.T) {
 }
 
 func TestReconcile_PerProjectFailureContinuesSweep(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -459,7 +449,6 @@ func TestReconcile_PerProjectFailureContinuesSweep(t *testing.T) {
 }
 
 func TestReconcile_ListProjectsErrorBubbles(t *testing.T) {
-	t.Parallel()
 	st := &fakeReconcileStore{listErr: errors.New("db down")}
 	if _, err := ReconcileCaddyState(context.Background(), quietLogger(), st, newFakeReconcileCaddy(), nil, nil); err == nil {
 		t.Error("expected error from project list failure")
@@ -467,7 +456,6 @@ func TestReconcile_ListProjectsErrorBubbles(t *testing.T) {
 }
 
 func TestReconcile_CaddyRouteMissingButPriorDeploy_CallsAddProjectRouteFirst(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -507,7 +495,6 @@ func TestReconcile_CaddyRouteMissingButPriorDeploy_CallsAddProjectRouteFirst(t *
 }
 
 func TestReconcile_DomainsDrifted_CallsSetDomainsEvenWhenUpstreamInSync(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -547,7 +534,6 @@ func TestReconcile_DomainsDrifted_CallsSetDomainsEvenWhenUpstreamInSync(t *testi
 }
 
 func TestReconcile_SetDomainsFails_DoesNotHaltSweep(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -592,7 +578,6 @@ func TestReconcile_SetDomainsFails_DoesNotHaltSweep(t *testing.T) {
 }
 
 func TestReconcile_ProjectRouteExistsError_DoesNotHaltSweep(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -634,7 +619,6 @@ func TestReconcile_ProjectRouteExistsError_DoesNotHaltSweep(t *testing.T) {
 }
 
 func TestReconcile_SkipsProjectWithActiveDeployment(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -673,7 +657,6 @@ func TestReconcile_SkipsProjectWithActiveDeployment(t *testing.T) {
 }
 
 func TestReconcile_DomainsInSync_SkipsSetDomains(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -708,7 +691,6 @@ func TestReconcile_DomainsInSync_SkipsSetDomains(t *testing.T) {
 }
 
 func TestReconcile_DomainsDriftedSet_TriggersSetDomains(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -737,7 +719,6 @@ func TestReconcile_DomainsDriftedSet_TriggersSetDomains(t *testing.T) {
 }
 
 func TestReconcile_ActiveDeploymentCheckError_DoesNotHaltSweep(t *testing.T) {
-	t.Parallel()
 	st := &fakeReconcileStore{
 		projects:  []store.Project{{ID: 1, Name: "api"}},
 		activeErr: errors.New("rqlite unreachable"),

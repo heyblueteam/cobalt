@@ -163,7 +163,7 @@ func TestReconcileStableService_UpdatesStartFirst(t *testing.T) {
 func TestReconcileStableService_RemovesDeletedEnvironment(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerStdout("service inspect --format", `["KEEP=old","REMOVE=old"]`)
+	r.answerStdout("service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Env}}", `["KEEP=old","REMOVE=old"]`)
 	c := NewWithRunner(r)
 	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
 		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
@@ -619,5 +619,71 @@ func TestParseReplicas(t *testing.T) {
 		if got := parseReplicas(c.in); got != c.out {
 			t.Errorf("parseReplicas(%q) = %d, want %d", c.in, got, c.out)
 		}
+	}
+}
+
+func TestReconcileStableService_ReconcilesVolumes(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	r.answerStdout("service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Mounts}}", `[
+		{"Type":"volume","Source":"cache","Target":"/cache"},
+		{"Type":"volume","Source":"old","Target":"/replace"},
+		{"Type":"volume","Source":"removed","Target":"/removed"}]`)
+	c := NewWithRunner(r)
+	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{Name: "cobalt-web-7", Image: "web:2", Volumes: []ServiceVolume{
+		{VolumeName: "cache", DestinationPath: "/cache"},
+		{VolumeName: "new", DestinationPath: "/replace"},
+		{VolumeName: "added", DestinationPath: "/added"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := r.lastCall().Args
+	for _, target := range []string{"/removed"} {
+		if !argSequence(args, "--mount-rm", target) {
+			t.Errorf("mount %s not removed: %v", target, args)
+		}
+	}
+	for _, mount := range []string{"type=volume,source=new,destination=/replace", "type=volume,source=added,destination=/added"} {
+		if !argSequence(args, "--mount-add", mount) {
+			t.Errorf("mount %s not added: %v", mount, args)
+		}
+	}
+	if argSequence(args, "--mount-rm", "/replace") {
+		t.Errorf("replacement target was removed after mount-add: %v", args)
+	}
+	if argSequence(args, "--mount-rm", "/cache") || argSequence(args, "--mount-add", "type=volume,source=cache,destination=/cache") {
+		t.Errorf("unchanged mount churned: %v", args)
+	}
+	if !argSequence(args, "--update-order", "start-first") {
+		t.Errorf("lost start-first policy: %v", args)
+	}
+}
+
+func TestReconcileStableService_MountReadFailureDoesNotUpdate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, output string
+		err          error
+	}{
+		{name: "inspect failure", err: errors.New("daemon unavailable")},
+		{name: "invalid JSON", output: `{broken`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newFakeRunner()
+			const prefix = "service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Mounts}}"
+			r.answerStdout(prefix, tc.output)
+			if tc.err != nil {
+				r.answerErr(prefix, tc.err)
+			}
+			if err := NewWithRunner(r).ReconcileStableService(context.Background(), ServiceCreateOpts{Name: "cobalt-web-7", Image: "web:2"}); err == nil {
+				t.Fatal("expected inspection error")
+			}
+			for _, call := range r.calls {
+				if argSequence(call.Args, "service", "update") {
+					t.Fatal("updated service after failed inspection")
+				}
+			}
+		})
 	}
 }

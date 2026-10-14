@@ -17,27 +17,19 @@ type CleanupDocker interface {
 	RemoveService(ctx context.Context, name string) error
 }
 
-// cleanupOldServices stops project services from previous deployments, with
-// one deliberate exception: it keeps the most recent prior `*-web` generation
-// alive as a grace fallback. If Caddy's compiled router lags the cutover by a
-// deploy (it can, under reload pressure), that retained generation lets a
-// stale request resolve to a working old build (200) instead of a
-// since-deleted upstream (502) — the post-cutover incident this guards. The
-// convergence reconciler reaps the retained generation once the new deployment
-// is confirmed serving on the data plane (worker.reapSupersededWeb); failing
-// that, the next deploy reaps it (it's no longer the *most recent* prior), so
-// at most one extra web generation ever lingers.
-//
-// Best-effort: per-service failures are logged and skipped. Never returns an
-// error; the deploy is already marked successful and traffic is on the new
-// container.
+// cleanupOldServices removes superseded non-web services. Every public web
+// endpoint, including a stable endpoint being reverted to numbered routing,
+// remains until the reconciler confirms the new route and its grace floor.
+// A second fast deploy must not bypass that floor for an older generation.
+// Static/generator destinations have no container-route reaper, so their old
+// services retain the existing one-generation fallback. Best-effort: the deployment is live.
 func cleanupOldServices(
 	ctx context.Context,
 	log *slog.Logger,
 	d CleanupDocker,
 	project store.Project,
 	dep store.Deployment,
-	stableWeb bool,
+	deferWebCleanup bool,
 	out io.Writer,
 ) {
 	services, err := d.ListServicesForProject(ctx, project.ID)
@@ -50,24 +42,19 @@ func cleanupOldServices(
 
 	var stale []string
 	for _, s := range services {
-		if s.Name == docker.StablePublicWebServiceName(project.ID) {
-			if stableWeb {
-				continue // durable Caddy upstream, managed separately from generations
-			}
-			stale = append(stale, s.Name) // explicit stable-mode revert
-			continue
+		if deferWebCleanup && s.Name == docker.StablePublicWebServiceName(project.ID) {
+			continue // stable-mode revert is also retired by the guarded reaper
 		}
 		if strings.HasPrefix(s.Name, currentPrefix) {
 			continue // current deployment — keep
 		}
-		if s.Name == grace {
-			continue // retained one cutover for grace
+		if _, web := docker.WebGeneration(project.Name, s.Name); deferWebCleanup && web {
+			continue // all web generations use the guarded reaper
+		}
+		if !deferWebCleanup && s.Name == grace {
+			continue // preserve the existing non-public/static cleanup policy
 		}
 		stale = append(stale, s.Name)
-	}
-	if grace != "" {
-		fmt.Fprintf(out, "🛟 keeping %s one cutover for grace (reaped once #%d is confirmed live)\n",
-			grace, dep.Number)
 	}
 	if len(stale) == 0 {
 		return

@@ -11,6 +11,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -200,6 +201,11 @@ func (o *Orchestrator) cutover(
 	envVars map[string]string,
 	out io.Writer,
 ) error {
+	// Rollback uses this same path. Keep service creation, traffic cutover and
+	// post-success cleanup exclusive with the scheduled reaper for this project.
+	unlock := projectlock.Lock(project.ID)
+	defer unlock()
+
 	if err := EnsureMainNetwork(ctx, o.Docker); err != nil {
 		return fmt.Errorf("deploy: ensure main network: %w", err)
 	}
@@ -230,6 +236,11 @@ func (o *Orchestrator) cutover(
 	}
 
 	stableWeb := cf.UsesStablePublicWeb()
+	if cf.StablePublicWeb && !stableWeb {
+		reason := cf.StablePublicWebUnavailableReason()
+		fmt.Fprintf(out, "⚠ stablePublicWeb unavailable; using deployment-numbered routing: %s\n", reason)
+		log.Warn("stable public web unavailable", "project_id", project.ID, "reason", reason)
+	}
 	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, stableWeb, out)
 	if err != nil {
 		// Phase 1 failure: stop services we did start, no Caddy touch.
@@ -285,7 +296,7 @@ func (o *Orchestrator) cutover(
 	}
 
 	// POST-SUCCESS — clean up old services. Best effort.
-	cleanupOldServices(context.Background(), log, o.Docker, *project, dep, stableWeb, out)
+	cleanupOldServices(context.Background(), log, o.Docker, *project, dep, deferPublicWebCleanup(cf), out)
 
 	// Cron reconciliation: register / update / remove project crons
 	// declared in the just-cut-over cobaltfile. Best effort; failure
@@ -349,4 +360,9 @@ func (o *Orchestrator) ensureDeploymentNetwork(ctx context.Context, project stor
 		return nil
 	}
 	return o.Docker.CreateNetwork(ctx, project.ID, project.Name, dep.Number)
+}
+
+func deferPublicWebCleanup(cf *cobaltfile.Cobaltfile) bool {
+	web, ok := cf.Services["web"]
+	return ok && web.Type == cobaltfile.TypeContainer && !web.ExposedInternally
 }

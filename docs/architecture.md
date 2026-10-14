@@ -82,3 +82,60 @@ TBD. Will be decided before any external release. Until then the repo is private
 ## Reference
 
 - `tmp/` holds shallow clones of the upstream tool we're replacing. Gitignored, used as **behavior reference only**. We read upstream to understand *what* it does (request shapes, state machines, edge cases), then implement from notes — not by translating files. This keeps cobalt out of derivative-work territory under upstream's GPL-3.0.
+
+## Stable web routing with shared volumes
+
+Set `stablePublicWeb: true` to keep the public web service name and VIP across
+start-first updates. Old and new tasks overlap. A web volume is eligible only
+when it explicitly declares that the application supports concurrent access:
+
+```json
+{
+  "version": "1.0",
+  "stablePublicWeb": true,
+  "services": {
+    "web": {
+      "port": 3000,
+      "volumes": [{
+        "name": "assets",
+        "destinationPath": "/var/cache/app",
+        "sharedDuringUpdate": true
+      }]
+    }
+  }
+}
+```
+
+Use this for storage designed for concurrent use, such as an immutable asset
+archive. Do not enable it for an embedded database or single-writer files.
+Volume names stay project-scoped. Updates preserve unchanged mounts, reconcile
+added/changed/removed mounts, and never delete the volume data. The normal Swarm
+node-local volume constraints still apply; this does not replicate files across
+nodes. Applications own file retention and concurrent-write safety.
+
+A requested stable configuration that is ineligible still uses numbered routing
+for compatibility, but deployment output and daemon logs now explain why.
+
+Numbered web endpoints, and a stable endpoint being replaced by numbered
+routing, are retired only by the reconciler after it confirms the new route and
+waits its five-minute grace floor. A subsequent deploy cannot bypass that gate.
+Cutover (including rollback) and reconciliation use the same per-project lock;
+a tick skips busy projects instead of blocking the fleet or deleting a stable
+endpoint activated by a concurrent cutover. Internal-only and static destinations
+keep their existing cleanup policy because they have no public container-route reaper.
+With continuous deployments, old endpoints remain until there is a five-minute
+quiet window; plan capacity for that overlap. The Caddy reload grace must remain
+shorter than the retirement window (the default is 30 seconds).
+
+To run the pooled-HTTP and shared-asset regression, point `DOCKER_HOST` at a
+**disposable** Docker daemon and run:
+
+```sh
+COBALT_DISPOSABLE_SWARM=1 go test -tags integration \
+  ./internal/server/docker -run '^TestReconcileStableService_RealSwarm$' -v
+```
+
+The test initializes and leaves a Swarm on that daemon. It does not use a
+production server. It keeps an HTTP/1.1 client connection through Caddy open
+across an image update and checks that the new build and old assets remain
+available without failed requests.

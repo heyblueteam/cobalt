@@ -36,6 +36,8 @@ func TestUsesStablePublicWeb(t *testing.T) {
 		{"not opted in", Cobaltfile{Services: map[string]Service{"web": {Type: TypeContainer}}}, false},
 		{"published port", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, PublishedPorts: []PublishedPort{{PublishedAs: 80, FromContainerPort: 8000}}}}}, false},
 		{"volume", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, Volumes: []Volume{{Name: "data", DestinationPath: "/data"}}}}}, false},
+		{"shared volume", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, Volumes: []Volume{{Name: "assets", DestinationPath: "/cache", SharedDuringUpdate: true}}}}}, true},
+		{"mixed shared and exclusive volumes", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, Volumes: []Volume{{Name: "assets", DestinationPath: "/cache", SharedDuringUpdate: true}, {Name: "db", DestinationPath: "/db"}}}}}, false},
 		{"extra swarm params", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--limit-cpu 1"}}}, false},
 		{"host alias", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host host.docker.internal:host-gateway"}}}, true},
 		{"host alias equals form", Cobaltfile{StablePublicWeb: true, Services: map[string]Service{"web": {Type: TypeContainer, ExtraSwarmParams: "--host=host.docker.internal:host-gateway"}}}, true},
@@ -405,5 +407,20 @@ func mustContain(t *testing.T, err error, sub string) {
 	}
 	if !strings.Contains(err.Error(), sub) {
 		t.Fatalf("error %q does not contain %q", err.Error(), sub)
+	}
+}
+
+func TestParse_StableSharedVolume(t *testing.T) {
+	t.Parallel()
+	cf, err := Parse([]byte(`{"version":"1.0","stablePublicWeb":true,"services":{"web":{"port":3000,"volumes":[{"name":"assets","destinationPath":"/cache","sharedDuringUpdate":true}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cf.UsesStablePublicWeb() {
+		t.Fatalf("shared-volume configuration fell back: %s", cf.StablePublicWebUnavailableReason())
+	}
+	cf.Services["web"] = Service{Type: TypeContainer, Volumes: []Volume{{Name: "db", DestinationPath: "/db"}}}
+	if reason := cf.StablePublicWebUnavailableReason(); !strings.Contains(reason, `volume "db"`) || !strings.Contains(reason, "sharedDuringUpdate") {
+		t.Fatalf("unhelpful fallback reason: %q", reason)
 	}
 }

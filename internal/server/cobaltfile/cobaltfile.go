@@ -120,6 +120,9 @@ type Image struct {
 type Volume struct {
 	Name            string `json:"name"`
 	DestinationPath string `json:"destinationPath"`
+	// SharedDuringUpdate permits old and new tasks to mount this volume at
+	// the same time. Only opt in when the application supports concurrent access.
+	SharedDuringUpdate bool `json:"sharedDuringUpdate,omitempty"`
 }
 
 // UsesStablePublicWeb reports whether the project can use Cobalt's durable
@@ -128,21 +131,32 @@ type Volume struct {
 // Keep this deliberately conservative until service dependencies are modeled
 // explicitly in cobalt.json.
 func (cf *Cobaltfile) UsesStablePublicWeb() bool {
-	if !cf.StablePublicWeb {
-		return false
-	}
+	return cf.StablePublicWeb && cf.StablePublicWebUnavailableReason() == ""
+}
+
+// StablePublicWebUnavailableReason explains a requested stable-mode fallback.
+// A volume needs explicit concurrent-access consent because start-first updates
+// run both versions at once; databases and other single-writer stores are unsafe.
+func (cf *Cobaltfile) StablePublicWebUnavailableReason() string {
 	web, ok := cf.Services["web"]
-	if !ok || web.Type != TypeContainer || web.ExposedInternally || web.StopFirst ||
-		len(web.PublishedPorts) != 0 || len(web.Volumes) != 0 ||
+	if !ok || web.Type != TypeContainer {
+		return "web must be a container service"
+	}
+	if web.ExposedInternally || web.StopFirst || len(web.PublishedPorts) != 0 ||
 		!stableSafeSwarmParams(web.ExtraSwarmParams) {
-		return false
+		return "web requires deployment-scoped networking, published ports, stop-first, or unsupported swarm parameters"
+	}
+	for _, volume := range web.Volumes {
+		if !volume.SharedDuringUpdate {
+			return fmt.Sprintf("volume %q must explicitly set sharedDuringUpdate: true for concurrent access", volume.Name)
+		}
 	}
 	for name, service := range cf.Services {
 		if name != "web" && service.Type == TypeContainer {
-			return false
+			return "additional container services require deployment-scoped networking"
 		}
 	}
-	return true
+	return ""
 }
 
 // stableSafeSwarmParams reports whether every extra swarm param is one the

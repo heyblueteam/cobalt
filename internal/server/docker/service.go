@@ -210,6 +210,38 @@ func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateO
 			args = append(args, "--host-rm", h)
 		}
 	}
+	// Preserve unchanged mounts. Replacing every mount on each image update
+	// churns the spec and can lose volume options. Only change differing targets.
+	oldMounts, err := c.stableServiceMounts(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+	for _, mount := range oldMounts {
+		matched := false
+		for _, wanted := range opts.Volumes {
+			if mount.Target == wanted.DestinationPath {
+				// --mount-add replaces by target. Pairing it with --mount-rm
+				// for this same target removes the replacement as well.
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			args = append(args, "--mount-rm", mount.Target)
+		}
+	}
+	for _, wanted := range opts.Volumes {
+		matched := false
+		for _, mount := range oldMounts {
+			if mount.Type == "volume" && mount.Source == wanted.VolumeName && mount.Target == wanted.DestinationPath && !mount.ReadOnly {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			args = append(args, "--mount-add", fmt.Sprintf("type=volume,source=%s,destination=%s", wanted.VolumeName, wanted.DestinationPath))
+		}
+	}
 	if opts.Replicas > 0 {
 		args = append(args, "--replicas", strconv.Itoa(opts.Replicas))
 	}
@@ -220,6 +252,28 @@ func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateO
 		args = append(args, "--args", opts.Command)
 	}
 	return c.run(ctx, append(args, opts.Name)...)
+}
+
+type stableServiceMount struct {
+	Type     string
+	Source   string
+	Target   string
+	ReadOnly bool
+}
+
+func (c *Client) stableServiceMounts(ctx context.Context, name string) ([]stableServiceMount, error) {
+	out, err := c.output(ctx, "service", "inspect", "--format", "{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}", name)
+	if err != nil {
+		return nil, err
+	}
+	if len(out) == 0 || string(out) == "null" {
+		return nil, nil
+	}
+	var mounts []stableServiceMount
+	if err := json.Unmarshal(out, &mounts); err != nil {
+		return nil, fmt.Errorf("inspect stable service mounts: %w", err)
+	}
+	return mounts, nil
 }
 
 func (c *Client) stableServiceEnvKeys(ctx context.Context, name string) ([]string, error) {
