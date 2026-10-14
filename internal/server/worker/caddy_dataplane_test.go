@@ -7,6 +7,7 @@ import (
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -91,7 +92,6 @@ func inSyncFixtureFinishedAgo(t *testing.T, ago time.Duration) (*fakeReconcileSt
 }
 
 func TestReconcile_DataPlaneServesOldDeployment_ForcesRepair(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{served: "5", status: 200} // router still on #5
 
@@ -108,7 +108,6 @@ func TestReconcile_DataPlaneServesOldDeployment_ForcesRepair(t *testing.T) {
 }
 
 func TestReconcile_DataPlaneGatewayError_ForcesRepair(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{served: "", status: 502} // dialing a dead upstream
 
@@ -125,7 +124,6 @@ func TestReconcile_DataPlaneGatewayError_ForcesRepair(t *testing.T) {
 }
 
 func TestReconcile_DataPlaneNoHeader_NoRepair(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{served: "", status: 200} // pre-header handler / unknown
 
@@ -140,7 +138,6 @@ func TestReconcile_DataPlaneNoHeader_NoRepair(t *testing.T) {
 }
 
 func TestReconcile_DataPlaneProbeInconclusive_NoRepair(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{err: context.DeadlineExceeded} // caddy unreachable
 
@@ -155,7 +152,6 @@ func TestReconcile_DataPlaneProbeInconclusive_NoRepair(t *testing.T) {
 }
 
 func TestReconcile_DataPlaneHealthy_ReapsSupersededWebOnly(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{served: "7", status: 200} // router confirmed on #7
 	reaper := &fakeReaper{services: []docker.ServiceInfo{
@@ -178,7 +174,6 @@ func TestReconcile_DataPlaneHealthy_ReapsSupersededWebOnly(t *testing.T) {
 }
 
 func TestReconcile_InconclusiveDomain_TriesNextDomain(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	st.domains[1] = []string{"legacy.example.com", "api.example.com"}
 	dp := domainDataPlaneProber{
@@ -209,7 +204,6 @@ func TestReconcile_InconclusiveDomain_TriesNextDomain(t *testing.T) {
 // prober (dp == nil) is "unknown," not confirmation, and must never license a
 // reap — only a genuinely-confirmed data-plane probe may.
 func TestReconcile_NilProber_NeverReapsOrRepairs(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	reaper := &fakeReaper{services: []docker.ServiceInfo{
 		{Name: "api-7-web"},
@@ -232,7 +226,6 @@ func TestReconcile_NilProber_NeverReapsOrRepairs(t *testing.T) {
 // a probe error (Caddy unreachable / timeout) must not license a reap, same
 // as a nil prober.
 func TestReconcile_ProbeInconclusive_NeverReaps(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{err: context.DeadlineExceeded}
 	reaper := &fakeReaper{services: []docker.ServiceInfo{
@@ -256,7 +249,6 @@ func TestReconcile_ProbeInconclusive_NeverReaps(t *testing.T) {
 // treated as unknown, so it must not repair (already covered above) and must
 // also not reap.
 func TestReconcile_NoHeader_NeverReaps(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixture(t)
 	dp := fakeDataPlaneProber{served: "", status: 200}
 	reaper := &fakeReaper{services: []docker.ServiceInfo{
@@ -282,7 +274,6 @@ func TestReconcile_NoHeader_NeverReaps(t *testing.T) {
 // own cutover is exactly the window where a Cloudflare-pooled connection can
 // still be pinned to the old Docker DNS name.
 func TestReconcile_ConfirmedButWithinGraceFloor_DoesNotReapYet(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixtureFinishedAgo(t, 10*time.Second) // well under reapMinAge
 	dp := fakeDataPlaneProber{served: "7", status: 200}   // genuinely confirmed
 	reaper := &fakeReaper{services: []docker.ServiceInfo{
@@ -306,7 +297,6 @@ func TestReconcile_ConfirmedButWithinGraceFloor_DoesNotReapYet(t *testing.T) {
 // happens once both conditions hold: genuine confirmation AND enough time
 // elapsed since cutover.
 func TestReconcile_ConfirmedAndPastGraceFloor_Reaps(t *testing.T) {
-	t.Parallel()
 	st, cy := inSyncFixtureFinishedAgo(t, reapMinAge+time.Minute)
 	dp := fakeDataPlaneProber{served: "7", status: 200}
 	reaper := &fakeReaper{services: []docker.ServiceInfo{
@@ -330,7 +320,6 @@ func TestReconcile_ConfirmedAndPastGraceFloor_Reaps(t *testing.T) {
 // deployment row missing a cutover timestamp must not be reaped from, rather
 // than guessing at its age.
 func TestReconcile_NoFinishedAt_NeverReaps(t *testing.T) {
-	t.Parallel()
 	cf := mustCobaltfileJSON(t, &cobaltfile.Cobaltfile{
 		Version: "1.0",
 		Services: map[string]cobaltfile.Service{
@@ -366,5 +355,88 @@ func TestReconcile_NoFinishedAt_NeverReaps(t *testing.T) {
 	}
 	if len(reaper.removed) != 0 {
 		t.Errorf("missing FinishedAt must not reap: got %v", reaper.removed)
+	}
+}
+
+func TestReconcile_StableModeRevertUsesGraceFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		age     time.Duration
+		removed int
+	}{
+		{"during grace", 10 * time.Second, 0},
+		{"past grace", reapMinAge + time.Minute, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, cy := inSyncFixtureFinishedAgo(t, tc.age)
+			reaper := &fakeReaper{services: []docker.ServiceInfo{{Name: "cobalt-web-1"}, {Name: "api-5-web"}, {Name: "api-6-web"}, {Name: "api-7-web"}, {Name: "cobalt-web-2"}}}
+			_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, fakeDataPlaneProber{served: "7", status: 200}, reaper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(reaper.removed) != tc.removed {
+				t.Fatalf("removed=%v, want %d old endpoints", reaper.removed, tc.removed)
+			}
+		})
+	}
+}
+
+// Reconciler fixtures use the same project IDs, so these tests run serially:
+// production exclusion deliberately applies to all operations on one ID.
+type blockedDataPlaneProber struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p blockedDataPlaneProber) ServedDeployment(context.Context, string) (string, int, error) {
+	close(p.entered)
+	<-p.release
+	return "7", 200, nil
+}
+
+func TestReconcile_StableRetirementExcludesConcurrentCutover(t *testing.T) {
+	st, cy := inSyncFixture(t)
+	prober := blockedDataPlaneProber{entered: make(chan struct{}), release: make(chan struct{})}
+	reaper := &fakeReaper{services: []docker.ServiceInfo{{Name: "cobalt-web-1"}}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, prober, reaper)
+		done <- err
+	}()
+	<-prober.entered
+	// The active-deployment snapshot happened before this pause. A new
+	// cutover must not activate/reuse the stable name until retirement ends.
+	unlock, acquired := projectlock.TryLock(1)
+	if acquired {
+		unlock()
+	}
+	close(prober.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if acquired {
+		t.Fatal("cutover entered during the route probe, before stable retirement")
+	}
+	unlock, acquired = projectlock.TryLock(1)
+	if !acquired {
+		t.Fatal("reconcile did not release project ownership")
+	}
+	unlock()
+	if len(reaper.removed) != 1 || reaper.removed[0] != "cobalt-web-1" {
+		t.Fatalf("old stable endpoint was not retired: %v", reaper.removed)
+	}
+}
+
+func TestReconcile_CutoverOwnershipSkipsDestructiveReap(t *testing.T) {
+	st, cy := inSyncFixture(t)
+	reaper := &fakeReaper{services: []docker.ServiceInfo{{Name: "cobalt-web-1"}}}
+	unlock := projectlock.Lock(1)
+	defer unlock()
+	_, err := ReconcileCaddyState(context.Background(), quietLogger(), st, cy, fakeDataPlaneProber{served: "7", status: 200}, reaper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reaper.removed) != 0 {
+		t.Fatalf("reaper touched endpoint owned by a cutover: %v", reaper.removed)
 	}
 }

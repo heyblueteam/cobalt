@@ -321,3 +321,26 @@ func TestMainNetAlias_PureFunction(t *testing.T) {
 		})
 	}
 }
+
+func TestStartServicesPhase_SharedVolumeKeepsStableEndpoint(t *testing.T) {
+	t.Parallel()
+	cf, err := cobaltfile.Parse([]byte(`{"version":"1.0","stablePublicWeb":true,"services":{"web":{"port":3000,"volumes":[{"name":"assets","destinationPath":"/cache","sharedDuringUpdate":true}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &serviceDockerFake{}
+	for _, number := range []int{1, 2} {
+		_, err := startServicesPhase(context.Background(), d, store.Project{ID: 7, Name: "web"}, store.Deployment{Number: number}, []BuiltService{{Name: "web", Service: cf.Services["web"], ImageTag: "web:latest"}}, nil, "deployment-network", cf.UsesStablePublicWeb(), io.Discard)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(d.created) != 0 || len(d.stableCreated) != 2 {
+		t.Fatalf("numbered=%v stable=%v", d.created, d.stableCreated)
+	}
+	for _, opts := range d.stableCreated {
+		if opts.Name != "cobalt-web-7" || len(opts.Volumes) != 1 || opts.Volumes[0].VolumeName != "cobalt-volume-7-assets" {
+			t.Errorf("lost stable identity or project-scoped volume: %+v", opts)
+		}
+	}
+}
