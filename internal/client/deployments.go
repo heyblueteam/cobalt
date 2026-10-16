@@ -111,6 +111,22 @@ func (c *Client) MostRecentInFlightDeployment(ctx context.Context, project strin
 	return nil, fmt.Errorf("no in-flight deployment found for project %q", project)
 }
 
+// DeploymentByNumber resolves the per-project number shown by `deployments
+// list` (#957) to the deployment. Numbers are what operators read off the
+// list and type back; internal ids are not shown there.
+func (c *Client) DeploymentByNumber(ctx context.Context, project string, number int) (*cobaltapi.Deployment, error) {
+	deps, err := c.ListDeployments(ctx, project, 500)
+	if err != nil {
+		return nil, err
+	}
+	for _, d := range deps {
+		if d.Number == number {
+			return &d, nil
+		}
+	}
+	return nil, fmt.Errorf("no deployment #%d found for project %q (searched the last %d)", number, project, len(deps))
+}
+
 func FormatDeployment(d *cobaltapi.Deployment) string {
 	return fmt.Sprintf("#%d (id=%d)", d.Number, d.ID)
 }

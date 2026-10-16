@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/client"
@@ -77,38 +78,58 @@ Examples:
 	return cmd
 }
 
+// resolveDeployment picks the deployment a command acts on. Precedence:
+// positional number (what `deployments list` shows, e.g. 957), then
+// --deployment <internal id>, then the caller's fallback (most recent /
+// most recent in-flight). Before this, a positional number was silently
+// ignored and the fallback ran — `cancel 955` cancelled #956.
+func resolveDeployment(
+	cmd *cobra.Command,
+	args []string,
+	pc *projectClient,
+	fallback func() (*cobaltapi.Deployment, error),
+) (*cobaltapi.Deployment, error) {
+	if len(args) == 1 {
+		number, err := strconv.Atoi(strings.TrimPrefix(args[0], "#"))
+		if err != nil {
+			return nil, fmt.Errorf("invalid deployment number: %q (use the number from `deployments list`)", args[0])
+		}
+		return pc.DeploymentByNumber(cmd.Context(), pc.WrapProject(), number)
+	}
+	if deployment, _ := cmd.Flags().GetString("deployment"); deployment != "" {
+		id, err := strconv.ParseInt(deployment, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid deployment id: %q", deployment)
+		}
+		return pc.GetDeployment(cmd.Context(), id)
+	}
+	return fallback()
+}
+
 func newDeploymentsCancelCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "cancel",
+		Use:   "cancel [number]",
 		Short: "Cancel an in-flight deployment",
-		Long: `Cancels the most recent in-flight deployment (queued, fetching, building, or
-swapping). Use --deployment to target a specific deployment by ID.
+		Long: `Cancels a deployment by its number (as shown by 'deployments list'), or the
+most recent in-flight one (queued, fetching, building, or swapping) when no
+number is given. --deployment targets a specific deployment by internal ID.
 
 Examples:
+  cobalt deployments cancel 957 --project api
   cobalt deployments cancel --project api
-  cobalt deployments cancel --project api --deployment 42`,
-		RunE: runE(func(cmd *cobra.Command, _ []string) error {
-			deployment, _ := cmd.Flags().GetString("deployment")
+  cobalt deployments cancel --project api --deployment 3542`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {
 				return err
 			}
 
-			var targetDeployment *cobaltapi.Deployment
-			if deployment != "" {
-				id, err := strconv.ParseInt(deployment, 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid deployment id: %q", deployment)
-				}
-				targetDeployment, err = pc.GetDeployment(cmd.Context(), id)
-				if err != nil {
-					return err
-				}
-			} else {
-				targetDeployment, err = pc.MostRecentInFlightDeployment(cmd.Context(), pc.WrapProject())
-				if err != nil {
-					return err
-				}
+			targetDeployment, err := resolveDeployment(cmd, args, pc, func() (*cobaltapi.Deployment, error) {
+				return pc.MostRecentInFlightDeployment(cmd.Context(), pc.WrapProject())
+			})
+			if err != nil {
+				return err
 			}
 
 			if err := pc.CancelDeployment(cmd.Context(), targetDeployment.ID); err != nil {
@@ -124,37 +145,30 @@ Examples:
 
 func newDeploymentsOutputCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "output",
+		Use:   "output [number]",
 		Short: "Stream deployment output",
 		Long: `Streams the stdout/stderr output of a deployment in real time.
 
-Without --deployment, tails the most recent deployment. Use Ctrl+C to stop.
+Give the deployment number (as shown by 'deployments list') to pick one;
+without it, tails the most recent deployment. --deployment targets a specific
+deployment by internal ID. Use Ctrl+C to stop.
 
 Examples:
+  cobalt deployments output 957 --project api
   cobalt deployments output --project api
-  cobalt deployments output --project api --deployment 42`,
-		RunE: runE(func(cmd *cobra.Command, _ []string) error {
-			deployment, _ := cmd.Flags().GetString("deployment")
+  cobalt deployments output --project api --deployment 3542`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			pc, err := newProjectClient(cmd)
 			if err != nil {
 				return err
 			}
 
-			var targetDeployment *cobaltapi.Deployment
-			if deployment != "" {
-				id, err := strconv.ParseInt(deployment, 10, 64)
-				if err != nil {
-					return fmt.Errorf("invalid deployment id: %q", deployment)
-				}
-				targetDeployment, err = pc.GetDeployment(cmd.Context(), id)
-				if err != nil {
-					return err
-				}
-			} else {
-				targetDeployment, err = pc.MostRecentDeployment(cmd.Context(), pc.WrapProject())
-				if err != nil {
-					return err
-				}
+			targetDeployment, err := resolveDeployment(cmd, args, pc, func() (*cobaltapi.Deployment, error) {
+				return pc.MostRecentDeployment(cmd.Context(), pc.WrapProject())
+			})
+			if err != nil {
+				return err
 			}
 
 			if err := output.FollowDeployOutput(cmd.Context(), pc.Client, targetDeployment.ID, 0, output.Stdout); err != nil {

@@ -320,3 +320,72 @@ func TestDeployWithNoCache(t *testing.T) {
 		t.Errorf("noCache not in request body: %s", string(api.lastBody))
 	}
 }
+
+// TestDeploymentsCancelByNumber pins the regression that motivated positional
+// numbers: `cancel 955` used to be silently ignored and cancel the most recent
+// in-flight deployment (#956) instead. The number must resolve to ITS
+// deployment, not the newest.
+func TestDeploymentsCancelByNumber(t *testing.T) {
+	api := newMockAPI()
+	defer api.close()
+
+	var canceled []string
+	api.handler = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			canceled = append(canceled, r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// GET .../deployments?limit=500 — newest first, like the server
+		json.NewEncoder(w).Encode([]cobaltapi.Deployment{
+			{ID: 3541, Number: 956, Status: cobaltapi.StateQueued},
+			{ID: 3540, Number: 955, Status: cobaltapi.StateBuilding},
+			{ID: 3539, Number: 954, Status: cobaltapi.StateFailed},
+		})
+	}
+
+	if err := api.configPath(t); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	oldStdout := output.Stdout
+	output.Stdout = &buf
+	defer func() { output.Stdout = oldStdout }()
+
+	root := newRootCmd()
+	root.SetArgs([]string{"deployments", "cancel", "955", "--project", "api"})
+	if err := root.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(canceled) != 1 || !strings.HasSuffix(canceled[0], "/deployments/3540/cancel") {
+		t.Errorf("canceled %v, want exactly /deployments/3540/cancel (#955)", canceled)
+	}
+	if !contains(buf.String(), "#955") {
+		t.Errorf("output should name #955: %s", buf.String())
+	}
+}
+
+func TestDeploymentsCancelUnknownNumber(t *testing.T) {
+	api := newMockAPI()
+	defer api.close()
+	api.respond([]cobaltapi.Deployment{{ID: 1, Number: 1, Status: cobaltapi.StateQueued}})
+	if err := api.configPath(t); err != nil {
+		t.Fatal(err)
+	}
+	root := newRootCmd()
+	root.SetArgs([]string{"deployments", "cancel", "999", "--project", "api"})
+	err := root.ExecuteContext(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "#999") {
+		t.Fatalf("want 'no deployment #999' error, got %v", err)
+	}
+}
+
+func TestDeploymentsCancelRejectsExtraArgs(t *testing.T) {
+	root := newRootCmd()
+	root.SetArgs([]string{"deployments", "cancel", "955", "956", "--project", "api"})
+	if err := root.ExecuteContext(context.Background()); err == nil {
+		t.Fatal("two positional args must be rejected, not silently ignored")
+	}
+}
