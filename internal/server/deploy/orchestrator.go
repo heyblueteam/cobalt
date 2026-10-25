@@ -270,6 +270,10 @@ func (o *Orchestrator) cutover(
 	// Public stop-first owns its web cleanup so recovery can wait for real
 	// process exit while the service object is still inspectable.
 	cleanupFailed := func(names []string) {
+		if publicStop == nil {
+			_ = stopServices(context.Background(), o.Docker, names)
+			return
+		}
 		for _, name := range names {
 			if publicStop != nil && name == publicStop.newName {
 				continue

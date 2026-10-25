@@ -29,7 +29,7 @@ func stopFirstPhase(
 ) error {
 	var flagged []string
 	for _, b := range built {
-		if b.Service.StopFirst && runsAsService(b.Service) && !(b.Name == "web" && !b.Service.ExposedInternally) {
+		if b.Service.StopFirst && runsAsService(b.Service) && (b.Name != "web" || b.Service.ExposedInternally) {
 			flagged = append(flagged, b.Name)
 		}
 	}
