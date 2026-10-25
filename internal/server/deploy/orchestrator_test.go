@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -802,5 +803,76 @@ func TestCutoverCapacityGateRunsBeforeHooksAndServices(t *testing.T) {
 		if d.hasCall("service create") || d.hasCall("run ") || d.hasCall("network create") {
 			t.Fatalf("started work before admission: %v", d.calls)
 		}
+	}
+}
+
+func TestOrchestrator_PublicStopFirstCutoverAndRecovery(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("createFailure=%t", fail), func(t *testing.T) {
+			o, d, cy, db, project := setupOrchestrator(t)
+			ctx := context.Background()
+			previous := enqueueAndFetch(t, db, project.ID)
+			raw := `{"version":"1.0","services":{"web":{"port":3100}}}`
+			if err := db.SetResolvedCobaltfile(ctx, previous.ID, raw); err != nil {
+				t.Fatal(err)
+			}
+			if err := db.SetDeploymentStatus(ctx, previous.ID, cobaltapi.StateSuccess); err != nil {
+				t.Fatal(err)
+			}
+			dep := enqueueAndFetch(t, db, project.ID)
+			d.stdout = map[string]string{
+				"service ls":           "api-1-web\t1/1\napi-2-web\t1/1\n",
+				"service inspect":      "1",
+				"service ps api-1-web": "Shutdown 1 second ago",
+				"service ps api-2-web --no-trunc --format {{.CurrentState}}":  "Shutdown 1 second ago",
+				"service ps api-2-web --no-trunc --format {\"current_state\"": `{"current_state":"Running","health":""}`,
+				"ps --filter label=com.docker.swarm.service.name=api-1-web":   "old-container",
+			}
+			if fail {
+				d.errs["service create"] = errors.New("create failed after submission")
+			}
+			cf := defaultWorkspace().Cobaltfile
+			web := cf.Services["web"]
+			web.StopFirst = true
+			cf.Services["web"] = web
+			built := defaultBuilt()
+			built[0].Service = web
+			err := o.Cutover(ctx, &project, dep, built, cf, nil, io.Discard)
+			if (err != nil) != fail {
+				t.Fatalf("err=%v", err)
+			}
+			var events []string
+			for _, call := range d.calls {
+				if strings.HasPrefix(call, "service scale") || strings.HasPrefix(call, "service rm") || strings.HasPrefix(call, "service create") {
+					events = append(events, call)
+				}
+			}
+			// The old spec is retained until success, or restored on failure. Even
+			// a create RPC failure may have accepted a new service, so inspect it.
+			if len(events) < 3 || events[0] != "service scale --detach=true api-1-web=0" || !strings.HasPrefix(events[1], "service create") {
+				t.Fatal(events)
+			}
+			cy.mu.Lock()
+			upstream := cy.upstreams[project.ID]
+			cy.mu.Unlock()
+			if fail {
+				if !d.hasCall("service scale --detach=true api-2-web=0") || !d.hasCall("service scale --detach=true api-1-web=1") {
+					t.Fatal(events)
+				}
+				if d.hasCall("service rm api-1-web") {
+					t.Fatal("recovery destroyed old service")
+				}
+				if upstream != "api-1-web:3100" {
+					t.Fatal(upstream)
+				}
+			} else {
+				if !d.hasCall("service rm api-1-web") || d.hasCall("service scale --detach=true api-1-web=1") {
+					t.Fatal(events)
+				}
+				if upstream != "api-2-web:3000" {
+					t.Fatal(upstream)
+				}
+			}
+		})
 	}
 }

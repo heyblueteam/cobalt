@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -200,7 +201,7 @@ func (o *Orchestrator) cutover(
 	cf *cobaltfile.Cobaltfile,
 	envVars map[string]string,
 	out io.Writer,
-) error {
+) (result error) {
 	// Rollback uses this same path. Keep service creation, traffic cutover and
 	// post-success cleanup exclusive with the scheduled reaper for this project.
 	unlock := projectlock.Lock(project.ID)
@@ -236,6 +237,47 @@ func (o *Orchestrator) cutover(
 		log.Warn("set status swapping", "error", err)
 	}
 
+	var publicStop *publicStopFirst
+	if publicStopFirstEnabled(cf) {
+		var err error
+		publicStop, err = preparePublicStopFirst(ctx, o.Docker, o.DB, *project, dep)
+		if err != nil {
+			return fmt.Errorf("deploy: stopFirst preflight: %w", err)
+		}
+		defer func() {
+			if result == nil {
+				return
+			}
+			recoveryCtx, cancel := context.WithTimeout(context.Background(), 2*HealthcheckTimeout)
+			defer cancel()
+			err := publicStop.recover(recoveryCtx, o.Docker, out)
+			if err == nil && publicStop.previous != nil {
+				err = waitHTTPReady(recoveryCtx, o.Docker, *project, *publicStop.previous, publicStop.previousFile, out)
+				if err == nil {
+					err = commitCaddySwap(recoveryCtx, o.Caddy, o.DB, *project, *publicStop.previous, publicStop.previousFile)
+				}
+			}
+			if err != nil {
+				result = errors.Join(result, fmt.Errorf("public stopFirst recovery failed; operator action required: %w", err))
+			} else if publicStop.previous != nil {
+				fmt.Fprintln(out, "↩ previous public service and route restored (data/schema changes are not undone)")
+			}
+		}()
+		if err := publicStop.stopOld(ctx, o.Docker, out); err != nil {
+			return err
+		}
+	}
+	// Public stop-first owns its web cleanup so recovery can wait for real
+	// process exit while the service object is still inspectable.
+	cleanupFailed := func(names []string) {
+		for _, name := range names {
+			if publicStop != nil && name == publicStop.newName {
+				continue
+			}
+			_ = o.Docker.RemoveService(context.Background(), name)
+		}
+	}
+
 	// stopFirst services surrender their old generation before the new one
 	// starts — host-mode published ports can't be held by two generations at
 	// once. Anything stopped here is down until the new service is healthy.
@@ -252,11 +294,11 @@ func (o *Orchestrator) cutover(
 	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, stableWeb, out)
 	if err != nil {
 		// Phase 1 failure: stop services we did start, no Caddy touch.
-		_ = stopServices(context.Background(), o.Docker, startedServices)
+		cleanupFailed(startedServices)
 		return err
 	}
 	if err := waitHealthyAll(ctx, o.Docker, *project, dep, built, stableWeb, out); err != nil {
-		_ = stopServices(context.Background(), o.Docker, startedServices)
+		cleanupFailed(startedServices)
 		return err
 	}
 	// Swarm says the task is running, but "running" only means the
@@ -265,7 +307,7 @@ func (o *Orchestrator) cutover(
 	// inside cobalt-caddy before we route traffic; otherwise we'll cut
 	// over to a backend that 502s.
 	if err := waitHTTPReady(ctx, o.Docker, *project, dep, cf, out); err != nil {
-		_ = stopServices(context.Background(), o.Docker, startedServices)
+		cleanupFailed(startedServices)
 		return err
 	}
 
@@ -276,8 +318,10 @@ func (o *Orchestrator) cutover(
 		// Try to revert; whether or not revert succeeds, kill the new
 		// services so they don't linger.
 		fmt.Fprintf(out, "↩️  traffic swap failed, reverting\n")
-		revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
-		_ = stopServices(context.Background(), o.Docker, startedServices)
+		if publicStop == nil {
+			revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
+		}
+		cleanupFailed(startedServices)
 		return fmt.Errorf("deploy: commit caddy: %w", err)
 	}
 
@@ -288,8 +332,10 @@ func (o *Orchestrator) cutover(
 	if o.DataPlaneProber != nil {
 		if err := waitDataPlaneServing(ctx, o.DataPlaneProber, o.DB, *project, dep, cf, log, out); err != nil {
 			fmt.Fprintf(out, "↩️  data-plane verify failed, reverting\n")
-			revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
-			_ = stopServices(context.Background(), o.Docker, startedServices)
+			if publicStop == nil {
+				revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
+			}
+			cleanupFailed(startedServices)
 			return fmt.Errorf("deploy: %w", err)
 		}
 	}
@@ -301,6 +347,16 @@ func (o *Orchestrator) cutover(
 	if err := runAfterHook(ctx, o.Docker, *project, dep, cf, envVars, out, out); err != nil {
 		log.Warn("after-hook failed (deployment is live)", "error", err)
 		fmt.Fprintf(out, "🚨 after-hook failed (deploy is live anyway): %s\n", err)
+	}
+
+	if publicStop != nil {
+		// These are proven stopped. No router grace period is useful for a
+		// service that explicitly accepted downtime.
+		for _, name := range publicStop.old {
+			if err := o.Docker.RemoveService(ctx, name); err != nil {
+				log.Warn("stopFirst old service cleanup", "name", name, "error", err)
+			}
+		}
 	}
 
 	// POST-SUCCESS — clean up old services. Best effort.
@@ -372,5 +428,5 @@ func (o *Orchestrator) ensureDeploymentNetwork(ctx context.Context, project stor
 
 func deferPublicWebCleanup(cf *cobaltfile.Cobaltfile) bool {
 	web, ok := cf.Services["web"]
-	return ok && web.Type == cobaltfile.TypeContainer && !web.ExposedInternally
+	return ok && web.Type == cobaltfile.TypeContainer && !web.ExposedInternally && !web.StopFirst
 }

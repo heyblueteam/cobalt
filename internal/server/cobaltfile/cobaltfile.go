@@ -99,15 +99,11 @@ type Service struct {
 	// MinReplicas — so this is how you encode "api needs 4 to survive prod
 	// load" in the repo rather than only in operator memory.
 	MinReplicas int `json:"minReplicas,omitempty"`
-	// StopFirst stops the old deployment's instance of this service BEFORE
-	// starting the new one, instead of the default start-first blue-green.
-	// Required for services that publish host-mode ports (SMTP on 25, game
-	// servers, UDP): two generations can't bind the same host port, so
-	// start-first deadlocks until the health timeout. The cost is a brief
-	// downtime window every deploy — and if the new service fails its
-	// healthcheck, the service stays down until a retry or rollback.
-	// Container services only; rejected on a publicly-routed web service
-	// (that path has zero-downtime swap machinery stopFirst would defeat).
+	// StopFirst stops the old instance before starting its replacement.
+	// Public web services opt into downtime and a single writer (one replica).
+	// Cobalt waits for exit and retains the old service for startup recovery.
+	// Recovery restarts the old process; it does not undo data/schema changes.
+	// Internal services retain their existing remove-before-start behavior.
 	StopFirst bool `json:"stopFirst,omitempty"`
 }
 

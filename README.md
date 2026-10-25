@@ -218,3 +218,11 @@ Cobalt retains old public web services briefly while connections drain. Configur
 before starting a replacement if it would exceed the generation limit. This does
 not control old frontend asset retention. See
 [web retirement and deployment capacity](docs/architecture.md#web-retirement-and-deployment-capacity).
+
+### Single-writer web services
+
+Set `services.web.stopFirst: true` for a one-replica service that must not share
+its persistent data with a second process. This accepts downtime during updates.
+Cobalt waits for process exit and retains the previous service for startup
+recovery. See [public stop-first services](docs/architecture.md#public-stop-first-services)
+for backup and recovery limits. Ordinary web services remain start-first.

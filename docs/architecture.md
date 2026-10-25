@@ -196,3 +196,41 @@ a custom policy takes effect through their next deployment. Upgrade the daemon
 before deploying configuration with the new keys. Earlier daemons reject unknown
 keys in stored configuration, so reverting the daemon also requires restoring
 compatible application configuration.
+
+## Public stop-first services
+
+Normal public web deployments start the replacement before retiring the old
+service. A single-writer application such as SQLite-backed Grafana can opt into
+**downtime on every update** instead:
+
+```json
+{
+  "version": "1.0",
+  "services": {
+    "web": {
+      "port": 3000,
+      "stopFirst": true,
+      "volumes": [{"name": "grafana-data", "destinationPath": "/var/lib/grafana"}]
+    }
+  }
+}
+```
+
+Cobalt builds first, then scales the old web services to zero and waits for both
+Swarm tasks and local containers to exit. It retains the previous service spec
+until the replacement passes health, readiness and routing checks. Public
+stop-first requires one replica and uses numbered routing, without a live grace
+generation. Keep the flag on future deployments; removing it restores overlapping
+start-first updates. Do not manually scale this service above one replica.
+
+If startup or routing fails, Cobalt stops and waits for the replacement, restarts
+only the previous successful service, and restores its previous route and port.
+If exit cannot be confirmed, recovery fails closed and logs that operator action
+is required. A daemon/host crash during this sequence also requires inspection;
+this is not a durable recovery transaction.
+
+**Process recovery does not undo database or schema changes.** Take an application
+backup before updates that change data formats. If the old binary cannot read the
+new format, restore the backup using the application's procedure. Do not mark a
+single-writer volume `sharedDuringUpdate`. Internal stop-first services keep their
+existing remove-before-start behavior and do not gain this public-web recovery.
