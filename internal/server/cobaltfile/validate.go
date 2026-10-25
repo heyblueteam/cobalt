@@ -91,11 +91,9 @@ func validateService(name string, s Service) error {
 		if s.Type != TypeContainer {
 			return fmt.Errorf("cobaltfile: service %q stopFirst only valid for type=container (got %q)", name, s.Type)
 		}
-		// A publicly-routed web service already has zero-downtime cutover
-		// (Caddy swap + grace generation); stopFirst would defeat it and
-		// serve 502s during every deploy.
-		if name == "web" && !s.ExposedInternally {
-			return fmt.Errorf("cobaltfile: service %q is publicly routed; stopFirst would break zero-downtime cutover (allowed with exposedInternally: true)", name)
+		// Public stop-first is an explicit single-writer, downtime mode.
+		if name == "web" && !s.ExposedInternally && s.MinReplicas > 1 {
+			return fmt.Errorf("cobaltfile: public stopFirst web requires at most one replica")
 		}
 	}
 	if s.Type == TypeCron {

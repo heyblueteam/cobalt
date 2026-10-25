@@ -310,14 +310,15 @@ func TestValidate_StopFirstContainerOnly(t *testing.T) {
 	mustContain(t, err, "stopFirst only valid for type=container")
 }
 
-func TestValidate_StopFirstRejectedOnPublicWeb(t *testing.T) {
+func TestValidate_StopFirstAllowedOnPublicWeb(t *testing.T) {
 	t.Parallel()
 	src := `{
         "version": "1.0",
         "services": {"web": {"stopFirst": true}}
     }`
-	_, err := Parse([]byte(src))
-	mustContain(t, err, "stopFirst would break zero-downtime cutover")
+	if _, err := Parse([]byte(src)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestValidate_StopFirstAllowedOnInternalServices(t *testing.T) {
@@ -332,4 +333,9 @@ func TestValidate_StopFirstAllowedOnInternalServices(t *testing.T) {
 	if _, err := Parse([]byte(src)); err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
+}
+
+func TestValidate_PublicStopFirstSingleWriter(t *testing.T) {
+	_, err := Parse([]byte(`{"version":"1.0","services":{"web":{"stopFirst":true,"minReplicas":2}}}`))
+	mustContain(t, err, "at most one replica")
 }
