@@ -35,6 +35,8 @@ subcommands of the same binary, not by running 'cobalt server' directly.`,
 	cmd.Flags().StringVar(&cfg.PublicHost, "public-host", "", "daemon's public hostname for manifest URLs (empty = use request Host header)")
 	cmd.Flags().StringVar(&cfg.EncryptionKeyPath, "encryption-key", "", "path to the 32-byte AES key for env-var encryption at rest (empty = /run/secrets/cobalt_encryption_key)")
 	cmd.Flags().IntVar(&cfg.ImageRetention, "image-retention", 10, "keep the last N successful deployment images per project for rollback (0 = only active)")
+	cmd.Flags().StringVar(&cfg.TelegramToken, "telegram-token", "", "Telegram bot token for deploy notifications (empty disables them)")
+	cmd.Flags().StringVar(&cfg.TelegramChat, "telegram-chat", "", "default Telegram chat ID for projects without notify.telegram.chat")
 
 	return cmd
 }

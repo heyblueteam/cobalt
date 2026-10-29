@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/heyblueteam/cobalt/internal/server/store"
@@ -15,9 +16,13 @@ import (
 //
 // Queued rows are left as-is; the dispatcher will pick them up on its
 // first sweep.
-func RecoverOnBoot(ctx context.Context, db *store.DB, log *slog.Logger) error {
+func RecoverOnBoot(ctx context.Context, db *store.DB, log *slog.Logger, notifiers ...DeploymentNotifier) error {
 	if log == nil {
 		log = slog.Default()
+	}
+	var notifier DeploymentNotifier
+	if len(notifiers) > 0 {
+		notifier = notifiers[0]
 	}
 	active, err := db.ActiveDeployments(ctx)
 	if err != nil {
@@ -35,6 +40,13 @@ func RecoverOnBoot(ctx context.Context, db *store.DB, log *slog.Logger) error {
 			"project_id", d.ProjectID,
 			"previous_status", d.Status,
 		)
+		if notifier != nil {
+			if notifyErr := notifier.Notify(ctx, d, cobaltapi.StateFailed,
+				errors.New("daemon restarted during deploy")); notifyErr != nil {
+				log.Warn("recovery: notify failed",
+					"deployment_id", d.ID, "error", notifyErr)
+			}
+		}
 	}
 	if len(active) > 0 {
 		log.Info("recovery: in-flight deploys reconciled", "count", len(active))

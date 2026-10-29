@@ -53,6 +53,46 @@ type Cobaltfile struct {
 	Images          map[string]Image   `json:"images,omitempty"`
 	StablePublicWeb bool               `json:"stablePublicWeb,omitempty"`
 	WebRetirement   *WebRetirement     `json:"webRetirement,omitempty"`
+	Notify          *Notify            `json:"notify,omitempty"`
+}
+
+// Notify configures outbound deploy notifications. A nil Notify (or a nil
+// channel inside it) means the project sends nothing.
+type Notify struct {
+	Telegram *TelegramNotify `json:"telegram,omitempty"`
+}
+
+// TelegramNotify configures Telegram messages for a project. The bot token
+// is a daemon flag, never part of the repo.
+//
+// Enabled is a pointer so an omitted value can default to true while an
+// explicit false stays false.
+type TelegramNotify struct {
+	Enabled      *bool    `json:"enabled,omitempty"`
+	Chat         string   `json:"chat,omitempty"`
+	On           []string `json:"on,omitempty"`
+	TemplateFile string   `json:"templateFile,omitempty"`
+}
+
+// Notify events accepted in TelegramNotify.On.
+const (
+	NotifyEventSuccess  = "success"
+	NotifyEventFailure  = "failure"
+	NotifyEventCanceled = "canceled"
+	NotifyEventSkipped  = "skipped"
+)
+
+// DefaultNotifyEvents is used when On is omitted. A project that opts into
+// notifications hears from every deploy by default; silence then always
+// means "no deploy", never "unknown".
+func DefaultNotifyEvents() []string {
+	return []string{NotifyEventSuccess, NotifyEventFailure}
+}
+
+// IsEnabled reports whether the channel is on. An omitted Enabled is true
+// when the block exists.
+func (t *TelegramNotify) IsEnabled() bool {
+	return t != nil && (t.Enabled == nil || *t.Enabled)
 }
 
 // ServiceType is one of a fixed set of service kinds.
@@ -309,6 +349,17 @@ func (cf *Cobaltfile) applyDefaults() {
 
 	if cf.shouldAddDefaultImage() {
 		cf.Images[DefaultImageName] = defaultImage()
+	}
+
+	if cf.Notify != nil && cf.Notify.Telegram != nil {
+		tg := cf.Notify.Telegram
+		if tg.Enabled == nil {
+			enabled := true
+			tg.Enabled = &enabled
+		}
+		if len(tg.On) == 0 {
+			tg.On = DefaultNotifyEvents()
+		}
 	}
 }
 

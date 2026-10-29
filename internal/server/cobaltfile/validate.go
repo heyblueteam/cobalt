@@ -3,6 +3,7 @@ package cobaltfile
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -47,6 +48,10 @@ func (cf *Cobaltfile) Validate() error {
 		}
 	}
 
+	if err := cf.validateNotify(); err != nil {
+		return err
+	}
+
 	// Image-reference validation: intentionally none. We don't require
 	// `s.Image` to be a key in `cf.Images` — that would reject pre-built
 	// docker registry references (e.g. `redis/redis-stack:7.4.0-v8`,
@@ -62,6 +67,38 @@ func (cf *Cobaltfile) Validate() error {
 	// backfills it with `DefaultImageName` for services that need an
 	// image, so we never see empty in practice.
 
+	return nil
+}
+
+// validateNotify checks the notify block. Events are explicit; an unknown
+// event name is a config mistake, not a silent no-op. templateFile must stay
+// inside the project root because it is read from the deploy checkout.
+func (cf *Cobaltfile) validateNotify() error {
+	if cf.Notify == nil || cf.Notify.Telegram == nil {
+		return nil
+	}
+	tg := cf.Notify.Telegram
+	for _, event := range tg.On {
+		switch event {
+		case NotifyEventSuccess, NotifyEventFailure, NotifyEventCanceled, NotifyEventSkipped:
+		default:
+			return fmt.Errorf(
+				"cobaltfile: notify.telegram.on contains invalid event %q (want success, failure, canceled, or skipped)",
+				event,
+			)
+		}
+	}
+	if tg.TemplateFile != "" {
+		if !filepath.IsLocal(tg.TemplateFile) {
+			return fmt.Errorf(
+				"cobaltfile: notify.telegram.templateFile %q must be a relative path inside the project",
+				tg.TemplateFile,
+			)
+		}
+		if filepath.Clean(tg.TemplateFile) == "." {
+			return fmt.Errorf("cobaltfile: notify.telegram.templateFile must name a file")
+		}
+	}
 	return nil
 }
 

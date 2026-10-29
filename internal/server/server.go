@@ -20,9 +20,11 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/api"
 	"github.com/heyblueteam/cobalt/internal/server/caddy"
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
+	"github.com/heyblueteam/cobalt/internal/server/deploynotify"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/github"
 	"github.com/heyblueteam/cobalt/internal/server/middleware"
+	"github.com/heyblueteam/cobalt/internal/server/notify"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/internal/server/worker"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
@@ -76,6 +78,15 @@ type Config struct {
 	// window so `cobalt rollback` can target them. 0 = match the
 	// historical behavior (keep only active deploys).
 	ImageRetention int
+
+	// TelegramToken is the bot token for deploy notifications. Empty
+	// disables notifications. It is a daemon secret, never read from a
+	// project's cobalt.json.
+	TelegramToken string
+
+	// TelegramChat is the default chat for projects that do not set
+	// notify.telegram.chat in their cobalt.json.
+	TelegramChat string
 }
 
 // Run starts every daemon subsystem (storage, scheduler, dispatcher, HTTP
@@ -144,12 +155,6 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("bootstrap key: %w", err)
 	}
 
-	if err := deploy.RecoverOnBoot(ctx, db, log); err != nil {
-		log.Error("recover-on-boot failed", "error", err)
-		// Non-fatal: we couldn't reconcile in-flight rows from a previous
-		// crashed daemon, but new deploys should still work.
-	}
-
 	dockerCli := docker.New()
 	caddyCli := newCaddyClient(cfg)
 	githubCli := github.NewClient(nil)
@@ -182,8 +187,28 @@ func Run(ctx context.Context, cfg Config) error {
 		DataPlaneProber: dockerCli,
 	}
 
+	var deployNotifier deploy.DeploymentNotifier
+	if cfg.TelegramToken != "" {
+		deployNotifier = &deploynotify.Notifier{
+			DB:       db,
+			GitHub:   githubCli,
+			Tokens:   tokens,
+			Telegram: &notify.Telegram{Token: cfg.TelegramToken, DefaultChat: cfg.TelegramChat},
+			DataDir:  cfg.DataDir,
+			Host:     cfg.PublicHost,
+			Log:      log,
+		}
+		log.Info("deploy notifications enabled", "default_chat_set", cfg.TelegramChat != "")
+	}
+
+	if err := deploy.RecoverOnBoot(ctx, db, log, deployNotifier); err != nil {
+		log.Error("recover-on-boot failed", "error", err)
+		// Non-fatal: we couldn't reconcile in-flight rows from a previous
+		// crashed daemon, but new deploys should still work.
+	}
+
 	queue := deploy.NewQueue(db)
-	dispatcher := deploy.NewDispatcher(db, orchestrator, log, deploy.DispatcherOpts{})
+	dispatcher := deploy.NewDispatcher(db, orchestrator, log, deploy.DispatcherOpts{Notifier: deployNotifier})
 	dispatcher.Start(ctx)
 	defer dispatcher.Stop()
 
