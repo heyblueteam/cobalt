@@ -20,9 +20,10 @@ import (
 // explicit locking: the entire scan-and-claim pass runs against the same
 // DB connection, serialized with everything else.
 type Dispatcher struct {
-	db     *store.DB
-	runner Runner
-	log    *slog.Logger
+	db       *store.DB
+	runner   Runner
+	notifier DeploymentNotifier
+	log      *slog.Logger
 
 	// pollInterval is the periodic sweep frequency; covers the case where
 	// a Notify was missed (e.g., enqueue happened during shutdown).
@@ -31,9 +32,10 @@ type Dispatcher struct {
 	mu       sync.Mutex
 	inflight map[int64]context.CancelFunc // projectID -> cancel for the running deploy
 
-	wake   chan struct{}
-	stopFn context.CancelFunc
-	wg     sync.WaitGroup
+	wake     chan struct{}
+	stopFn   context.CancelFunc
+	wg       sync.WaitGroup
+	notifyWG sync.WaitGroup
 }
 
 // DispatcherOpts are constructor options for NewDispatcher.
@@ -41,6 +43,10 @@ type DispatcherOpts struct {
 	// PollInterval is how often the dispatcher sweeps the queue even
 	// without an explicit Notify. Defaults to 30s.
 	PollInterval time.Duration
+
+	// Notifier receives every terminal deployment. Nil disables
+	// notifications.
+	Notifier DeploymentNotifier
 }
 
 // NewDispatcher returns a stopped dispatcher. Call Start to begin running
@@ -55,6 +61,7 @@ func NewDispatcher(db *store.DB, runner Runner, log *slog.Logger, opts Dispatche
 	return &Dispatcher{
 		db:           db,
 		runner:       runner,
+		notifier:     opts.Notifier,
 		log:          log,
 		pollInterval: opts.PollInterval,
 		inflight:     map[int64]context.CancelFunc{},
@@ -94,6 +101,7 @@ func (d *Dispatcher) Stop() {
 	}
 	stop()
 	d.wg.Wait()
+	d.notifyWG.Wait()
 	d.log.Info("dispatcher: stopped")
 }
 
@@ -190,6 +198,7 @@ func (d *Dispatcher) advance(ctx context.Context) {
 					"project_id", older.ProjectID,
 					"superseded_by", newest.ID,
 				)
+				d.notifyTerminal(older, cobaltapi.StateSkipped, nil)
 			}
 		}
 		d.startDeployment(ctx, newest)
@@ -243,6 +252,8 @@ func (d *Dispatcher) startDeployment(parent context.Context, dep store.Deploymen
 		if err := d.db.SetDeploymentStatus(parent, dep.ID, terminal); err != nil {
 			d.log.Error("dispatcher: mark terminal",
 				"deployment_id", dep.ID, "status", terminal, "error", err)
+		} else {
+			d.notifyTerminal(dep, terminal, runErr)
 		}
 
 		if runErr != nil {
@@ -250,6 +261,33 @@ func (d *Dispatcher) startDeployment(parent context.Context, dep store.Deploymen
 				"deployment_id", dep.ID, "status", terminal, "error", runErr)
 		} else {
 			d.log.Info("dispatcher: deploy succeeded", "deployment_id", dep.ID)
+		}
+	}()
+}
+
+// notifyTerminal sends a terminal deployment to the notifier without blocking
+// the deploy goroutine. A panic or error is logged and dropped.
+func (d *Dispatcher) notifyTerminal(dep store.Deployment, status cobaltapi.State, runErr error) {
+	if d.notifier == nil {
+		return
+	}
+	d.notifyWG.Add(1)
+	go func() {
+		defer d.notifyWG.Done()
+		defer func() {
+			if r := recover(); r != nil {
+				d.log.Error("dispatcher: notifier panic",
+					"deployment_id", dep.ID, "panic", r)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := d.notifier.Notify(ctx, dep, status, runErr); err != nil {
+			d.log.Warn("dispatcher: notify failed",
+				"deployment_id", dep.ID,
+				"status", status,
+				"error", err,
+			)
 		}
 	}()
 }

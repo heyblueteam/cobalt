@@ -115,6 +115,7 @@ cobalt stats
 - **Sidecar database** — Built-in rqlite for HA-ready persistence (no external DB needed)
 - **GitHub integration** — Webhook-driven deploys from any GitHub repo
 - **Live monitoring** — `cobalt stats` shows host + per-container CPU/memory grouped by project, from your laptop
+- **Deploy notifications** — Optional Telegram messages per project, with the commit, merged PR, result, and duration
 - **Single binary** — One executable, one deployment target
 
 ## Why Cobalt?
@@ -226,3 +227,11 @@ its persistent data with a second process. This accepts downtime during updates.
 Cobalt waits for process exit and retains the previous service for startup
 recovery. See [public stop-first services](docs/architecture.md#public-stop-first-services)
 for backup and recovery limits. Ordinary web services remain start-first.
+
+### Deploy notifications
+
+Set `--telegram-token` and `--telegram-chat` on the daemon, then add a
+`notify.telegram` block to a project's `cobalt.json`. Each terminal deploy
+sends one message with the project, result, commit link, merged PR when one
+exists, and duration. Events and the message template are configurable per
+project. See [deploy notifications](docs/notifications.md).

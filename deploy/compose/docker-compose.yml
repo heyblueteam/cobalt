@@ -29,8 +29,10 @@
 #   443  - HTTPS (standalone TLS; omit caddy-ssl service below if behind a tunnel)
 #
 # Environment variables for cobalt:
-#   COBALT_PUBLIC_HOST  - Daemon's public hostname (used in GitHub App manifest URLs)
-#   COBALT_DATA_DIR      - Override data directory (default /cobalt/data)
+#   COBALT_PUBLIC_HOST      - Daemon's public hostname (used in GitHub App manifest URLs)
+#   COBALT_DATA_DIR         - Override data directory (default /cobalt/data)
+#   COBALT_TELEGRAM_TOKEN   - Bot token for deploy notifications (empty disables)
+#   COBALT_TELEGRAM_CHAT    - Default Telegram chat ID for projects without an override
 #
 version: "3.9"
 
@@ -58,6 +60,8 @@ x-cobalt-base: &cobalt-base
     --data-dir /cobalt/data
     --caddy-socket /cobalt/caddy-socket/caddy.sock
     ${COBALT_PUBLIC_HOST:+"--public-host"}${COBALT_PUBLIC_HOST:+"$COBALT_PUBLIC_HOST"}
+    --telegram-token=${COBALT_TELEGRAM_TOKEN:-}
+    --telegram-chat=${COBALT_TELEGRAM_CHAT:-}
 
 services:
   # rqlite is the persistence layer. Single-node for v1.
