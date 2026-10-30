@@ -445,10 +445,7 @@ th.join();print(json.dumps(result),flush=True)
 			t.Fatal(err)
 		}
 		await("http://"+docker.ServiceName(name, reverted.Number, "web")+":8080/peer/"+name+"-embed", "embed:one")
-		privateLookup := exec.CommandContext(ctx, "docker", "exec", probe, "python", "-c", "import socket;socket.getaddrinfo('"+name+"-web',8080)")
-		if output, lookupErr := privateLookup.CombinedOutput(); lookupErr == nil {
-			t.Fatalf("stable->numbered left obsolete private alias: %s", output)
-		}
+		assertPrivateAliasWithdrawn(t, ctx, probe, name+"-web", name+"-embed")
 		await("http://"+stableWeb+":8080/peer/"+name+"-embed", "embed:one")
 		await("http://"+name+"-embed:8080", "embed:one")
 		// A second migration must reconcile existing retained stable services too.
@@ -758,10 +755,7 @@ thread.join();print(json.dumps(result),flush=True)
 		t.Fatal(e)
 	}
 	await("http://"+proxy, "web:one")
-	cmd := exec.CommandContext(ctx, "docker", "exec", probe, "python", "-c", "import socket; socket.getaddrinfo('"+name+"-web',8080)")
-	if output, err := cmd.CombinedOutput(); err == nil {
-		t.Fatalf("private alias still resolves after opt-out: %s", output)
-	}
+	assertPrivateAliasWithdrawn(t, ctx, probe, name+"-web", name+"-embed")
 	_, e = deploy(config("one"), 4*time.Minute, nil)
 	if e != nil {
 		t.Fatal(e)
@@ -850,4 +844,62 @@ func (r stableFailureRunner) RunWithEnv(ctx context.Context, env map[string]stri
 		}
 	}
 	return r.base.RunWithEnv(ctx, env, args, in, out, errout)
+}
+
+// Unknown names can be forwarded to unreachable upstream DNS by Docker. A
+// bounded timeout is not NXDOMAIN: prove control-plane withdrawal separately,
+// and require a positive Docker DNS control before probing the removed name.
+func assertPrivateAliasWithdrawn(t *testing.T, parent context.Context, probe, alias, control string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	ids, err := exec.CommandContext(ctx, "docker", "service", "ls", "--filter", "label=cobalt.project.id=1", "-q").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range strings.Fields(string(ids)) {
+		raw, err := exec.CommandContext(ctx, "docker", "service", "inspect", id, "--format", "{{json .Spec.TaskTemplate.Networks}}").Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var networks []struct{ Aliases []string }
+		if err := json.Unmarshal(raw, &networks); err != nil {
+			t.Fatal(err)
+		}
+		for _, network := range networks {
+			for _, actual := range network.Aliases {
+				if actual == alias {
+					t.Fatalf("withdrawn alias %q remains on service %s", alias, id)
+				}
+			}
+		}
+	}
+	script := `import signal,socket,sys
+signal.signal(signal.SIGALRM,lambda *args:sys.exit(42))
+signal.alarm(5)
+socket.getaddrinfo(sys.argv[1],8080)
+print('CONTROL_DNS_OK',flush=True)
+signal.alarm(5)
+try:
+ socket.getaddrinfo(sys.argv[2],8080)
+except socket.gaierror as e:
+ print('NEGATIVE_DNS',e,flush=True)
+ sys.exit(0)
+print('REMOVED_ALIAS_RESOLVED',flush=True)
+sys.exit(1)
+`
+	output, err := exec.CommandContext(ctx, "docker", "exec", probe, "python", "-c", script, control, alias).CombinedOutput()
+	if !strings.Contains(string(output), "CONTROL_DNS_OK") {
+		t.Fatalf("positive Docker DNS control failed: %s (%v)", output, err)
+	}
+	if err == nil {
+		t.Logf("alias absent from all service specs; bounded DNS result: %s", output)
+		return
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 42 {
+		t.Logf("alias absent from all service specs and positive Docker DNS healthy; removed-name upstream resolution timed out (not NXDOMAIN): %s", output)
+		return
+	}
+	t.Fatalf("removed alias probe failed or still resolves: %s (%v)", output, err)
 }
