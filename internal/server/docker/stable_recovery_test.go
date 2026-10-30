@@ -121,3 +121,44 @@ func TestWaitStableServiceSettledHonorsDeadline(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRestoreWaitsForControllerAndActualRetirements(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, tasks string
+		blocked            bool
+	}{
+		{"completed but original still running", "completed", "[" + recoveryTask("1", "running", "shutdown") + "]", true},
+		{"paused failed replacement with original still running", "paused", "[" + recoveryTask("1", "running", "shutdown") + "]", true},
+		{"controller still updating", "updating", "[]", true},
+		{"automatic rollback still active", "rollback_started", "[]", true},
+		{"paused failed generation need not be healthy", "paused", "[" + recoveryTask("2", "failed", "shutdown") + "]", false},
+		{"completed retired tasks exited", "completed", "[" + recoveryTask("1", "shutdown", "shutdown") + "," + recoveryTask("2", "running", "running") + "]", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFakeRunner()
+			f.answerStdout("service inspect", `{"ID":"id","Version":{"Index":2},"Spec":{"Name":"new"},"UpdateStatus":{"State":"`+tc.state+`"}}`)
+			f.answerStdout("service ps", "task")
+			tasks := tc.tasks
+			if strings.Contains(tasks, "},{") {
+				f.answerStdout("service ps", "task task2")
+			}
+			f.answerStdout("inspect --type task", tasks)
+			f.answerStdout("version --format", `{"Client":{"ApiVersion":"1.56"},"Server":{"ApiVersion":"1.56","MinAPIVersion":"1.40"}}`)
+			f.answerStdout("system dial-stdio", "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			defer cancel()
+			err := NewWithRunner(f).RestoreStableService(ctx, "s", json.RawMessage(`{"Name":"old"}`))
+			if tc.blocked != errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("blocked=%v err=%v", tc.blocked, err)
+			}
+			if !tc.blocked && err != nil {
+				t.Fatal(err)
+			}
+			for _, call := range f.calls {
+				if tc.blocked && argSequence(call.Args, "system", "dial-stdio") {
+					t.Fatal("restoration mutated service before drain")
+				}
+			}
+		})
+	}
+}

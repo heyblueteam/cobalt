@@ -150,7 +150,11 @@ only for an existing service owned by the last successful deployment.
 Before changing stable web, Cobalt captures its complete service spec. A later
 service-start, health, readiness, routing or cancellation failure restores that
 spec, waits for restored tasks/readiness, restores the previous resolved route
-and port, and then removes new siblings. Failed first deployments retire their
+and port, and then removes new siblings. Before starting restoration, it waits
+for the previous Swarm update controller to finish or pause and for all retiring
+tasks to actually exit. This bounded barrier does not require the failed incoming
+generation to become healthy; on timeout, recovery reports an error and retains
+its dependencies instead of launching another task cohort. Failed first deployments retire their
 new stable web. Recovery errors are returned explicitly and dependencies needed
 for recovery are retained. This restores process settings, not database/schema
 changes made by hooks. The snapshot is scoped to the running cutover; daemon
@@ -163,7 +167,15 @@ replacement slots while earlier old tasks are still exiting. The disposable
 four-replica regression measured eight actual running containers/tasks, including
 four desired-Shutdown tasks still running, with 30-second requests and a
 35-second stop grace. Allow for full old/new overlap and count shutting-down
-processes until exit when budgeting connections and memory.
+processes until exit when budgeting connections and memory. A four-replica
+failed-worker regression with a previously updated start-first snapshot measured
+ten live processes without the recovery barrier, and eight with it; both restored
+the exact prior spec. These are measurements of the exercised scenarios, not a
+universal process cap across faults, restarts, automatic rollback or differing
+old/new shutdown grace. A separate fast-health-failure test entered Swarm's
+automatic start-first rollback and measured eight live processes, with ten
+container starts and ten exits across update/restarts/rollback. Docker automatic
+rollback remains enabled as a fallback if the daemon exits during an update.
 
 `stopGracePeriodSeconds` is optional on containers (0 means Docker's 10-second
 default; explicit values are 1–86400). It sets the task's shutdown budget. The

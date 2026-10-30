@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -20,6 +21,18 @@ import (
 // TestStablePublicWebReplicaOverlap_RealSwarm measures live processes rather
 // than inferring capacity from desired replicas or update parallelism.
 func TestStablePublicWebReplicaOverlap_RealSwarm(t *testing.T) {
+	stablePublicWebReplicaOverlap(t, false, false)
+}
+
+func TestStablePublicWebRecoveryOverlap_RealSwarm(t *testing.T) {
+	stablePublicWebReplicaOverlap(t, true, false)
+}
+
+func TestStablePublicWebAutomaticRollbackOverlap_RealSwarm(t *testing.T) {
+	stablePublicWebReplicaOverlap(t, false, true)
+}
+
+func stablePublicWebReplicaOverlap(t *testing.T, recovery, automatic bool) {
 	if os.Getenv("COBALT_DISPOSABLE_SWARM") != "1" {
 		t.Skip("requires caller-owned disposable Swarm")
 	}
@@ -46,7 +59,11 @@ func TestStablePublicWebReplicaOverlap_RealSwarm(t *testing.T) {
 	run("pull", "python:3.12-alpine")
 	run("network", "create", "--driver", "overlay", "--attachable", network)
 	t.Cleanup(func() {
-		_ = exec.Command("docker", "service", "rm", name).Run()
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cleanupCancel()
+		if err := New().RetireService(cleanupCtx, name); err != nil {
+			t.Errorf("retire overlap fixture: %v", err)
+		}
 		_ = exec.Command("docker", "network", "rm", network).Run()
 	})
 	command := func(version string) string {
@@ -56,6 +73,7 @@ class H(http.server.BaseHTTPRequestHandler):
   if self.path=='/slow': pathlib.Path('/tmp/slow-started').write_text('yes'); time.sleep(30)
   self.send_response(200); self.end_headers(); self.wfile.write(%q.encode())
  def log_message(self,*a): pass
+pathlib.Path('/tmp/boot').write_text('yes')
 server=http.server.ThreadingHTTPServer(('0.0.0.0',8080),H)
 def stop(*a):
  def drain(): time.sleep(30); server.shutdown()
@@ -66,14 +84,35 @@ server.server_close()
 `, version)
 		return "python -u -c 'import base64;exec(base64.b64decode(\"" + base64.StdEncoding.EncodeToString([]byte(source)) + "\"))'"
 	}
+	image := "python:3.12-alpine"
+	if automatic {
+		image = fmt.Sprintf("cobalt-overlap-health:%d", id)
+		build := exec.CommandContext(ctx, "docker", "build", "-t", image, "-")
+		build.Stdin = strings.NewReader("FROM python:3.12-alpine\nHEALTHCHECK --interval=1s --timeout=2s --start-period=1s --retries=1 CMD python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8080\",timeout=2)'\n")
+		if out, err := build.CombinedOutput(); err != nil {
+			t.Fatalf("build fast-health fixture: %v %s", err, out)
+		}
+	}
 	c := New()
-	opts := ServiceCreateOpts{ProjectID: id, ProjectName: "overlap", ServiceName: "web", DeploymentNumber: 1, Name: name, Image: "python:3.12-alpine", Command: command("old"), Replicas: 4, Networks: []NetworkAttachment{{Name: network, Alias: name}}, StopGracePeriod: 35 * time.Second, HealthCommand: `python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080",timeout=2)'`}
+	opts := ServiceCreateOpts{ExtraParams: []string{"--update-order", "start-first", "--update-parallelism", "1", "--update-failure-action", "rollback", "--update-monitor", "90s", "--rollback-order", "start-first"}, ProjectID: id, ProjectName: "overlap", ServiceName: "web", DeploymentNumber: 1, Name: name, Image: image, Command: command("old"), Replicas: 4, Networks: []NetworkAttachment{{Name: network, Alias: name}}, StopGracePeriod: 35 * time.Second, HealthCommand: `python -c 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080",timeout=2)'`}
 	if err := c.ReconcileStableService(ctx, opts); err != nil {
 		t.Fatal(err)
 	}
 	if err := c.WaitForServiceDeploymentHealthy(ctx, name, 1, 4, 2*time.Minute); err != nil {
 		t.Fatal(err)
 	}
+	// Exercise an already-updated stable service, not Docker's creation
+	// defaults. Capture the restoration target only after this warmup settles.
+	if err := c.ReconcileStableService(ctx, opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.WaitForStableServiceSettled(ctx, name); err != nil {
+		t.Fatal(err)
+	}
+	if got := run("service", "inspect", name, "--format", "{{.Spec.UpdateConfig.Parallelism}} {{.Spec.UpdateConfig.Order}}"); got != "1 start-first" {
+		t.Fatalf("pre-failure target policy: %s", got)
+	}
+	t.Log("CAPTURE_TARGET_POLICY 1 start-first; prior successful reconcile settled")
 	oldIDs := strings.Fields(run("ps", "--filter", "label=com.docker.swarm.service.name="+name, "--no-trunc", "--format", "{{.ID}}"))
 	if len(oldIDs) != 4 {
 		t.Fatalf("initial actual containers=%v", oldIDs)
@@ -230,11 +269,47 @@ server.server_close()
 		}
 	}()
 	defer func() { eventCancel(); _ = events.Wait(); <-eventDone }()
+	snapshot, err := c.SnapshotStableService(ctx, name)
+	if err != nil {
+		t.Fatal(err)
+	}
 	opts.DeploymentNumber = 2
 	opts.Command = command("new")
+	if automatic {
+		opts.HealthStartPeriod = time.Second
+		opts.HealthInterval = time.Second
+		opts.HealthCommand = `python -c 'import time,os,urllib.request; urllib.request.urlopen("http://127.0.0.1:8080",timeout=2); assert time.time()-os.stat("/tmp/boot").st_mtime<8'`
+	}
 	updateErr := c.ReconcileStableService(ctx, opts)
-	if updateErr == nil {
+	if updateErr == nil && !automatic {
 		updateErr = c.WaitForServiceDeploymentHealthy(ctx, name, 2, 4, 4*time.Minute)
+	}
+	if recovery && updateErr == nil {
+		worker := name + "-bad-worker"
+		run("service", "create", "--detach=true", "--name", worker, "--restart-delay", "5s", "--restart-max-attempts", "3", "python:3.12-alpine", "sh", "-c", "exit 1")
+		t.Cleanup(func() { _ = exec.Command("docker", "service", "rm", worker).Run() })
+		started := time.Now()
+		if err := c.WaitForServiceHealthy(ctx, worker, 1, time.Minute); err == nil {
+			t.Fatal("bad worker unexpectedly healthy")
+		}
+		t.Logf("WORKER_FAILURE_AFTER %s", time.Since(started))
+		updateErr = c.RestoreStableService(ctx, name, snapshot)
+	}
+	if automatic && updateErr == nil {
+		deadline := time.Now().Add(4 * time.Minute)
+		for {
+			state := run("service", "inspect", name, "--format", "{{if .UpdateStatus}}{{.UpdateStatus.State}}{{end}}")
+			if state == "rollback_completed" {
+				break
+			}
+			if state == "rollback_paused" || time.Now().After(deadline) {
+				mu.Lock()
+				t.Logf("INCOMPLETE_AUTOMATIC_OVERLAP state=%s maxContainers=%d maxTasks=%d eventMax=%d starts=%d deaths=%d", state, result.MaxContainers, result.MaxLiveTasks, maxEventContainers, eventStarts, eventDeaths)
+				mu.Unlock()
+				t.Fatalf("automatic rollback did not complete: %s", state)
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
 	}
 	if updateErr == nil {
 		updateErr = c.WaitForStableServiceSettled(ctx, name)
@@ -258,7 +333,14 @@ server.server_close()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		mu.Lock()
-		complete := eventStarts == 4 && eventDeaths == 4 && len(liveEvents) == 4
+		expected := 4
+		if recovery || automatic {
+			expected = 8
+		}
+		complete := eventStarts == expected && eventDeaths == expected && len(liveEvents) == 4
+		if automatic {
+			complete = eventStarts > 0 && eventStarts == eventDeaths && len(liveEvents) == 4
+		}
 		mu.Unlock()
 		if complete {
 			break
@@ -280,7 +362,21 @@ server.server_close()
 	result.FinalContainers = len(strings.Fields(run("ps", "--filter", "label=com.docker.swarm.service.name="+name, "--format", "{{.ID}}")))
 	report, _ := json.Marshal(result)
 	mu.Unlock()
-	t.Logf("ACTUAL_PROCESS_OVERLAP %s", report)
+	t.Logf("ACTUAL_PROCESS_OVERLAP recovery=%v automatic=%v %s", recovery, automatic, report)
+	if recovery || automatic {
+		restored, err := c.SnapshotStableService(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, _ := stableSpecValue(snapshot)
+		after, _ := stableSpecValue(restored)
+		if !reflect.DeepEqual(before, after) {
+			t.Fatal("recovery changed captured spec")
+		}
+	}
+	if recovery && (result.MaxContainers > 8 || result.MaxLiveTasks > 8 || maxEventContainers > 8) {
+		t.Fatalf("recovery launched a third live cohort: %s events=%d", report, maxEventContainers)
+	}
 	if result.Samples < 10 || result.MaxContainers < 5 || result.MaxLiveTasks < 5 || result.MaxDraining < 1 || result.FinalContainers != 4 {
 		t.Fatalf("insufficient/incomplete actual-process measurement: %s", report)
 	}

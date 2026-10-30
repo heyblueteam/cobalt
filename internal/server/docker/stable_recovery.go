@@ -72,6 +72,11 @@ func (c *Client) RestoreStableService(ctx context.Context, name string, snapshot
 	if reflect.DeepEqual(current, want) {
 		return nil
 	}
+	// Do not launch a restoration cohort while the previous update still owns
+	// live retiring tasks. Health/desired replicas alone do not prove exit.
+	if err := c.WaitForStableServiceUpdateDrained(ctx, name); err != nil {
+		return fmt.Errorf("drain stable service before restoration: %w", err)
+	}
 	return c.UpdateServiceSpec(ctx, name, snapshot)
 }
 
@@ -168,4 +173,70 @@ func (c *Client) stableServiceSettled(ctx context.Context, name string) (bool, e
 		}
 	}
 	return running >= *service.Spec.Mode.Replicated.Replicas, nil
+}
+
+// WaitForStableServiceUpdateDrained serializes task-replacing controllers without
+// requiring a failed incoming generation to become healthy. A paused update is
+// safe once all retiring tasks have actually exited. Caller owns a bounded
+// context; timeout preserves both the current service and its dependencies.
+func (c *Client) WaitForStableServiceUpdateDrained(ctx context.Context, name string) error {
+	for {
+		out, err := c.output(ctx, "service", "inspect", "--format", "{{json .}}", name)
+		if err != nil {
+			return err
+		}
+		var service struct{ UpdateStatus *struct{ State string } }
+		if err := json.Unmarshal(out, &service); err != nil {
+			return err
+		}
+		controllerDone := service.UpdateStatus == nil
+		if service.UpdateStatus != nil {
+			switch service.UpdateStatus.State {
+			case "completed", "paused", "rollback_completed", "rollback_paused":
+				controllerDone = true
+			}
+		}
+		if controllerDone {
+			ids, err := c.output(ctx, "service", "ps", name, "--no-trunc", "--quiet")
+			if err != nil {
+				return err
+			}
+			taskIDs := strings.Fields(string(ids))
+			if len(taskIDs) == 0 {
+				return nil
+			}
+			out, err = c.output(ctx, append([]string{"inspect", "--type", "task"}, taskIDs...)...)
+			if err != nil {
+				return err
+			}
+			var tasks []struct {
+				Status       struct{ State string }
+				DesiredState string
+			}
+			if err := json.Unmarshal(out, &tasks); err != nil {
+				return err
+			}
+			if len(tasks) != len(taskIDs) {
+				return fmt.Errorf("incomplete swarm task inspection")
+			}
+			drained := true
+			for _, task := range tasks {
+				switch task.Status.State {
+				case "shutdown", "complete", "failed", "rejected", "remove":
+					continue
+				}
+				if task.DesiredState != "running" {
+					drained = false
+				}
+			}
+			if drained {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
 }
