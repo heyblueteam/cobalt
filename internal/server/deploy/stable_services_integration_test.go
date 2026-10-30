@@ -463,6 +463,14 @@ th.join();print(json.dumps(result),flush=True)
 	run("run", "-d", "--name", proxy, "--network", MainNetworkName, "caddy:2-alpine", "sh", "-c", "printf '%s' \"$1\" > /tmp/Caddyfile; exec caddy run --config /tmp/Caddyfile --adapter caddyfile", "sh", proxyConfig)
 	await("http://"+proxy, "web:one")
 	if failures {
+		// Prove the real HTTP-backed injection is a parsed mismatch, not an
+		// inconclusive execution error, before spending time on fault rollouts.
+		fixture := stableHTTPDataPlane{cli: cli, probe: probe, proxy: proxy, served: fmt.Sprint(first.Number)}
+		observed, err := probeDataPlane(ctx, fixture, "fixture.test")
+		if err != nil || observed.Status != http.StatusOK || observed.Served != fmt.Sprint(first.Number) {
+			t.Fatalf("data-plane fault fixture preflight: status=%d served=%q err=%v", observed.Status, observed.Served, err)
+		}
+		t.Logf("DATA_PLANE_FIXTURE_PREFLIGHT status=%d served=%s", observed.Status, observed.Served)
 		snapshot, err := cli.SnapshotStableService(ctx, stableWeb)
 		if err != nil {
 			t.Fatal(err)
@@ -565,9 +573,9 @@ th.join();print(json.dumps(result),flush=True)
 			t.Fatalf("previous Caddy route port not restored: %s", dial)
 		}
 		o.Caddy = caddy.NewHTTPClient(admin.URL, admin.Client())
-		o.DataPlaneProber = stableHTTPDataPlane{cli: cli, probe: probe, proxy: proxy, served: fmt.Sprint(first.Number)}
-		if _, err := deploy(config("dataplane-failure"), 4*time.Minute, nil); err == nil {
-			t.Fatal("data-plane mismatch unexpectedly succeeded")
+		o.DataPlaneProber = fixture
+		if _, err := deploy(config("dataplane-failure"), 4*time.Minute, nil); err == nil || !strings.Contains(err.Error(), "router still serves deployment "+fmt.Sprint(first.Number)) {
+			t.Fatalf("data-plane mismatch did not fail through observed identity divergence: %v", err)
 		}
 		assertRestored("data-plane mismatch")
 		o.DataPlaneProber = nil
@@ -799,7 +807,7 @@ func (p stableHTTPDataPlane) FindContainerByLabel(context.Context, string) (stri
 
 func (p stableHTTPDataPlane) Exec(ctx context.Context, container string, cmd []string, out, errout io.Writer) error {
 	if len(cmd) > 1 && cmd[0] == "sh" && strings.Contains(strings.Join(cmd, " "), "GET / HTTP") {
-		script := "import http.client; c=http.client.HTTPConnection('" + p.proxy + "',80,timeout=5); c.request('GET','/'); r=c.getresponse(); r.read(); print('HTTP/1.1 '+str(r.status)+' OK\r\nX-Cobalt-Deployment: " + p.served + "\r\n\r\n',end='')"
+		script := "import http.client; c=http.client.HTTPConnection('" + p.proxy + "',80,timeout=5); c.request('GET','/'); r=c.getresponse(); r.read(); sep=chr(13)+chr(10); print('HTTP/1.1 '+str(r.status)+' OK'+sep+'X-Cobalt-Deployment: " + p.served + "'+sep+sep,end='')"
 		return p.cli.Exec(ctx, p.probe, []string{"python", "-c", script}, out, errout)
 	}
 	return p.cli.Exec(ctx, p.probe, cmd, out, errout)
