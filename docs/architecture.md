@@ -141,7 +141,12 @@ when changing a project to internal-only service.
 The public upstream keeps its immutable project-ID service name and VIP.
 Private aliases are reconciled on existing stable services, including removal,
 re-addition and project rename. A newly requested alias is published only after
-replacement health/readiness and Swarm convergence. Disabling stable routing
+all incoming service health checks, web readiness and Swarm convergence. On
+first activation, re-addition or rename, first deploy with consumers disabled or
+with readiness independent of the new name, verify private HTTP, and only then
+roll out consumers that require it. A sibling whose health requires the not-yet-
+published alias would block that deployment. Hooks and generators that run before
+publication likewise need an already established endpoint. Disabling stable routing
 withdraws the retained stable service's private alias after numbered route
 verification, even while public retirement grace retains the old service.
 The periodic Caddy reconciler repairs aliases under the same project lock,
