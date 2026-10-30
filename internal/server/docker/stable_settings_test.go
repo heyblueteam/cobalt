@@ -70,6 +70,9 @@ func TestStableSettingsRestoresImageDefaultsAndPreservesUnknownFields(t *testing
 			t.Fatalf("labels=%v", m)
 		}
 	}
+	if got := spec["RollbackConfig"].(map[string]any)["Order"]; got != "stop-first" {
+		t.Fatalf("automatic rollback order=%v", got)
+	}
 	update := spec["UpdateConfig"].(map[string]any)
 	if update["Order"] != "start-first" || update["FailureAction"] != "rollback" || update["Monitor"] != float64(90*time.Second) || update["Delay"] != float64(time.Second) {
 		t.Fatalf("update=%v", update)

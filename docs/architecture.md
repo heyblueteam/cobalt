@@ -172,10 +172,20 @@ failed-worker regression with a previously updated start-first snapshot measured
 ten live processes without the recovery barrier, and eight with it; both restored
 the exact prior spec. These are measurements of the exercised scenarios, not a
 universal process cap across faults, restarts, automatic rollback or differing
-old/new shutdown grace. A separate fast-health-failure test entered Swarm's
-automatic start-first rollback and measured eight live processes, with ten
-container starts and ten exits across update/restarts/rollback. Docker automatic
+old/new shutdown grace. Repeated fast-health-failure tests entered Swarm's
+automatic start-first rollback and measured eight and nine live processes
+(up to twelve starts/exits across update/restarts/rollback). Budget additional
+failure/restart headroom beyond ordinary full old/new overlap. Docker automatic
 rollback remains enabled as a fallback if the daemon exits during an update.
+Automatic rollback retires a failed slot before starting its old-spec replacement
+(stop-first); normal updates remain start-first, and Cobalt's drained snapshot
+restoration retains its captured normal update policy. The corresponding
+stop-first automatic-rollback regression measured eight live processes. This failure-path ordering can introduce downtime while replacements
+start, especially with one replica; it is not a universal process-count cap.
+When withdrawing a private alias from retained stable web after moving to
+numbered public routing, the desired spec changes after route verification;
+existing task DNS can retain that alias until the network update converges and
+those old tasks exit. Do not immediately reassign it to a different service.
 
 `stopGracePeriodSeconds` is optional on containers (0 means Docker's 10-second
 default; explicit values are 1–86400). It sets the task's shutdown budget. The

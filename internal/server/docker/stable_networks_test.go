@@ -51,6 +51,9 @@ func TestReconcileStableServiceNetworks(t *testing.T) {
 			if container["Image"] != "unchanged" || !reflect.DeepEqual(container["Healthcheck"].(map[string]any)["Test"], []any{"CMD", "/health"}) {
 				t.Fatalf("container settings changed=%v", container)
 			}
+			if got := spec["RollbackConfig"].(map[string]any)["Order"]; got != "stop-first" {
+				t.Fatalf("alias automatic rollback order=%v", got)
+			}
 			update := spec["UpdateConfig"].(map[string]any)
 			if update["Order"] != "start-first" || update["FailureAction"] != "rollback" || update["Monitor"] != float64(90000000000) {
 				t.Fatalf("update policy=%v", update)

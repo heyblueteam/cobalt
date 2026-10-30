@@ -164,7 +164,10 @@ func (c *Client) ReconcileStableServiceNetworks(ctx context.Context, opts Servic
 	if err != nil {
 		return err
 	}
-	rollback.set("Order", "start-first")
+	// Engine-initiated failure recovery must retire each failed slot before
+	// replacing it. Cobalt's exact snapshot recovery separately drains the
+	// prior controller and retains its captured normal update policy.
+	rollback.set("Order", "stop-first")
 	spec.set("RollbackConfig", rollback)
 	raw, err := json.Marshal(spec)
 	if err != nil {

@@ -201,7 +201,10 @@ func (c *Client) stableSettingsSpec(ctx context.Context, opts ServiceCreateOpts,
 	if err != nil {
 		return nil, err
 	}
-	rollback.set("Order", "start-first")
+	// Engine-initiated failure recovery must retire each failed slot before
+	// replacing it. Cobalt's exact snapshot recovery separately drains the
+	// prior controller and retains its captured normal update policy.
+	rollback.set("Order", "stop-first")
 	spec.set("RollbackConfig", rollback)
 	return json.Marshal(spec)
 }

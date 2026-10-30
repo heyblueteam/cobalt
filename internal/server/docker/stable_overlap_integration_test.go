@@ -281,6 +281,9 @@ server.server_close()
 		opts.HealthCommand = `python -c 'import time,os,urllib.request; urllib.request.urlopen("http://127.0.0.1:8080",timeout=2); assert time.time()-os.stat("/tmp/boot").st_mtime<8'`
 	}
 	updateErr := c.ReconcileStableService(ctx, opts)
+	if automatic && updateErr == nil {
+		t.Logf("AUTOMATIC_ROLLBACK_POLICY %s", run("service", "inspect", name, "--format", "{{.Spec.RollbackConfig.Order}}"))
+	}
 	if updateErr == nil && !automatic {
 		updateErr = c.WaitForServiceDeploymentHealthy(ctx, name, 2, 4, 4*time.Minute)
 	}
@@ -289,8 +292,22 @@ server.server_close()
 		run("service", "create", "--detach=true", "--name", worker, "--restart-delay", "5s", "--restart-max-attempts", "3", "python:3.12-alpine", "sh", "-c", "exit 1")
 		t.Cleanup(func() { _ = exec.Command("docker", "service", "rm", worker).Run() })
 		started := time.Now()
-		if err := c.WaitForServiceHealthy(ctx, worker, 1, time.Minute); err == nil {
-			t.Fatal("bad worker unexpectedly healthy")
+		deadline := time.Now().Add(time.Minute)
+		for {
+			states := strings.Fields(run("service", "ps", worker, "--format", "{{.CurrentState}}"))
+			failures := 0
+			for _, state := range states {
+				if state == "Failed" || state == "Shutdown" || state == "Rejected" {
+					failures++
+				}
+			}
+			if failures >= 3 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("bad worker did not record three terminal attempts: %v", states)
+			}
+			time.Sleep(100 * time.Millisecond)
 		}
 		t.Logf("WORKER_FAILURE_AFTER %s", time.Since(started))
 		updateErr = c.RestoreStableService(ctx, name, snapshot)

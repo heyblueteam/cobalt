@@ -851,7 +851,7 @@ func (r stableFailureRunner) RunWithEnv(ctx context.Context, env map[string]stri
 // and require a positive Docker DNS control before probing the removed name.
 func assertPrivateAliasWithdrawn(t *testing.T, parent context.Context, probe, alias, control string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
 	defer cancel()
 	ids, err := exec.CommandContext(ctx, "docker", "service", "ls", "--filter", "label=cobalt.project.id=1", "-q").Output()
 	if err != nil {
@@ -873,6 +873,12 @@ func assertPrivateAliasWithdrawn(t *testing.T, parent context.Context, probe, al
 				}
 			}
 		}
+	}
+	// Existing task DNS can retain the former alias through its shutdown
+	// grace. The desired spec is already checked above; prove actual withdrawal
+	// after the network update and all retiring tasks converge.
+	if err := docker.New().WaitForStableServiceSettled(ctx, docker.StablePublicWebServiceName(1)); err != nil {
+		t.Fatalf("wait withdrawn alias tasks: %v", err)
 	}
 	script := `import signal,socket,sys
 signal.signal(signal.SIGALRM,lambda *args:sys.exit(42))
