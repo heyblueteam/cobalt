@@ -164,6 +164,9 @@ func reconcileProject(
 	if err != nil {
 		return false, fmt.Errorf("parse stored cobaltfile: %w", err)
 	}
+	if err := reconcileStableWebAliases(ctx, log, reaper, p, *live, cf); err != nil {
+		return false, fmt.Errorf("reconcile stable web aliases: %w", err)
+	}
 	web, ok := cf.Services["web"]
 	if !ok {
 		// Project has no public-facing web service — Caddy shouldn't

@@ -2,10 +2,8 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,8 +35,9 @@ type ServiceVolume struct {
 // across deployments — the swarm service name (which includes the
 // deployment number) does not.
 type NetworkAttachment struct {
-	Name  string
-	Alias string // optional
+	Name              string
+	Alias             string // optional
+	AdditionalAliases []string
 }
 
 // ServiceCreateOpts describes a `docker service create` invocation.
@@ -56,6 +55,7 @@ type ServiceCreateOpts struct {
 	HealthCommand     string              // optional; sets --health-cmd
 	HealthStartPeriod time.Duration       // defaults to 5 minutes
 	HealthInterval    time.Duration       // defaults to 3 seconds
+	StopGracePeriod   time.Duration
 	Volumes           []ServiceVolume
 	ExtraParams       []string // pre-split, e.g. via SplitParams(extraSwarmParams)
 	// Name overrides the deployment-numbered default. Stable public web
@@ -121,6 +121,9 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 	if opts.Replicas > 0 {
 		args = append(args, "--replicas", strconv.Itoa(opts.Replicas))
 	}
+	if opts.StopGracePeriod > 0 {
+		args = append(args, "--stop-grace-period", durationFlag(opts.StopGracePeriod))
+	}
 	if opts.HealthCommand != "" {
 		startPeriod := opts.HealthStartPeriod
 		if startPeriod == 0 {
@@ -156,102 +159,18 @@ func (c *Client) ReconcileStableService(ctx context.Context, opts ServiceCreateO
 	if opts.Name == "" {
 		return errors.New("stable service requires an explicit name")
 	}
-	if err := c.run(ctx, "service", "inspect", opts.Name); err != nil {
-		if !isNotFound(err) {
-			return err
-		}
+	snapshot, err := c.SnapshotStableService(ctx, opts.Name)
+	if err != nil {
+		return err
+	}
+	if snapshot == nil {
 		return c.CreateService(ctx, opts)
 	}
-	oldEnv, err := c.stableServiceEnvKeys(ctx, opts.Name)
+	desired, err := c.stableSettingsSpec(ctx, opts, snapshot)
 	if err != nil {
 		return err
 	}
-
-	args := []string{
-		"service", "update", "--detach=true",
-		"--update-order", "start-first",
-		"--update-parallelism", "1",
-		"--update-failure-action", "rollback",
-		"--update-monitor", "90s",
-		"--rollback-order", "start-first",
-		"--image", opts.Image,
-	}
-	for _, l := range serviceLabels(opts.ProjectID, opts.ProjectName, opts.ServiceName, opts.DeploymentNumber) {
-		args = append(args, "--label-add", l, "--container-label-add", l)
-	}
-	for _, k := range sortedKeys(opts.EnvVars) {
-		args = append(args, "--env-add", k+"="+opts.EnvVars[k])
-	}
-	for _, k := range oldEnv {
-		if _, wanted := opts.EnvVars[k]; !wanted {
-			args = append(args, "--env-rm", k)
-		}
-	}
-	// Stable public-web services always use their ID-based alias on cobalt-main.
-	// The attachment is created once and must not be added again on every update.
-	//
-	// Host aliases are the one extra swarm param the stable path accepts (see
-	// cobaltfile.UsesStablePublicWeb). `service update` only changes what it is
-	// handed, so without an explicit add/remove pass the create-time hosts would
-	// outlive any edit to cobalt.json -- silently, and forever. Reconcile them
-	// the same way env vars are reconciled just above.
-	oldHosts, err := c.stableServiceHosts(ctx, opts.Name)
-	if err != nil {
-		return err
-	}
-	wantHosts := hostParams(opts.ExtraParams)
-	for _, h := range wantHosts {
-		if !slices.Contains(oldHosts, h) {
-			args = append(args, "--host-add", h)
-		}
-	}
-	for _, h := range oldHosts {
-		if !slices.Contains(wantHosts, h) {
-			args = append(args, "--host-rm", h)
-		}
-	}
-	// Preserve unchanged mounts. Replacing every mount on each image update
-	// churns the spec and can lose volume options. Only change differing targets.
-	oldMounts, err := c.stableServiceMounts(ctx, opts.Name)
-	if err != nil {
-		return err
-	}
-	for _, mount := range oldMounts {
-		matched := false
-		for _, wanted := range opts.Volumes {
-			if mount.Target == wanted.DestinationPath {
-				// --mount-add replaces by target. Pairing it with --mount-rm
-				// for this same target removes the replacement as well.
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			args = append(args, "--mount-rm", mount.Target)
-		}
-	}
-	for _, wanted := range opts.Volumes {
-		matched := false
-		for _, mount := range oldMounts {
-			if mount.Type == "volume" && mount.Source == wanted.VolumeName && mount.Target == wanted.DestinationPath && !mount.ReadOnly {
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			args = append(args, "--mount-add", fmt.Sprintf("type=volume,source=%s,destination=%s", wanted.VolumeName, wanted.DestinationPath))
-		}
-	}
-	if opts.Replicas > 0 {
-		args = append(args, "--replicas", strconv.Itoa(opts.Replicas))
-	}
-	if opts.HealthCommand != "" {
-		args = append(args, "--health-cmd", opts.HealthCommand)
-	}
-	if opts.Command != "" {
-		args = append(args, "--args", opts.Command)
-	}
-	return c.run(ctx, append(args, opts.Name)...)
+	return c.UpdateServiceSpec(ctx, opts.Name, desired)
 }
 
 type stableServiceMount struct {
@@ -259,71 +178,6 @@ type stableServiceMount struct {
 	Source   string
 	Target   string
 	ReadOnly bool
-}
-
-func (c *Client) stableServiceMounts(ctx context.Context, name string) ([]stableServiceMount, error) {
-	out, err := c.output(ctx, "service", "inspect", "--format", "{{json .Spec.TaskTemplate.ContainerSpec.Mounts}}", name)
-	if err != nil {
-		return nil, err
-	}
-	if len(out) == 0 || string(out) == "null" {
-		return nil, nil
-	}
-	var mounts []stableServiceMount
-	if err := json.Unmarshal(out, &mounts); err != nil {
-		return nil, fmt.Errorf("inspect stable service mounts: %w", err)
-	}
-	return mounts, nil
-}
-
-func (c *Client) stableServiceEnvKeys(ctx context.Context, name string) ([]string, error) {
-	out, err := c.output(ctx, "service", "inspect", "--format", "{{json .Spec.TaskTemplate.ContainerSpec.Env}}", name)
-	if err != nil {
-		return nil, err
-	}
-	if len(out) == 0 || string(out) == "null" {
-		return nil, nil
-	}
-	var env []string
-	if err := json.Unmarshal(out, &env); err != nil {
-		return nil, fmt.Errorf("inspect stable service env: %w", err)
-	}
-	keys := make([]string, 0, len(env))
-	for _, entry := range env {
-		if i := strings.IndexByte(entry, '='); i > 0 {
-			keys = append(keys, entry[:i])
-		}
-	}
-	sortStrings(keys)
-	return keys, nil
-}
-
-// stableServiceHosts returns the service's custom host entries in the same
-// `hostname:value` shape the --host flag takes. Docker stores them the other
-// way round, space-separated ("host-gateway host.docker.internal"), so they
-// are flipped here rather than at every comparison site.
-func (c *Client) stableServiceHosts(ctx context.Context, name string) ([]string, error) {
-	out, err := c.output(ctx, "service", "inspect", "--format", "{{json .Spec.TaskTemplate.ContainerSpec.Hosts}}", name)
-	if err != nil {
-		return nil, err
-	}
-	if len(out) == 0 || string(out) == "null" {
-		return nil, nil
-	}
-	var stored []string
-	if err := json.Unmarshal(out, &stored); err != nil {
-		return nil, fmt.Errorf("inspect stable service hosts: %w", err)
-	}
-	hosts := make([]string, 0, len(stored))
-	for _, entry := range stored {
-		value, hostname, found := strings.Cut(entry, " ")
-		if !found {
-			continue
-		}
-		hosts = append(hosts, hostname+":"+value)
-	}
-	sortStrings(hosts)
-	return hosts, nil
 }
 
 // hostParams pulls the `--host` values out of pre-split extra swarm params.
@@ -533,10 +387,17 @@ func (c *Client) taskStates(ctx context.Context, serviceName string) ([]string, 
 // an alias we use docker's name=,alias= form so the service registers a
 // per-network DNS alias.
 func networkFlagValue(n NetworkAttachment) string {
-	if n.Alias == "" {
+	if n.Alias == "" && len(n.AdditionalAliases) == 0 {
 		return n.Name
 	}
-	return "name=" + n.Name + ",alias=" + n.Alias
+	value := "name=" + n.Name
+	if n.Alias != "" {
+		value += ",alias=" + n.Alias
+	}
+	for _, alias := range n.AdditionalAliases {
+		value += ",alias=" + alias
+	}
+	return value
 }
 
 func sortedKeys(m map[string]string) []string {

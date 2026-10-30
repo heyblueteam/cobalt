@@ -26,9 +26,29 @@ func (cf *Cobaltfile) Validate() error {
 		)
 	}
 
+	if cf.StablePublicWebNetwork != "" {
+		if cf.StablePublicWebNetwork != "shared" {
+			return fmt.Errorf("cobaltfile: stablePublicWebNetwork must be shared or omitted")
+		}
+		if !cf.StablePublicWeb {
+			return fmt.Errorf("cobaltfile: stablePublicWebNetwork requires stablePublicWeb: true")
+		}
+		for name, service := range cf.Services {
+			if name != "web" && service.Type == TypeContainer && service.StopFirst {
+				return fmt.Errorf("cobaltfile: stablePublicWebNetwork shared requires start-first siblings; service %q has stopFirst", name)
+			}
+		}
+		if reason := cf.StablePublicWebUnavailableReason(); reason != "" {
+			return fmt.Errorf("cobaltfile: stablePublicWebNetwork: %s", reason)
+		}
+	}
+
 	for name, s := range cf.Services {
 		if err := validateService(name, s); err != nil {
 			return err
+		}
+		if s.PrivateAddress && (name != "web" || !cf.UsesStablePublicWeb()) {
+			return fmt.Errorf("cobaltfile: service %q privateAddress requires an eligible stablePublicWeb web service", name)
 		}
 	}
 
@@ -120,6 +140,12 @@ func validateService(name string, s Service) error {
 	}
 	if s.MinReplicas < 0 {
 		return fmt.Errorf("cobaltfile: service %q minReplicas %d must be non-negative", name, s.MinReplicas)
+	}
+	if s.StopGracePeriodSeconds < 0 || s.StopGracePeriodSeconds > 86400 {
+		return fmt.Errorf("cobaltfile: service %q stopGracePeriodSeconds must be between 0 and 86400", name)
+	}
+	if s.StopGracePeriodSeconds > 0 && s.Type != TypeContainer {
+		return fmt.Errorf("cobaltfile: service %q stopGracePeriodSeconds only valid for type=container (got %q)", name, s.Type)
 	}
 	if s.MinReplicas > 0 && s.Type != TypeContainer {
 		return fmt.Errorf("cobaltfile: service %q minReplicas only valid for type=container (got %q)", name, s.Type)
