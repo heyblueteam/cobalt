@@ -238,12 +238,8 @@ func (o *Orchestrator) cutover(
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	if previousStable {
-		for _, b := range built {
-			if b.Name != "web" && runsAsService(b.Service) && b.Service.StopFirst {
-				return fmt.Errorf("deploy: leave stable web without stopFirst siblings before enabling stopFirst on %q", b.Name)
-			}
-		}
+	if err := validateStableRecoveryTransition(previousStable, cf, built); err != nil {
+		return err
 	}
 
 	staticDir := o.Caddy.StaticSiteDeploymentPath(project.Name, dep.Number)

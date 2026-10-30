@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,8 +29,12 @@ import (
 
 // stableIntegrationRunner uses the real CLI for every operation. Only the
 // conventional readiness container name is mapped to this test's owned probe.
-// This allows concurrent disposable-daemon tests without claiming cobalt-caddy.
-type stableIntegrationRunner struct{ probe string }
+// Fixtures reuse database project IDs, so each binary must exclusively own its
+// disposable daemon. Distinct probe names do not make fixture cleanup parallel-safe.
+type stableIntegrationRunner struct {
+	probe       string
+	diagnostics *sync.Map
+}
 
 func (r stableIntegrationRunner) Run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) error {
 	return r.RunWithEnv(ctx, nil, args, in, out, errout)
@@ -39,6 +44,20 @@ func (r stableIntegrationRunner) RunWithEnv(ctx context.Context, env map[string]
 	args = append([]string(nil), args...)
 	if len(args) > 1 && args[0] == "exec" && args[1] == caddyContainerCompose {
 		args[1] = r.probe
+	}
+	if r.diagnostics != nil && len(args) > 2 && args[0] == "service" && args[1] == "ps" {
+		var states bytes.Buffer
+		output := io.Writer(&states)
+		if out != nil {
+			output = io.MultiWriter(out, &states)
+		}
+		err := (&docker.ExecRunner{}).RunWithEnv(ctx, env, args, in, output, errout)
+		if strings.Contains(states.String(), "Failed") || strings.Contains(states.String(), "Rejected") || strings.Contains(states.String(), "Shutdown") {
+			details, _ := exec.CommandContext(ctx, "docker", "service", "ps", args[2], "--no-trunc").CombinedOutput()
+			logs, _ := exec.CommandContext(ctx, "docker", "service", "logs", "--tail", "20", args[2]).CombinedOutput()
+			r.diagnostics.Store(args[2], string(details)+"\n"+string(logs))
+		}
+		return err
 	}
 	return (&docker.ExecRunner{}).RunWithEnv(ctx, env, args, in, out, errout)
 }
@@ -109,7 +128,8 @@ func runSharedStablePublicWebSwarm(t *testing.T, migration bool, internalOnly ..
 	if err = db.AddDomain(ctx, pid, name+".example.test"); err != nil {
 		t.Fatal(err)
 	}
-	cli := docker.NewWithRunner(stableIntegrationRunner{probe: probe})
+	diagnostics := &sync.Map{}
+	cli := docker.NewWithRunner(stableIntegrationRunner{probe: probe, diagnostics: diagnostics})
 	if err = EnsureMainNetwork(ctx, cli); err != nil {
 		t.Fatal(err)
 	}
@@ -134,6 +154,11 @@ func runSharedStablePublicWebSwarm(t *testing.T, migration bool, internalOnly ..
 			if strings.HasPrefix(image, "cobalt/project-"+project.Name+"-") {
 				_ = exec.CommandContext(cleanupCtx, "docker", "image", "rm", image).Run()
 			}
+		}
+	})
+	t.Cleanup(func() {
+		if t.Failed() {
+			diagnostics.Range(func(name, value any) bool { t.Logf("pre-cleanup task evidence %s: %s", name, value); return true })
 		}
 	})
 	admin := newOrchCaddy(t)
@@ -490,6 +515,17 @@ th.join();print(json.dumps(result),flush=True)
 			t.Fatalf("unsafe direct internal transition not rejected: %v", err)
 		}
 		assertRestored("direct stable public to internal preflight rejection")
+		exclusive := config("stopfirst-transition")
+		exclusive.StablePublicWeb = false
+		exclusive.StablePublicWebNetwork = ""
+		exclusiveWeb := exclusive.Services["web"]
+		exclusiveWeb.PrivateAddress = false
+		exclusiveWeb.StopFirst = true
+		exclusive.Services["web"] = exclusiveWeb
+		if _, err := deploy(exclusive, 4*time.Minute, nil); err == nil || !strings.Contains(err.Error(), "without stopFirst before enabling public stopFirst") {
+			t.Fatalf("unsafe stop-first dual recovery not rejected: %v", err)
+		}
+		assertRestored("stable to public stop-first rejected before writers or hooks change")
 		bad := config("boot-failure")
 		web := bad.Services["web"]
 		web.Command = "python -c 'raise SystemExit(31)'"
@@ -507,7 +543,7 @@ th.join();print(json.dumps(result),flush=True)
 			body, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(body))
 			if r.Method == http.MethodPatch && strings.Contains(string(body), stableWeb+":8081") {
-				http.Error(w, "injected new-port swap failure", 503)
+				http.Error(w, "injected new-port swap failure", http.StatusServiceUnavailable)
 				return
 			}
 			admin.handle(w, r)
@@ -613,12 +649,14 @@ thread.join();print(json.dumps(result),flush=True)
 	}
 	await(privateURL, "web:two")
 	await("http://"+proxy, "web:two")
-	if got := fetch(privateURL + "/peer/" + name + "-worker"); got != "worker:two" {
-		t.Fatalf("updated worker settings: %s", got)
-	}
-	if got := fetch(privateURL + "/peer/" + name + "-embed"); got != "embed:two" {
-		t.Fatalf("updated embed settings: %s", got)
-	}
+	// Shared aliases deliberately have no generation affinity; old numbered
+	// processes may still drain. Prove the new numbered endpoints directly and
+	// bound convergence of fresh shared-alias calls rather than requiring the
+	// first shared response to select a particular healthy generation.
+	await("http://"+docker.ServiceName(name, second.Number, "worker")+":8080", "worker:two")
+	await("http://"+docker.ServiceName(name, second.Number, "embed")+":8080", "embed:two")
+	await(privateURL+"/peer/"+name+"-worker", "worker:two")
+	await(privateURL+"/peer/"+name+"-embed", "embed:two")
 	if got := fetch(privateURL + "/setting"); got != fmt.Sprint(second.Number) {
 		t.Fatalf("updated environment: %s", got)
 	}
@@ -785,6 +823,7 @@ type stableFailureRunner struct {
 func (r stableFailureRunner) Run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) error {
 	return r.RunWithEnv(ctx, nil, args, in, out, errout)
 }
+
 func (r stableFailureRunner) RunWithEnv(ctx context.Context, env map[string]string, args []string, in io.Reader, out, errout io.Writer) error {
 	if r.blockCleanup && len(args) >= 3 && args[0] == "service" && args[1] == "rm" && r.preserveNames[args[2]] == "" {
 		return errors.New("injected failed dependency cleanup")

@@ -123,6 +123,8 @@ retaining public routing through the same service and port:
 - Stop-first siblings are rejected in this mode because a failed replacement
   cannot restore a removed dependency. To enable stop-first on a sibling later,
   first deploy numbered web without that stop-first change, then enable it.
+  The same staged transition is required before enabling public web stop-first:
+  stable recovery and exclusive-writer recovery must not own the same cutover.
 
 Without this explicit contract, a stable-web request with sibling containers
 keeps the existing numbered fallback. `privateAddress` fails validation if web
@@ -154,6 +156,14 @@ for recovery are retained. This restores process settings, not database/schema
 changes made by hooks. The snapshot is scoped to the running cutover; daemon
 upgrades must wait for active deployments to finish. A process/host crash does
 not provide a persistent deployment transaction journal.
+
+Budget live processes rather than desired replicas. Update parallelism 1 does
+not constrain start-first overlap to `replicas + 1`: Swarm can start later
+replacement slots while earlier old tasks are still exiting. The disposable
+four-replica regression measured eight actual running containers/tasks, including
+four desired-Shutdown tasks still running, with 30-second requests and a
+35-second stop grace. Allow for full old/new overlap and count shutting-down
+processes until exit when budgeting connections and memory.
 
 `stopGracePeriodSeconds` is optional on containers (0 means Docker's 10-second
 default; explicit values are 1–86400). It sets the task's shutdown budget. The

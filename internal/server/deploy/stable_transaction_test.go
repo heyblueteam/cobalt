@@ -111,3 +111,29 @@ func TestStablePublicToInternalRejectedBeforeMutation(t *testing.T) {
 		t.Fatalf("mutation before transition rejection: %v", runner.calls)
 	}
 }
+
+func TestStableRecoveryHasOneOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name                                                           string
+		previousStable, webStop, siblingStop, stableRequested, wantErr bool
+	}{
+		{name: "legacy numbered stop-first unchanged", webStop: true},
+		{name: "stable to numbered start-first", previousStable: true},
+		{name: "stable to exclusive web", previousStable: true, webStop: true, wantErr: true},
+		{name: "ineligible incoming stable flag still exclusive", previousStable: true, webStop: true, stableRequested: true, wantErr: true},
+		{name: "stable loses dependency before startup", previousStable: true, siblingStop: true, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cf := cobaltfile.Default()
+			cf.StablePublicWeb = tc.stableRequested
+			web := cf.Services["web"]
+			web.StopFirst = tc.webStop
+			cf.Services["web"] = web
+			worker := cobaltfile.Service{Type: cobaltfile.TypeContainer, StopFirst: tc.siblingStop}
+			built := []BuiltService{{Name: "web", Service: web}, {Name: "worker", Service: worker}}
+			if err := validateStableRecoveryTransition(tc.previousStable, cf, built); (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}

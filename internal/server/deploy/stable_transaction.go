@@ -155,3 +155,20 @@ func (tx *stableWebTransaction) recoveryBudget(cf *cobaltfile.Cobaltfile) time.D
 	}
 	return budget
 }
+
+// Each cutover has one recovery owner. Switching from stable web to exclusive
+// writers requires an ordinary numbered-public deployment in between.
+func validateStableRecoveryTransition(previousStable bool, cf *cobaltfile.Cobaltfile, built []BuiltService) error {
+	if !previousStable {
+		return nil
+	}
+	if publicStopFirstEnabled(cf) {
+		return fmt.Errorf("deploy: first deploy numbered public web without stopFirst before enabling public stopFirst; stable and stop-first recovery cannot own the same service")
+	}
+	for _, b := range built {
+		if b.Name != "web" && runsAsService(b.Service) && b.Service.StopFirst {
+			return fmt.Errorf("deploy: leave stable web without stopFirst siblings before enabling stopFirst on %q", b.Name)
+		}
+	}
+	return nil
+}
