@@ -103,7 +103,8 @@ func stableRecoveryBudget(cf *cobaltfile.Cobaltfile) time.Duration {
 // A legacy internal-only web may already own the requested private name.
 // Reject before hooks or service mutation rather than create a second owner.
 func validateStablePrivateAlias(ctx context.Context, d *docker.Client, p store.Project, cf *cobaltfile.Cobaltfile) error {
-	if !cf.UsesStablePublicWeb() || !cf.Services["web"].PrivateAddress {
+	internalWeb := cf.Services["web"].ExposedInternally
+	if !internalWeb && (!cf.UsesStablePublicWeb() || !cf.Services["web"].PrivateAddress) {
 		return nil
 	}
 	services, err := d.ListServicesForProject(ctx, p.ID)
@@ -112,6 +113,12 @@ func validateStablePrivateAlias(ctx context.Context, d *docker.Client, p store.P
 	}
 	for _, service := range services {
 		if service.Name == docker.StablePublicWebServiceName(p.ID) {
+			if internalWeb {
+				return fmt.Errorf("cannot change stable public web directly to exposedInternally; first deploy numbered public web and wait for stable service retirement")
+			}
+			continue
+		}
+		if internalWeb {
 			continue
 		}
 		snapshot, err := d.SnapshotStableService(ctx, service.Name)

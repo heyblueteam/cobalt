@@ -222,24 +222,6 @@ func (o *Orchestrator) cutover(
 	if err := validateStablePrivateAlias(ctx, o.Docker, *project, cf); err != nil {
 		return fmt.Errorf("deploy: private alias preflight: %w", err)
 	}
-	staticDir := o.Caddy.StaticSiteDeploymentPath(project.Name, dep.Number)
-	if _, err := runGenerators(ctx, o.Docker, *project, dep, built, envVars, staticDir, out, out); err != nil {
-		return fmt.Errorf("deploy: generators: %w", err)
-	}
-
-	if err := runBeforeHook(ctx, o.Docker, *project, dep, cf, envVars, out, out); err != nil {
-		return fmt.Errorf("deploy: before-hook: %w", err)
-	}
-
-	deploymentNetwork := docker.NetworkName(project.Name, dep.Number)
-	if err := o.ensureDeploymentNetwork(ctx, *project, dep); err != nil {
-		return fmt.Errorf("deploy: deployment network: %w", err)
-	}
-
-	if err := o.DB.SetDeploymentStatus(ctx, dep.ID, cobaltapi.StateSwapping); err != nil {
-		log.Warn("set status swapping", "error", err)
-	}
-
 	previousStable := false
 	var previousDeployment *store.Deployment
 	var previousFile *cobaltfile.Cobaltfile
@@ -263,6 +245,25 @@ func (o *Orchestrator) cutover(
 			}
 		}
 	}
+
+	staticDir := o.Caddy.StaticSiteDeploymentPath(project.Name, dep.Number)
+	if _, err := runGenerators(ctx, o.Docker, *project, dep, built, envVars, staticDir, out, out); err != nil {
+		return fmt.Errorf("deploy: generators: %w", err)
+	}
+
+	if err := runBeforeHook(ctx, o.Docker, *project, dep, cf, envVars, out, out); err != nil {
+		return fmt.Errorf("deploy: before-hook: %w", err)
+	}
+
+	deploymentNetwork := docker.NetworkName(project.Name, dep.Number)
+	if err := o.ensureDeploymentNetwork(ctx, *project, dep); err != nil {
+		return fmt.Errorf("deploy: deployment network: %w", err)
+	}
+
+	if err := o.DB.SetDeploymentStatus(ctx, dep.ID, cobaltapi.StateSwapping); err != nil {
+		log.Warn("set status swapping", "error", err)
+	}
+
 	stableTx, err := prepareStableWebTransaction(ctx, o.Docker, *project, dep, cf, built, envVars, previousStable)
 	if err != nil {
 		return fmt.Errorf("deploy: snapshot stable web: %w", err)

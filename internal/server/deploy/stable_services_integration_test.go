@@ -3,10 +3,12 @@
 package deploy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -418,6 +420,10 @@ th.join();print(json.dumps(result),flush=True)
 			t.Fatal(err)
 		}
 		await("http://"+docker.ServiceName(name, reverted.Number, "web")+":8080/peer/"+name+"-embed", "embed:one")
+		privateLookup := exec.CommandContext(ctx, "docker", "exec", probe, "python", "-c", "import socket;socket.getaddrinfo('"+name+"-web',8080)")
+		if output, lookupErr := privateLookup.CombinedOutput(); lookupErr == nil {
+			t.Fatalf("stable->numbered left obsolete private alias: %s", output)
+		}
 		await("http://"+stableWeb+":8080/peer/"+name+"-embed", "embed:one")
 		await("http://"+name+"-embed:8080", "embed:one")
 		// A second migration must reconcile existing retained stable services too.
@@ -473,6 +479,17 @@ th.join();print(json.dumps(result),flush=True)
 			}
 			t.Logf("%s: exact previous web spec, public/private HTTP and previous siblings restored", label)
 		}
+		internal := config("internal-transition")
+		internal.StablePublicWeb = false
+		internal.StablePublicWebNetwork = ""
+		internalWeb := internal.Services["web"]
+		internalWeb.PrivateAddress = false
+		internalWeb.ExposedInternally = true
+		internal.Services["web"] = internalWeb
+		if _, err := deploy(internal, 4*time.Minute, nil); err == nil || !strings.Contains(err.Error(), "first deploy numbered public web") {
+			t.Fatalf("unsafe direct internal transition not rejected: %v", err)
+		}
+		assertRestored("direct stable public to internal preflight rejection")
 		bad := config("boot-failure")
 		web := bad.Services["web"]
 		web.Command = "python -c 'raise SystemExit(31)'"
@@ -520,6 +537,53 @@ th.join();print(json.dumps(result),flush=True)
 			t.Fatal("data-plane mismatch unexpectedly succeeded")
 		}
 		assertRestored("data-plane mismatch")
+		o.DataPlaneProber = nil
+		failedWorker := config("recovery-injection")
+		worker := failedWorker.Services["worker"]
+		worker.Command = "python -c 'raise SystemExit(41)'"
+		failedWorker.Services["worker"] = worker
+		o.Docker = docker.NewWithRunner(stableFailureRunner{base: stableIntegrationRunner{probe: probe}, blockRestoreGeneration: fmt.Sprint(first.Number)})
+		if _, err := deploy(failedWorker, 25*time.Second, nil); err == nil || !strings.Contains(err.Error(), "stable web recovery failed") {
+			t.Fatalf("restore failure not surfaced: %v", err)
+		}
+		retained, err := cli.ListServicesForProject(ctx, pid)
+		if err != nil || len(retained) != 5 {
+			t.Fatalf("restore failure discarded dependencies: %v %+v", err, retained)
+		}
+		if err := cli.RestoreStableService(ctx, stableWeb, snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if err := cli.WaitForStableServiceSettled(ctx, stableWeb); err != nil {
+			t.Fatal(err)
+		}
+		for _, service := range retained {
+			if service.Name != stableWeb && siblingIDs[service.Name] == "" {
+				if err := cli.RemoveService(ctx, service.Name); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		o.Docker = cli
+		assertRestored("manual recovery after injected restore error")
+		o.Docker = docker.NewWithRunner(stableFailureRunner{base: stableIntegrationRunner{probe: probe}, preserveNames: siblingIDs, blockCleanup: true})
+		if _, err := deploy(failedWorker, 25*time.Second, nil); err == nil || !strings.Contains(err.Error(), "injected failed dependency cleanup") {
+			t.Fatalf("cleanup failure not surfaced: %v", err)
+		}
+		retained, err = cli.ListServicesForProject(ctx, pid)
+		if err != nil || len(retained) != 5 {
+			t.Fatalf("cleanup failure not observable: %v %+v", err, retained)
+		}
+		await(privateURL, "web:one")
+		await("http://"+proxy, "web:one")
+		for _, service := range retained {
+			if service.Name != stableWeb && siblingIDs[service.Name] == "" {
+				if err := cli.RemoveService(ctx, service.Name); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		o.Docker = cli
+		assertRestored("cleanup error retains observable failed dependencies")
 		return
 	}
 	// Open a long public request before updating and require its old generation
@@ -638,8 +702,12 @@ thread.join();print(json.dumps(result),flush=True)
 		t.Fatal(err)
 	}
 	for _, service := range live {
-		if service.Name != stableWeb && service.DeploymentNumber != rolled.Number {
-			t.Fatalf("rollback kept superseded numbered service: %+v", service)
+		if service.Name != stableWeb {
+			_, worker := docker.Generation(name, "worker", service.Name)
+			_, embed := docker.Generation(name, "embed", service.Name)
+			if service.Name != docker.ServiceName(name, rolled.Number, "worker") && service.Name != docker.ServiceName(name, rolled.Number, "embed") || !worker && !embed {
+				t.Fatalf("rollback kept superseded numbered service: %+v", service)
+			}
 		}
 	}
 
@@ -703,4 +771,44 @@ func (p stableHTTPDataPlane) Exec(ctx context.Context, container string, cmd []s
 		return p.cli.Exec(ctx, p.probe, []string{"python", "-c", script}, out, errout)
 	}
 	return p.cli.Exec(ctx, p.probe, cmd, out, errout)
+}
+
+// stableFailureRunner injects transport/cleanup failures while every other
+// Docker operation still executes against the caller-owned real Swarm.
+type stableFailureRunner struct {
+	base                   stableIntegrationRunner
+	blockRestoreGeneration string
+	preserveNames          map[string]string
+	blockCleanup           bool
+}
+
+func (r stableFailureRunner) Run(ctx context.Context, args []string, in io.Reader, out, errout io.Writer) error {
+	return r.RunWithEnv(ctx, nil, args, in, out, errout)
+}
+func (r stableFailureRunner) RunWithEnv(ctx context.Context, env map[string]string, args []string, in io.Reader, out, errout io.Writer) error {
+	if r.blockCleanup && len(args) >= 3 && args[0] == "service" && args[1] == "rm" && r.preserveNames[args[2]] == "" {
+		return errors.New("injected failed dependency cleanup")
+	}
+	if r.blockRestoreGeneration != "" && len(args) == 2 && args[0] == "system" && args[1] == "dial-stdio" {
+		raw, err := io.ReadAll(in)
+		if err != nil {
+			return err
+		}
+		in = bytes.NewReader(raw)
+		req, err := http.ReadRequest(bufio.NewReader(bytes.NewReader(raw)))
+		if err != nil {
+			return err
+		}
+		var spec struct{ Labels map[string]string }
+		err = json.NewDecoder(req.Body).Decode(&spec)
+		_ = req.Body.Close()
+		if err != nil {
+			return err
+		}
+		if spec.Labels[docker.LabelDeploymentNumber] == r.blockRestoreGeneration {
+			_, err := io.WriteString(out, "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+			return err
+		}
+	}
+	return r.base.RunWithEnv(ctx, env, args, in, out, errout)
 }

@@ -92,8 +92,11 @@ func TestStableSettingsCustomHealthAndCommand(t *testing.T) {
 	if !reflect.DeepEqual(health["Test"], []any{"CMD-SHELL", "check"}) || health["StartPeriod"] != float64(5*time.Minute) || health["StartInterval"] != float64(3*time.Second) {
 		t.Fatalf("health=%v", health)
 	}
-	if _, ok := health["Interval"]; ok {
-		t.Fatal("stale health timing retained")
+	if health["Interval"] != float64(30*time.Second) || health["Timeout"] != float64(5*time.Second) || health["Retries"] != float64(4) {
+		t.Fatalf("image health defaults were not preserved: %v", health)
+	}
+	if health["Interval"] == float64(7*time.Second) {
+		t.Fatal("stale previous health interval retained")
 	}
 }
 

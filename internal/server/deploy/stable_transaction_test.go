@@ -95,3 +95,19 @@ func TestStableRecoveryHonorsPreviousLongerStopGrace(t *testing.T) {
 		t.Fatalf("recovery budget=%s", got)
 	}
 }
+
+func TestStablePublicToInternalRejectedBeforeMutation(t *testing.T) {
+	runner := newOrchDocker()
+	runner.stdout["service ls"] = "cobalt-web-7\t1/1\nsample-1-worker\t1/1"
+	cf := cobaltfile.Default()
+	web := cf.Services["web"]
+	web.ExposedInternally = true
+	cf.Services["web"] = web
+	err := validateStablePrivateAlias(context.Background(), docker.NewWithRunner(runner), store.Project{ID: 7, Name: "sample"}, cf)
+	if err == nil || !strings.Contains(err.Error(), "first deploy numbered public web") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(runner.calls) != 1 || !strings.HasPrefix(runner.calls[0], "service ls") {
+		t.Fatalf("mutation before transition rejection: %v", runner.calls)
+	}
+}

@@ -130,7 +130,11 @@ cannot actually use stable routing: no silent numbered private endpoint is
 created. Published web ports, stop-first web, unsupported Swarm flags and
 volumes without `sharedDuringUpdate` remain ineligible. A legacy internal-only
 web that already owns `{project}-web` blocks private-address adoption before
-hooks or service mutation; retire that conflicting alias first.
+hooks or service mutation; retire that conflicting alias first. Direct transitions
+from an existing stable public service to `exposedInternally` web are also
+rejected before hooks: deploy numbered public web first and wait for the stable
+service to retire before adopting internal-only routing. Remove public domains
+when changing a project to internal-only service.
 
 The public upstream keeps its immutable project-ID service name and VIP.
 Private aliases are reconciled on existing stable services, including removal,
