@@ -123,7 +123,8 @@ func TestCreateService_DefaultsForHealth(t *testing.T) {
 func TestReconcileStableService_CreatesMissingService(t *testing.T) {
 	t.Parallel()
 	r := newFakeRunner()
-	r.answerErr("service inspect cobalt-web-7", errors.New("no such service"))
+	r.answerStdout("service inspect --format {{json .Spec.TaskTemplate.Networks}}", `[]`)
+	r.answerErr("service inspect --format {{json .Spec}} cobalt-web-7", errors.New("no such service"))
 	c := NewWithRunner(r)
 	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
 		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 3,
@@ -134,105 +135,6 @@ func TestReconcileStableService_CreatesMissingService(t *testing.T) {
 	}
 	if !argSequence(r.lastCall().Args, "--name", "cobalt-web-7") {
 		t.Errorf("create args = %v", r.lastCall().Args)
-	}
-}
-
-func TestReconcileStableService_UpdatesStartFirst(t *testing.T) {
-	t.Parallel()
-	r := newFakeRunner()
-	c := NewWithRunner(r)
-	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
-		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
-		Name: "cobalt-web-7", Image: "api:4", EnvVars: map[string]string{"PORT": "3000"}, Replicas: 2,
-		Networks: []NetworkAttachment{{Name: "cobalt-main", Alias: "cobalt-web-7"}},
-	})
-	if err != nil {
-		t.Fatalf("ReconcileStableService: %v", err)
-	}
-	args := r.lastCall().Args
-	for _, pair := range [][2]string{{"--update-order", "start-first"}, {"--update-failure-action", "rollback"}, {"--rollback-order", "start-first"}, {"--image", "api:4"}, {"--env-add", "PORT=3000"}} {
-		if !argSequence(args, pair[0], pair[1]) {
-			t.Errorf("missing %q %q in %v", pair[0], pair[1], args)
-		}
-	}
-	if argHas(args, "--network-add") {
-		t.Errorf("stable update must retain its existing network attachment: %v", args)
-	}
-}
-
-func TestReconcileStableService_RemovesDeletedEnvironment(t *testing.T) {
-	t.Parallel()
-	r := newFakeRunner()
-	r.answerStdout("service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Env}}", `["KEEP=old","REMOVE=old"]`)
-	c := NewWithRunner(r)
-	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
-		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
-		Name: "cobalt-web-7", Image: "api:4", EnvVars: map[string]string{"KEEP": "new"},
-	})
-	if err != nil {
-		t.Fatalf("ReconcileStableService: %v", err)
-	}
-	args := r.lastCall().Args
-	if !argSequence(args, "--env-rm", "REMOVE") {
-		t.Errorf("deleted env was retained: %v", args)
-	}
-	if argSequence(args, "--env-rm", "KEEP") {
-		t.Errorf("desired env was removed: %v", args)
-	}
-}
-
-// A stable service is updated, never recreated, and `service update` only
-// changes what it is handed — so a host alias added or removed in cobalt.json
-// has to be reconciled explicitly or it never reaches the running service.
-func TestReconcileStableService_ReconcilesHostAliases(t *testing.T) {
-	t.Parallel()
-	r := newFakeRunner()
-	r.answerStdout(
-		"service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Hosts}}",
-		`["host-gateway host.docker.internal","1.2.3.4 stale.example"]`,
-	)
-	c := NewWithRunner(r)
-	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
-		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
-		Name: "cobalt-web-7", Image: "api:4",
-		ExtraParams: SplitParams("--host host.docker.internal:host-gateway --host fresh.example:5.6.7.8"),
-	})
-	if err != nil {
-		t.Fatalf("ReconcileStableService: %v", err)
-	}
-	args := r.lastCall().Args
-	if !argSequence(args, "--host-add", "fresh.example:5.6.7.8") {
-		t.Errorf("new host alias was not added: %v", args)
-	}
-	if !argSequence(args, "--host-rm", "stale.example:1.2.3.4") {
-		t.Errorf("host alias dropped from cobalt.json was retained: %v", args)
-	}
-	// Already present with the same value — re-adding it churns the spec for
-	// no reason and shows up as a pointless task rollover.
-	if argSequence(args, "--host-add", "host.docker.internal:host-gateway") {
-		t.Errorf("unchanged host alias was re-added: %v", args)
-	}
-	if argSequence(args, "--host-rm", "host.docker.internal:host-gateway") {
-		t.Errorf("unchanged host alias was removed: %v", args)
-	}
-}
-
-func TestReconcileStableService_NoHostFlagsWhenNoneConfigured(t *testing.T) {
-	t.Parallel()
-	r := newFakeRunner()
-	c := NewWithRunner(r)
-	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{
-		ProjectID: 7, ProjectName: "api", ServiceName: "web", DeploymentNumber: 4,
-		Name: "cobalt-web-7", Image: "api:4",
-	})
-	if err != nil {
-		t.Fatalf("ReconcileStableService: %v", err)
-	}
-	args := r.lastCall().Args
-	for _, w := range []string{"--host-add", "--host-rm"} {
-		if argHas(args, w) {
-			t.Errorf("unexpected %q in %v", w, args)
-		}
 	}
 }
 
@@ -622,72 +524,6 @@ func TestParseReplicas(t *testing.T) {
 	}
 }
 
-func TestReconcileStableService_ReconcilesVolumes(t *testing.T) {
-	t.Parallel()
-	r := newFakeRunner()
-	r.answerStdout("service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Mounts}}", `[
-		{"Type":"volume","Source":"cache","Target":"/cache"},
-		{"Type":"volume","Source":"old","Target":"/replace"},
-		{"Type":"volume","Source":"removed","Target":"/removed"}]`)
-	c := NewWithRunner(r)
-	err := c.ReconcileStableService(context.Background(), ServiceCreateOpts{Name: "cobalt-web-7", Image: "web:2", Volumes: []ServiceVolume{
-		{VolumeName: "cache", DestinationPath: "/cache"},
-		{VolumeName: "new", DestinationPath: "/replace"},
-		{VolumeName: "added", DestinationPath: "/added"},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	args := r.lastCall().Args
-	for _, target := range []string{"/removed"} {
-		if !argSequence(args, "--mount-rm", target) {
-			t.Errorf("mount %s not removed: %v", target, args)
-		}
-	}
-	for _, mount := range []string{"type=volume,source=new,destination=/replace", "type=volume,source=added,destination=/added"} {
-		if !argSequence(args, "--mount-add", mount) {
-			t.Errorf("mount %s not added: %v", mount, args)
-		}
-	}
-	if argSequence(args, "--mount-rm", "/replace") {
-		t.Errorf("replacement target was removed after mount-add: %v", args)
-	}
-	if argSequence(args, "--mount-rm", "/cache") || argSequence(args, "--mount-add", "type=volume,source=cache,destination=/cache") {
-		t.Errorf("unchanged mount churned: %v", args)
-	}
-	if !argSequence(args, "--update-order", "start-first") {
-		t.Errorf("lost start-first policy: %v", args)
-	}
-}
-
-func TestReconcileStableService_MountReadFailureDoesNotUpdate(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name, output string
-		err          error
-	}{
-		{name: "inspect failure", err: errors.New("daemon unavailable")},
-		{name: "invalid JSON", output: `{broken`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newFakeRunner()
-			const prefix = "service inspect --format {{json .Spec.TaskTemplate.ContainerSpec.Mounts}}"
-			r.answerStdout(prefix, tc.output)
-			if tc.err != nil {
-				r.answerErr(prefix, tc.err)
-			}
-			if err := NewWithRunner(r).ReconcileStableService(context.Background(), ServiceCreateOpts{Name: "cobalt-web-7", Image: "web:2"}); err == nil {
-				t.Fatal("expected inspection error")
-			}
-			for _, call := range r.calls {
-				if argSequence(call.Args, "service", "update") {
-					t.Fatal("updated service after failed inspection")
-				}
-			}
-		})
-	}
-}
-
 func TestRetireServiceWaitsForStoppedReplicas(t *testing.T) {
 	r := newFakeRunner()
 	c := NewWithRunner(r)
@@ -718,5 +554,31 @@ func TestRetireServiceDoesNotCountStoppingTasksAsFree(t *testing.T) {
 		if argSequence(call.Args, "service", "rm") {
 			t.Fatalf("removed before tasks stopped: %v", r.calls)
 		}
+	}
+}
+
+func TestCreateServiceStopGracePeriod(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		grace time.Duration
+		want  string
+	}{
+		{name: "Docker default"}, {name: "explicit graceful shutdown", grace: 75 * time.Second, want: "1m15s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newFakeRunner()
+			err := NewWithRunner(r).CreateService(context.Background(), ServiceCreateOpts{Image: "web:1", StopGracePeriod: tc.grace})
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := r.lastCall().Args
+			if tc.want == "" {
+				if argHas(args, "--stop-grace-period") {
+					t.Fatalf("unexpected override: %v", args)
+				}
+			} else if !argSequence(args, "--stop-grace-period", tc.want) {
+				t.Fatalf("missing grace period: %v", args)
+			}
+		})
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
+	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -39,7 +41,7 @@ func (h *Handler) GetScale(w http.ResponseWriter, r *http.Request) {
 	services := make([]cobaltapi.ScaleService, 0, len(svcList))
 	for _, svc := range svcList {
 		services = append(services, cobaltapi.ScaleService{
-			Name:     parseServiceName(svc.Name, p.Name, dep.Number),
+			Name:     scaleLogicalName(svc.Name, p.Name, p.ID, dep.Number),
 			Replicas: svc.Replicas,
 		})
 	}
@@ -62,6 +64,8 @@ func (h *Handler) SetScale(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "daemon Docker client not configured")
 		return
 	}
+	unlock := projectlock.Lock(p.ID)
+	defer unlock()
 	dep, err := h.DB.GetLastSuccessfulDeployment(r.Context(), p.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "project has no successful deployment")
@@ -85,6 +89,11 @@ func (h *Handler) SetScale(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		fullName := docker.ServiceName(p.Name, dep.Number, s.Name)
+		if s.Name == "web" && dep.ResolvedCobaltfile != nil {
+			if cf, err := cobaltfile.Parse([]byte(*dep.ResolvedCobaltfile)); err == nil && cf.UsesStablePublicWeb() {
+				fullName = docker.StablePublicWebServiceName(p.ID)
+			}
+		}
 		if err := h.Docker.ScaleService(r.Context(), fullName, s.Replicas); err != nil {
 			h.Log.Error("api: scale service", "service", fullName, "error", err)
 			writeError(w, http.StatusInternalServerError, "scale failed: "+err.Error())
@@ -99,7 +108,7 @@ func (h *Handler) SetScale(w http.ResponseWriter, r *http.Request) {
 	services := make([]cobaltapi.ScaleService, 0, len(svcList))
 	for _, svc := range svcList {
 		services = append(services, cobaltapi.ScaleService{
-			Name:     parseServiceName(svc.Name, p.Name, dep.Number),
+			Name:     scaleLogicalName(svc.Name, p.Name, p.ID, dep.Number),
 			Replicas: svc.Replicas,
 		})
 	}
@@ -115,4 +124,11 @@ func (h *Handler) SetScale(w http.ResponseWriter, r *http.Request) {
 func parseServiceName(fullName, projectName string, deploymentNumber int) string {
 	prefix := docker.ServiceName(projectName, deploymentNumber, "")
 	return strings.TrimPrefix(fullName, prefix)
+}
+
+func scaleLogicalName(fullName, projectName string, projectID int64, number int) string {
+	if fullName == docker.StablePublicWebServiceName(projectID) {
+		return "web"
+	}
+	return parseServiceName(fullName, projectName, number)
 }

@@ -219,6 +219,29 @@ func (o *Orchestrator) cutover(
 		return fmt.Errorf("deploy: ensure main network: %w", err)
 	}
 
+	if err := validateStablePrivateAlias(ctx, o.Docker, *project, cf); err != nil {
+		return fmt.Errorf("deploy: private alias preflight: %w", err)
+	}
+	previousStable := false
+	var previousDeployment *store.Deployment
+	var previousFile *cobaltfile.Cobaltfile
+	if previous, err := o.DB.GetLastSuccessfulDeployment(ctx, project.ID); err == nil {
+		previousDeployment = previous
+		if previous.ResolvedCobaltfile != nil {
+			previousCF, parseErr := cobaltfile.Parse([]byte(*previous.ResolvedCobaltfile))
+			if parseErr != nil {
+				return parseErr
+			}
+			previousFile = previousCF
+			previousStable = previousCF.UsesStablePublicWeb()
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if err := validateStableRecoveryTransition(previousStable, cf, built); err != nil {
+		return err
+	}
+
 	staticDir := o.Caddy.StaticSiteDeploymentPath(project.Name, dep.Number)
 	if _, err := runGenerators(ctx, o.Docker, *project, dep, built, envVars, staticDir, out, out); err != nil {
 		return fmt.Errorf("deploy: generators: %w", err)
@@ -236,6 +259,56 @@ func (o *Orchestrator) cutover(
 	if err := o.DB.SetDeploymentStatus(ctx, dep.ID, cobaltapi.StateSwapping); err != nil {
 		log.Warn("set status swapping", "error", err)
 	}
+
+	stableTx, err := prepareStableWebTransaction(ctx, o.Docker, *project, dep, cf, built, envVars, previousStable)
+	if err != nil {
+		return fmt.Errorf("deploy: snapshot stable web: %w", err)
+	}
+	var failedNames []string
+	routeTouched := false
+	defer func() {
+		if result == nil || stableTx == nil {
+			return
+		}
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), stableTx.recoveryBudget(cf))
+		defer cancel()
+		// When leaving stable web, numbered replacements do not belong to the old
+		// main-only dependency topology. Remove their alias owners before restore.
+		if !stableTx.incomingStable {
+			if err := stopServices(recoveryCtx, o.Docker, failedNames); err != nil {
+				result = errors.Join(result, err)
+				return
+			}
+			failedNames = nil
+		}
+		if err := stableTx.restore(recoveryCtx, o.Docker); err != nil {
+			result = errors.Join(result, fmt.Errorf("stable web recovery failed; failed dependencies retained; operator action required: %w", err))
+			return
+		}
+		if previousDeployment != nil && previousFile != nil {
+			if err := waitHTTPReady(recoveryCtx, o.Docker, *project, *previousDeployment, previousFile, out); err != nil {
+				result = errors.Join(result, fmt.Errorf("previous web readiness recovery failed; dependencies retained: %w", err))
+				return
+			}
+			if previousFile.Services["web"].ExposedInternally && routeTouched {
+				if err := o.Caddy.RemoveProjectRoute(recoveryCtx, project.ID); err != nil {
+					result = errors.Join(result, err)
+					return
+				}
+			} else if err := commitCaddySwap(recoveryCtx, o.Caddy, o.DB, *project, *previousDeployment, previousFile); err != nil {
+				result = errors.Join(result, fmt.Errorf("previous route recovery failed; dependencies retained: %w", err))
+				return
+			}
+		} else if previousDeployment == nil && routeTouched {
+			if err := o.Caddy.RemoveProjectRoute(recoveryCtx, project.ID); err != nil {
+				result = errors.Join(result, err)
+				return
+			}
+		}
+		if err := stopServices(recoveryCtx, o.Docker, failedNames); err != nil {
+			result = errors.Join(result, err)
+		}
+	}()
 
 	var publicStop *publicStopFirst
 	if publicStopFirstEnabled(cf) {
@@ -270,6 +343,10 @@ func (o *Orchestrator) cutover(
 	// Public stop-first owns its web cleanup so recovery can wait for real
 	// process exit while the service object is still inspectable.
 	cleanupFailed := func(names []string) {
+		if stableTx != nil {
+			failedNames = append(failedNames, names...)
+			return
+		}
 		if publicStop == nil {
 			_ = stopServices(context.Background(), o.Docker, names)
 			return
@@ -295,7 +372,7 @@ func (o *Orchestrator) cutover(
 		fmt.Fprintf(out, "⚠ stablePublicWeb unavailable; using deployment-numbered routing: %s\n", reason)
 		log.Warn("stable public web unavailable", "project_id", project.ID, "reason", reason)
 	}
-	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, stableWeb, out)
+	startedServices, err := startServicesPhase(ctx, o.Docker, *project, dep, built, envVars, deploymentNetwork, stableWeb, out, stableTx)
 	if err != nil {
 		// Phase 1 failure: stop services we did start, no Caddy touch.
 		cleanupFailed(startedServices)
@@ -315,14 +392,29 @@ func (o *Orchestrator) cutover(
 		return err
 	}
 
+	settleCtx, settleCancel := context.WithTimeout(ctx, stableTx.recoveryBudget(cf))
+	err = stableTx.settle(settleCtx, o.Docker)
+	if err == nil && (stableTx == nil || stableTx.incomingStable) {
+		err = stableTx.activate(settleCtx, o.Docker)
+	}
+	if err == nil {
+		err = stableTx.settle(settleCtx, o.Docker)
+	}
+	settleCancel()
+	if err != nil {
+		cleanupFailed(startedServices)
+		return fmt.Errorf("deploy: stable web convergence: %w", err)
+	}
+
 	// PHASE 2 — commit. Caddy cutover, atomic from the public's POV.
 
 	fmt.Fprintf(out, "🌍 routing traffic to deployment #%d\n", dep.Number)
+	routeTouched = true
 	if err := commitCaddySwap(ctx, o.Caddy, o.DB, *project, dep, cf); err != nil {
 		// Try to revert; whether or not revert succeeds, kill the new
 		// services so they don't linger.
 		fmt.Fprintf(out, "↩️  traffic swap failed, reverting\n")
-		if publicStop == nil {
+		if publicStop == nil && stableTx == nil {
 			revertCaddySwap(context.Background(), log, o.Caddy, o.DB, *project, cf)
 		}
 		cleanupFailed(startedServices)
@@ -341,6 +433,12 @@ func (o *Orchestrator) cutover(
 			}
 			cleanupFailed(startedServices)
 			return fmt.Errorf("deploy: %w", err)
+		}
+	}
+	if stableTx != nil && !stableTx.incomingStable {
+		if err := stableTx.activate(ctx, o.Docker); err != nil {
+			cleanupFailed(startedServices)
+			return fmt.Errorf("deploy: withdraw old private address: %w", err)
 		}
 	}
 	fmt.Fprintf(out, "✅ traffic swap verified\n")

@@ -43,6 +43,7 @@ func startServicesPhase(
 	deploymentNetwork string,
 	stableWeb bool,
 	out io.Writer,
+	stableTx ...*stableWebTransaction,
 ) ([]string, error) {
 	var started []string
 	for _, b := range built {
@@ -52,6 +53,9 @@ func startServicesPhase(
 		if stableWeb && b.Name == "web" {
 			fmt.Fprintf(out, "🚀 updating stable public web service\n")
 			opts := stablePublicWebServiceOpts(project, dep, b, envVars)
+			if len(stableTx) > 0 {
+				stableTx[0].stage(&opts)
+			}
 			if err := d.ReconcileStableService(ctx, opts); err != nil {
 				return started, fmt.Errorf("deploy: reconcile stable public web: %w", err)
 			}
@@ -182,8 +186,9 @@ func serviceCreateOpts(
 			{Name: deploymentNetwork, Alias: b.Name},
 			{Name: MainNetworkName, Alias: mainNetAlias(project, b, dep)},
 		},
-		Replicas:    replicaCount(b.Service),
-		ExtraParams: docker.SplitParams(b.Service.ExtraSwarmParams),
+		Replicas:        replicaCount(b.Service),
+		StopGracePeriod: time.Duration(b.Service.StopGracePeriodSeconds) * time.Second,
+		ExtraParams:     docker.SplitParams(b.Service.ExtraSwarmParams),
 	}
 	if b.Service.Health != nil && b.Service.Health.Command != "" {
 		opts.HealthCommand = b.Service.Health.Command
@@ -218,6 +223,9 @@ func stablePublicWebServiceOpts(
 	stableName := docker.StablePublicWebServiceName(project.ID)
 	opts.Name = stableName
 	opts.Networks = []docker.NetworkAttachment{{Name: MainNetworkName, Alias: stableName}}
+	if b.Service.PrivateAddress {
+		opts.Networks[0].AdditionalAliases = []string{project.Name + "-" + b.Name}
+	}
 	return opts
 }
 

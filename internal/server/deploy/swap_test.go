@@ -522,3 +522,26 @@ func TestRevertCaddySwap_StaticErrorLoggedNotPropagated(t *testing.T) {
 		t.Errorf("log missing failure message: %s", buf.String())
 	}
 }
+
+func TestRevertCaddySwapUsesPreviousTopologyAndPort(t *testing.T) {
+	for _, tc := range []struct{ name, previous, want string }{
+		{"numbered before stable", `{"version":"1.0","services":{"web":{"port":8081}}}`, "api-2-web"},
+		{"stable before numbered", `{"version":"1.0","stablePublicWeb":true,"services":{"web":{"port":8081}}}`, "cobalt-web-7"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cy := &fakeSwapCaddy{}
+			st := &fakeSwapStore{lastSuccess: &store.Deployment{Number: 2, ResolvedCobaltfile: &tc.previous}}
+			p, _ := newSwapFixtures()
+			incoming := &cobaltfile.Cobaltfile{StablePublicWeb: tc.want != "cobalt-web-7", Services: map[string]cobaltfile.Service{"web": {Type: cobaltfile.TypeContainer, Port: 9999}}}
+			log, _ := captureLog()
+			revertCaddySwap(context.Background(), log, cy, st, p, incoming)
+			if len(cy.serveSvcCalls) != 1 {
+				t.Fatalf("calls=%+v", cy.serveSvcCalls)
+			}
+			call := cy.serveSvcCalls[0]
+			if call.container != tc.want || call.port != 8081 || call.deploymentNumber != 2 {
+				t.Fatalf("recovered wrong previous endpoint: %+v", call)
+			}
+		})
+	}
+}

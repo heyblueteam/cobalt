@@ -83,6 +83,141 @@ TBD. Will be decided before any external release. Until then the repo is private
 
 - `tmp/` holds shallow clones of the upstream tool we're replacing. Gitignored, used as **behavior reference only**. We read upstream to understand *what* it does (request shapes, state machines, edge cases), then implement from notes — not by translating files. This keeps cobalt out of derivative-work territory under upstream's GPL-3.0.
 
+## Stable public web with a private address
+
+A public web process can also have a shared private DNS address without another
+API process. `exposedInternally` keeps its existing meaning: it adds a
+`{project}-{service}` alias **and disables public routing for web**. Use
+`privateAddress` on eligible stable public web to add `{project}-web` while
+retaining public routing through the same service and port:
+
+```json
+{
+  "version": "1.0",
+  "stablePublicWeb": true,
+  "stablePublicWebNetwork": "shared",
+  "services": {
+    "web": {
+      "port": 3000,
+      "privateAddress": true,
+      "stopGracePeriodSeconds": 35
+    },
+    "worker": { "command": "node worker.js" },
+    "embed": { "port": 4000, "exposedInternally": true }
+  }
+}
+```
+
+`stablePublicWebNetwork: "shared"` is an explicit dependency contract:
+
+- Stable web joins only `cobalt-main`. It neither uses nor provides deployment
+  network short names such as `web`, `embed` or `worker`.
+- Web uses explicitly configured shared names, such as `{project}-embed`.
+  Siblings, hooks, generators, crons and `cobalt run` use `{project}-web` when
+  they need web. Siblings keep their numbered services, deployment networks and
+  mutual short names; logs, scale and one-off command behavior stay the same.
+- Shared dependency aliases have no generation affinity. Applications must
+  tolerate compatible mixed versions during overlap, including retained old web
+  generations. Change old application dependencies to shared names **before**
+  opting in. This does not add isolation or authentication to `cobalt-main`.
+- Stop-first siblings are rejected in this mode because a failed replacement
+  cannot restore a removed dependency. To enable stop-first on a sibling later,
+  first deploy numbered web without that stop-first change, then enable it.
+  The same staged transition is required before enabling public web stop-first:
+  stable recovery and exclusive-writer recovery must not own the same cutover.
+
+Without this explicit contract, a stable-web request with sibling containers
+keeps the existing numbered fallback. `privateAddress` fails validation if web
+cannot actually use stable routing: no silent numbered private endpoint is
+created. Published web ports, stop-first web, unsupported Swarm flags and
+volumes without `sharedDuringUpdate` remain ineligible. A legacy internal-only
+web that already owns `{project}-web` blocks private-address adoption before
+hooks or service mutation; retire that conflicting alias first. Direct transitions
+from an existing stable public service to `exposedInternally` web are also
+rejected before hooks: deploy numbered public web first and wait for the stable
+service to retire before adopting internal-only routing. Remove public domains
+when changing a project to internal-only service.
+
+The public upstream keeps its immutable project-ID service name and VIP.
+Private aliases are reconciled on existing stable services, including removal,
+re-addition and project rename. A newly requested alias is published only after
+all incoming service health checks, web readiness and Swarm convergence. On
+first activation, re-addition or rename, first deploy with consumers disabled or
+with readiness independent of the new name, verify private HTTP, and only then
+roll out consumers that require it. A sibling whose health requires the not-yet-
+published alias would block that deployment. Hooks and generators that run before
+publication likewise need an already established endpoint. Disabling stable routing
+withdraws the retained stable service's private alias after numbered route
+verification, even while public retirement grace retains the old service.
+The periodic Caddy reconciler repairs aliases under the same project lock,
+only for an existing service owned by the last successful deployment.
+
+Before changing stable web, Cobalt captures its complete service spec. A later
+service-start, health, readiness, routing or cancellation failure restores that
+spec, waits for restored tasks/readiness, restores the previous resolved route
+and port, and then removes new siblings. Before starting restoration, it waits
+for the previous Swarm update controller to finish or pause and for all retiring
+tasks to actually exit. This bounded barrier does not require the failed incoming
+generation to become healthy; on timeout, recovery reports an error and retains
+its dependencies instead of launching another task cohort. Failed first deployments retire their
+new stable web. Recovery errors are returned explicitly and dependencies needed
+for recovery are retained. This restores process settings, not database/schema
+changes made by hooks. The snapshot is scoped to the running cutover; daemon
+upgrades must wait for active deployments to finish. A process/host crash does
+not provide a persistent deployment transaction journal.
+
+Budget live processes rather than desired replicas. Update parallelism 1 does
+not constrain start-first overlap to `replicas + 1`: Swarm can start later
+replacement slots while earlier old tasks are still exiting. The disposable
+four-replica regression measured eight actual running containers/tasks, including
+four desired-Shutdown tasks still running, with 30-second requests and a
+35-second stop grace. Allow for full old/new overlap and count shutting-down
+processes until exit when budgeting connections and memory. A four-replica
+failed-worker regression with a previously updated start-first snapshot measured
+ten live processes without the recovery barrier, and eight with it; both restored
+the exact prior spec. These are measurements of the exercised scenarios, not a
+universal process cap across faults, restarts, automatic rollback or differing
+old/new shutdown grace. Repeated fast-health-failure tests entered Swarm's
+automatic start-first rollback and measured eight and nine live processes
+(up to twelve starts/exits across update/restarts/rollback). Budget additional
+failure/restart headroom beyond ordinary full old/new overlap. Docker automatic
+rollback remains enabled as a fallback if the daemon exits during an update.
+Automatic rollback retires a failed slot before starting its old-spec replacement
+(stop-first); normal updates remain start-first, and Cobalt's drained snapshot
+restoration retains its captured normal update policy. The corresponding
+stop-first automatic-rollback regression measured eight live processes. This failure-path ordering can introduce downtime while replacements
+start, especially with one replica; it is not a universal process-count cap.
+When withdrawing a private alias from retained stable web after moving to
+numbered public routing, the desired spec changes after route verification;
+existing task DNS can retain that alias until the network update converges and
+those old tasks exit. Do not immediately reassign it to a different service.
+
+`stopGracePeriodSeconds` is optional on containers (0 means Docker's 10-second
+default; explicit values are 1–86400). It sets the task's shutdown budget. The
+application must handle SIGTERM and finish requests before its own or Docker's
+shutdown deadline; Docker then forcibly terminates it. Existing tasks retain
+their previous grace when updating configuration. Therefore stage adequate
+application shutdown behavior and task grace before migrating an existing
+endpoint. Stable DNS/VIP alone does not promise arbitrary request completion.
+The disposable regression exercises a 20-second request with a 35-second task
+grace and continuous public/private HTTP during updates.
+
+Stable updates and recovery use the configured Docker CLI transport through
+`docker system dial-stdio`. The Engine API version is negotiated from that
+client/server pair, including an explicit `DOCKER_API_VERSION` override; it is
+not pinned to an obsolete API version. Unknown service and attachment options
+are preserved. Image-default commands, environment and healthchecks are restored
+when configuration overrides are removed.
+
+Upgrade the daemon before deploying these new keys. Older daemons and older
+local `cobalt validate` binaries reject unknown keys; use the matching new CLI
+for local validation (`cobalt validate path/to/cobalt.json`). Ordinary deploy
+requests can still be sent by older CLIs, which pass the configuration to the
+daemon. To downgrade a daemon, first deploy configuration without the new keys
+and remove them from saved configuration that the older daemon will read.
+Roll back application configuration through a normal Cobalt deployment; keep
+private callers on a working endpoint until its replacement is verified.
+
 ## Stable web routing with shared volumes
 
 Set `stablePublicWeb: true` to keep the public web service name and VIP across
@@ -131,12 +266,14 @@ To run the pooled-HTTP and shared-asset regression, point `DOCKER_HOST` at a
 **disposable** Docker daemon and run:
 
 ```sh
-COBALT_DISPOSABLE_SWARM=1 go test -tags integration \
+COBALT_DISPOSABLE_SWARM=1 \
+COBALT_DISPOSABLE_SWARM_OWNERSHIP=fix-stable-private-web \
+go test -tags integration \
   ./internal/server/docker -run '^TestReconcileStableService_RealSwarm$' -v
 ```
 
-The test initializes and leaves a Swarm on that daemon. It does not use a
-production server. It keeps an HTTP/1.1 client connection through Caddy open
+The caller initializes and owns the disposable Swarm. The test requires an
+explicit non-host `DOCKER_HOST` and never initializes or leaves a Swarm. It keeps an HTTP/1.1 client connection through Caddy open
 across an image update and checks that the new build and old assets remain
 available without failed requests.
 

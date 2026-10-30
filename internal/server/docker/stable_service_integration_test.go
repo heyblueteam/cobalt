@@ -29,15 +29,24 @@ func TestReconcileStableService_RealSwarm(t *testing.T) {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	run("swarm", "init")
-	t.Cleanup(func() { _ = exec.Command("docker", "swarm", "leave", "--force").Run() })
+	host := os.Getenv("DOCKER_HOST")
+	if host == "" || strings.HasPrefix(host, "unix:") {
+		t.Fatal("explicit disposable DOCKER_HOST required; host socket is forbidden")
+	}
+	if os.Getenv("COBALT_DISPOSABLE_SWARM_OWNERSHIP") != "fix-stable-private-web" {
+		t.Fatal("explicit disposable daemon ownership marker required")
+	}
+	if run("info", "--format", "{{.Swarm.LocalNodeState}}") != "active" {
+		t.Fatal("caller must initialize owned disposable Swarm")
+	}
+
 	id := time.Now().UnixNano()
 	name := StablePublicWebServiceName(id)
 	network := fmt.Sprintf("stable-test-%d", id)
 	volume := VolumeName(id, "assets")
 	proxy := fmt.Sprintf("proxy-%d", id)
 	client := fmt.Sprintf("client-%d", id)
-	// Cleanup runs before leaving the owned Swarm (LIFO).
+	// The caller owns daemon lifecycle; this test never changes Swarm membership.
 	t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", network).Run() })
 	t.Cleanup(func() { _ = exec.Command("docker", "volume", "rm", volume).Run() })
 	t.Cleanup(func() { _ = exec.Command("docker", "service", "rm", name).Run() })

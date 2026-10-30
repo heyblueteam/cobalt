@@ -152,6 +152,14 @@ func revertCaddySwap(
 			"project_id", project.ID, "error", err)
 		return
 	}
+	if prev.ResolvedCobaltfile != nil {
+		previousFile, parseErr := cobaltfile.Parse([]byte(*prev.ResolvedCobaltfile))
+		if parseErr != nil {
+			log.Error("deploy.revertCaddySwap: parse previous configuration", "error", parseErr)
+			return
+		}
+		cf = previousFile
+	}
 	web, ok := cf.Services["web"]
 	if !ok || web.ExposedInternally {
 		// No public Caddy route for this project — nothing to revert.

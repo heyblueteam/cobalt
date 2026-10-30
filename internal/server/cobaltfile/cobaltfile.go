@@ -52,8 +52,11 @@ type Cobaltfile struct {
 	Services        map[string]Service `json:"services,omitempty"`
 	Images          map[string]Image   `json:"images,omitempty"`
 	StablePublicWeb bool               `json:"stablePublicWeb,omitempty"`
-	WebRetirement   *WebRetirement     `json:"webRetirement,omitempty"`
-	Notify          *Notify            `json:"notify,omitempty"`
+	// StablePublicWebNetwork explicitly acknowledges that stable web uses only
+	// cobalt-main: no deployment-scoped short names in either direction.
+	StablePublicWebNetwork string         `json:"stablePublicWebNetwork,omitempty"`
+	WebRetirement          *WebRetirement `json:"webRetirement,omitempty"`
+	Notify                 *Notify        `json:"notify,omitempty"`
 }
 
 // Notify configures outbound deploy notifications. A nil Notify (or a nil
@@ -128,10 +131,16 @@ type Service struct {
 	Volumes           []Volume        `json:"volumes,omitempty"`
 	Schedule          string          `json:"schedule,omitempty"`
 	ExposedInternally bool            `json:"exposedInternally,omitempty"`
-	Timeout           int             `json:"timeout,omitempty"`
-	Health            *Health         `json:"health,omitempty"`
-	ExtraSwarmParams  string          `json:"extraSwarmParams,omitempty"`
-	ExtraRunParams    string          `json:"extraRunParams,omitempty"`
+	// PrivateAddress adds a project-scoped private alias to the stable public
+	// web service without disabling its public route.
+	PrivateAddress bool `json:"privateAddress,omitempty"`
+	// StopGracePeriodSeconds gives container processes time to finish after
+	// Docker sends their stop signal. Zero preserves Docker's default.
+	StopGracePeriodSeconds int     `json:"stopGracePeriodSeconds,omitempty"`
+	Timeout                int     `json:"timeout,omitempty"`
+	Health                 *Health `json:"health,omitempty"`
+	ExtraSwarmParams       string  `json:"extraSwarmParams,omitempty"`
+	ExtraRunParams         string  `json:"extraRunParams,omitempty"`
 	// MinReplicas is the baseline replica count a new deployment of this
 	// container service starts with. Zero means "use docker's default of
 	// 1". `cobalt scale set` can still raise the count above the floor for
@@ -162,11 +171,8 @@ type Volume struct {
 	SharedDuringUpdate bool `json:"sharedDuringUpdate,omitempty"`
 }
 
-// UsesStablePublicWeb reports whether the project can use Cobalt's durable
-// public-web service. The stable service only joins cobalt-main, so projects
-// needing a deployment-scoped network stay on the existing generation route.
-// Keep this deliberately conservative until service dependencies are modeled
-// explicitly in cobalt.json.
+// UsesStablePublicWeb reports whether web can use a durable main-network VIP.
+// Siblings require an explicit shared-network dependency contract.
 func (cf *Cobaltfile) UsesStablePublicWeb() bool {
 	return cf.StablePublicWeb && cf.StablePublicWebUnavailableReason() == ""
 }
@@ -188,11 +194,13 @@ func (cf *Cobaltfile) StablePublicWebUnavailableReason() string {
 			return fmt.Sprintf("volume %q must explicitly set sharedDuringUpdate: true for concurrent access", volume.Name)
 		}
 	}
+
 	for name, service := range cf.Services {
-		if name != "web" && service.Type == TypeContainer {
-			return "additional container services require deployment-scoped networking"
+		if name != "web" && service.Type == TypeContainer && cf.StablePublicWebNetwork != "shared" {
+			return "additional container services require deployment-scoped networking; stablePublicWebNetwork: shared explicitly opts web out of short-name networking"
 		}
 	}
+
 	return ""
 }
 
