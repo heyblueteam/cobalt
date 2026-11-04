@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"sort"
 	"strings"
 )
@@ -146,6 +147,18 @@ func (c *Client) Build(ctx context.Context, opts BuildOpts) (string, error) {
 	runEnv["COBALT_DOT_ENV"] = formatDotEnv(opts.EnvSecrets)
 	if err := c.runner.RunWithEnv(ctx, runEnv, args, nil, opts.Output, opts.Output); err != nil {
 		return "", fmt.Errorf("docker.Build %s: %w", tag, err)
+	}
+	if opts.CacheDir != "" {
+		removed, bytes, err := pruneLocalBuildCache(ctx, opts.CacheDir)
+		if err != nil {
+			// Cache maintenance must not turn a successful build into a failed deploy.
+			slog.Warn("build cache cleanup failed", "project", opts.ProjectName, "error", err)
+			if opts.Output != nil {
+				fmt.Fprintf(opts.Output, "Warning: build cache cleanup failed: %v\n", err)
+			}
+		} else if removed > 0 && opts.Output != nil {
+			fmt.Fprintf(opts.Output, "Build cache cleanup: removed %d unused blobs (%d bytes)\n", removed, bytes)
+		}
 	}
 	return tag, nil
 }
