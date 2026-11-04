@@ -52,6 +52,22 @@ test/               (planned)   integration + e2e tests against real Docker/Cadd
 - **Errors**: `errors.Is`/`errors.As`, no panics in request paths, structured logging at the boundary.
 - **Database**: SQLite. Plain SQL migrations under `migrations/`, embedded via `go:embed`, applied at daemon startup.
 
+## Build cache retention
+
+Each project exports its BuildKit cache to
+`{dataDir}/buildkit-cache/{projectID}` with `mode=max`. After a successful build
+and cache export, Cobalt removes SHA-256 blobs that no current `index.json`
+entry references. It keeps the manifests, configs and layers for every entry,
+including nested indexes and shared dependencies. Existing historical exports
+are reclaimed on the next successful build.
+
+Cleanup runs within the dispatcher's per-project deployment serialization.
+Failed builds do not prune the cache, and cancellation stops cleanup. Missing,
+corrupt or unsupported cache metadata prevents deletion and produces a warning in daemon
+logs and deployment output; it does not fail an otherwise successful build.
+Cleanup affects only the project's exported cache. Docker runtime images,
+rollback images, service volumes and BuildKit's internal cache are separate.
+
 ## Identity vs display
 
 A project has two names: a **stable identifier** (its `id`) and a **display name** (its `name`). The identifier never changes; the display name is mutable via `cobalt projects rename`.
