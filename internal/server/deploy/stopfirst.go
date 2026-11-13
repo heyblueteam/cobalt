@@ -63,6 +63,72 @@ func stopFirstPhase(
 	return nil
 }
 
+type portPreflightDocker interface {
+	ListServicesForProject(context.Context, int64) ([]docker.ServiceInfo, error)
+	ServicePublishedPorts(context.Context, string) ([]docker.PublishedPort, error)
+}
+
+// publishedPortsPreflight fails a deploy before anything changes when a
+// start-first service publishes a port that an older generation still holds.
+// Swarm would reject the new service at create time ("port already in use as
+// an ingress port"), after stopFirst siblings were already removed, leaving the
+// old generation running without its data services.
+func publishedPortsPreflight(
+	ctx context.Context,
+	d portPreflightDocker,
+	project store.Project,
+	dep store.Deployment,
+	built []BuiltService,
+) error {
+	var startFirst []BuiltService
+	for _, b := range built {
+		if runsAsService(b.Service) && !b.Service.StopFirst && len(b.Service.PublishedPorts) > 0 {
+			startFirst = append(startFirst, b)
+		}
+	}
+	if len(startFirst) == 0 {
+		return nil
+	}
+	services, err := d.ListServicesForProject(ctx, project.ID)
+	if err != nil {
+		return fmt.Errorf("deploy: published ports preflight: list services: %w", err)
+	}
+	for _, b := range startFirst {
+		for _, s := range services {
+			gen, ok := docker.Generation(project.Name, b.Name, s.Name)
+			if !ok || gen == dep.Number {
+				continue
+			}
+			held, err := d.ServicePublishedPorts(ctx, s.Name)
+			if err != nil {
+				return fmt.Errorf("deploy: published ports preflight: inspect %q: %w", s.Name, err)
+			}
+			for _, want := range b.Service.PublishedPorts {
+				for _, h := range held {
+					if h.PublishedAs == want.PublishedAs && protocolOrTCP(h.Protocol) == protocolOrTCP(want.Protocol) {
+						return fmt.Errorf(
+							"deploy: service %q publishes port %d, which %q still holds; set \"stopFirst\": true on %q so the old generation releases it first",
+							b.Name, want.PublishedAs, s.Name, b.Name,
+						)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func protocolOrTCP(p string) string {
+	if p == "" {
+		return "tcp"
+	}
+	return p
+}
+
 // Compile-time check that the real docker client satisfies the widened
 // ServiceDocker interface (ListServicesForProject is also used by cleanup).
-var _ ServiceDocker = (*docker.Client)(nil)
+var (
+	_ ServiceDocker       = (*docker.Client)(nil)
+	_ portPreflightDocker = (*docker.Client)(nil)
+	_ stopFirstDocker     = (*docker.Client)(nil)
+)

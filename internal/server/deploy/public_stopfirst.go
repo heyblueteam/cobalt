@@ -14,11 +14,17 @@ import (
 
 const stopFirstTimeout = 2 * time.Minute
 
+// restorePortsBackoff is a variable so tests do not wait.
+var restorePortsBackoff = time.Second
+
 type stopFirstDocker interface {
 	ServiceDocker
 	ServiceReplicas(context.Context, string) (int, error)
 	SetServiceReplicas(context.Context, string, int) error
 	WaitForServiceStopped(context.Context, string) error
+	ServicePublishedPorts(context.Context, string) ([]docker.PublishedPort, error)
+	ReleaseServicePorts(context.Context, string, []docker.PublishedPort) error
+	RestoreServicePorts(context.Context, string, []docker.PublishedPort) error
 }
 
 type publicStopFirst struct {
@@ -29,6 +35,11 @@ type publicStopFirst struct {
 	previousReplicas int
 	old              []string
 	newName          string
+	// ports holds each old service's published ports, read before mutation.
+	// A service at zero replicas keeps its ingress ports reserved, so stopOld
+	// releases them; released records what recover must give back.
+	ports    map[string][]docker.PublishedPort
+	released map[string][]docker.PublishedPort
 }
 
 func publicStopFirstEnabled(cf *cobaltfile.Cobaltfile) bool {
@@ -39,7 +50,12 @@ func publicStopFirstEnabled(cf *cobaltfile.Cobaltfile) bool {
 // preparePublicStopFirst validates recovery metadata before touching a service.
 // Keep the actual old service spec: its volume/env may differ from old source.
 func preparePublicStopFirst(ctx context.Context, d stopFirstDocker, st SwapStore, project store.Project, dep store.Deployment) (*publicStopFirst, error) {
-	s := &publicStopFirst{projectID: project.ID, newName: docker.ServiceName(project.Name, dep.Number, "web")}
+	s := &publicStopFirst{
+		projectID: project.ID,
+		newName:   docker.ServiceName(project.Name, dep.Number, "web"),
+		ports:     map[string][]docker.PublishedPort{},
+		released:  map[string][]docker.PublishedPort{},
+	}
 	previous, err := st.GetLastSuccessfulDeployment(ctx, project.ID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, err
@@ -73,6 +89,13 @@ func preparePublicStopFirst(ctx context.Context, d stopFirstDocker, st SwapStore
 			continue
 		}
 		s.old = append(s.old, svc.Name)
+		ports, err := d.ServicePublishedPorts(ctx, svc.Name)
+		if err != nil {
+			return nil, fmt.Errorf("stopFirst: inspect published ports of %s: %w", svc.Name, err)
+		}
+		if len(ports) > 0 {
+			s.ports[svc.Name] = ports
+		}
 		if svc.Name == s.previousName {
 			found = true
 			s.previousReplicas, err = d.ServiceReplicas(ctx, svc.Name)
@@ -107,6 +130,14 @@ func (s *publicStopFirst) stopOld(ctx context.Context, d stopFirstDocker, out io
 		if err := quiesceService(ctx, d, name); err != nil {
 			return fmt.Errorf("stopFirst: stop %s: %w", name, err)
 		}
+		// Release only after exit is proven, so no live writer loses its ports.
+		if ports := s.ports[name]; len(ports) > 0 {
+			fmt.Fprintf(out, "⏹ public stopFirst: releasing published ports of %s\n", name)
+			if err := d.ReleaseServicePorts(ctx, name, ports); err != nil {
+				return fmt.Errorf("stopFirst: release ports of %s: %w", name, err)
+			}
+			s.released[name] = ports
+		}
 	}
 	return nil
 }
@@ -140,6 +171,14 @@ func (s *publicStopFirst) recover(ctx context.Context, d stopFirstDocker, out io
 	if s.previous == nil {
 		return nil
 	}
+	// The replacement was removed above, so its ports are free again. Other
+	// old generations never resume and keep their ports released.
+	if ports := s.released[s.previousName]; len(ports) > 0 {
+		if err := restorePorts(ctx, d, s.previousName, ports); err != nil {
+			return fmt.Errorf("restore ports of %s: %w", s.previousName, err)
+		}
+		delete(s.released, s.previousName)
+	}
 	if err := d.SetServiceReplicas(ctx, s.previousName, s.previousReplicas); err != nil {
 		return err
 	}
@@ -148,4 +187,21 @@ func (s *publicStopFirst) recover(ctx context.Context, d stopFirstDocker, out io
 	}
 	fmt.Fprintln(out, "↩ previous public service restarted; checking readiness and route")
 	return nil
+}
+
+// restorePorts retries briefly: the Swarm allocator can still hold a just-
+// removed replacement's ports for a moment.
+func restorePorts(ctx context.Context, d stopFirstDocker, name string, ports []docker.PublishedPort) error {
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		if err = d.RestoreServicePorts(ctx, name, ports); err == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(restorePortsBackoff):
+		}
+	}
+	return err
 }

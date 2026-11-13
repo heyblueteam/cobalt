@@ -227,6 +227,9 @@ its persistent data with a second process. This accepts downtime during updates.
 Cobalt waits for process exit and retains the previous service for startup
 recovery. See [public stop-first services](docs/architecture.md#public-stop-first-services)
 for backup and recovery limits. Ordinary web services remain start-first.
+A service that sets `publishedPorts` must use `stopFirst`: Swarm cannot give two
+generations the same port, and Cobalt rejects that deploy before changing
+anything.
 
 ### Deploy notifications
 
