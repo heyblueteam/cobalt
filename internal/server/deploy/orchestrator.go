@@ -241,6 +241,11 @@ func (o *Orchestrator) cutover(
 	if err := validateStableRecoveryTransition(previousStable, cf, built); err != nil {
 		return err
 	}
+	// Before generators, hooks or any stop: a doomed create must not cost data
+	// services their old generation.
+	if err := publishedPortsPreflight(ctx, o.Docker, *project, dep, built); err != nil {
+		return err
+	}
 
 	staticDir := o.Caddy.StaticSiteDeploymentPath(project.Name, dep.Number)
 	if _, err := runGenerators(ctx, o.Docker, *project, dep, built, envVars, staticDir, out, out); err != nil {

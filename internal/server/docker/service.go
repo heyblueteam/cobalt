@@ -14,6 +14,8 @@ type PublishedPort struct {
 	PublishedAs       int
 	FromContainerPort int
 	Protocol          string // "tcp", "udp", "sctp"
+	// Mode is "ingress" or "host"; empty leaves Swarm's default (ingress).
+	Mode string
 }
 
 // ServiceVolume mounts a named docker volume into a service or container.
@@ -102,15 +104,7 @@ func (c *Client) CreateService(ctx context.Context, opts ServiceCreateOpts) erro
 		args = append(args, "--network", networkFlagValue(n))
 	}
 	for _, p := range opts.PublishedPorts {
-		proto := p.Protocol
-		if proto == "" {
-			proto = "tcp"
-		}
-		args = append(
-			args,
-			"--publish",
-			fmt.Sprintf("published=%d,target=%d,protocol=%s", p.PublishedAs, p.FromContainerPort, proto),
-		)
+		args = append(args, "--publish", publishFlagValue(p))
 	}
 	for _, v := range opts.Volumes {
 		args = append(

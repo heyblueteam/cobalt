@@ -382,6 +382,25 @@ If exit cannot be confirmed, recovery fails closed and logs that operator action
 is required. A daemon/host crash during this sequence also requires inspection;
 this is not a durable recovery transaction.
 
+### Published ports
+
+Swarm reserves `publishedPorts` per service object, not per task: a service
+scaled to zero still blocks every other service from publishing the same port.
+Public stop-first therefore reads each old web's published ports from its actual
+spec before changing anything, and removes them once that service has exited.
+Recovery re-adds them before it restarts the previous service.
+
+A start-first service that publishes ports cannot be replaced at all, because its
+new generation can never bind ports the old one still holds. Cobalt checks this
+before generators, hooks or any stop, and fails with a message to set
+`stopFirst: true`. A web service that publishes ports needs public stop-first;
+any other service needs `stopFirst`, which removes its old generation.
+
+Recovery restarts only the previous **web** service. Other `stopFirst` services
+(for example, a database) are removed, not retained. If the replacement web fails
+after they were replaced, the previous web restarts without them, and an
+operator must redeploy.
+
 **Process recovery does not undo database or schema changes.** Take an application
 backup before updates that change data formats. If the old binary cannot read the
 new format, restore the backup using the application's procedure. Do not mark a

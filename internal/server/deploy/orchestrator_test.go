@@ -51,11 +51,15 @@ func (f *orchestratorDocker) RunWithEnv(_ context.Context, _ map[string]string, 
 			return err
 		}
 	}
-	for prefix, out := range f.stdout {
-		if strings.HasPrefix(joined, prefix) && stdout != nil {
-			_, _ = io.WriteString(stdout, out)
-			break
+	// Longest matching prefix wins, so a specific answer can override a broad one.
+	best, found := "", false
+	for prefix := range f.stdout {
+		if strings.HasPrefix(joined, prefix) && len(prefix) >= len(best) {
+			best, found = prefix, true
 		}
+	}
+	if found && stdout != nil {
+		_, _ = io.WriteString(stdout, f.stdout[best])
 	}
 	return nil
 }
@@ -821,8 +825,11 @@ func TestOrchestrator_PublicStopFirstCutoverAndRecovery(t *testing.T) {
 			}
 			dep := enqueueAndFetch(t, db, project.ID)
 			d.stdout = map[string]string{
-				"service ls":           "api-1-web\t1/1\napi-2-web\t1/1\n",
-				"service inspect":      "1",
+				"service ls":      "api-1-web\t1/1\napi-2-web\t1/1\n",
+				"service inspect": "1",
+				// The old web publishes a port; a zero-replica service would keep it.
+				"service inspect --format {{json .Spec.EndpointSpec.Ports}} api-1-web": `[{"Protocol":"tcp","TargetPort":2525,"PublishedPort":2525,"PublishMode":"ingress"}]`,
+				"service inspect --format {{json .Spec.EndpointSpec.Ports}}":           "null",
 				"service ps api-1-web": "Shutdown 1 second ago",
 				"service ps api-2-web --no-trunc --format {{.CurrentState}}":  "Shutdown 1 second ago",
 				"service ps api-2-web --no-trunc --format {\"current_state\"": `{"current_state":"Running","health":""}`,
@@ -843,13 +850,14 @@ func TestOrchestrator_PublicStopFirstCutoverAndRecovery(t *testing.T) {
 			}
 			var events []string
 			for _, call := range d.calls {
-				if strings.HasPrefix(call, "service scale") || strings.HasPrefix(call, "service rm") || strings.HasPrefix(call, "service create") {
+				if strings.HasPrefix(call, "service scale") || strings.HasPrefix(call, "service rm") || strings.HasPrefix(call, "service create") || strings.HasPrefix(call, "service update") {
 					events = append(events, call)
 				}
 			}
 			// The old spec is retained until success, or restored on failure. Even
 			// a create RPC failure may have accepted a new service, so inspect it.
-			if len(events) < 3 || events[0] != "service scale --detach=true api-1-web=0" || !strings.HasPrefix(events[1], "service create") {
+			release := "service update --detach=true --publish-rm published=2525,target=2525,protocol=tcp,mode=ingress api-1-web"
+			if len(events) < 4 || events[0] != "service scale --detach=true api-1-web=0" || events[1] != release || !strings.HasPrefix(events[2], "service create") {
 				t.Fatal(events)
 			}
 			cy.mu.Lock()
@@ -858,6 +866,10 @@ func TestOrchestrator_PublicStopFirstCutoverAndRecovery(t *testing.T) {
 			if fail {
 				if !d.hasCall("service scale --detach=true api-2-web=0") || !d.hasCall("service scale --detach=true api-1-web=1") {
 					t.Fatal(events)
+				}
+				restore := "service update --detach=true --publish-add published=2525,target=2525,protocol=tcp,mode=ingress api-1-web"
+				if n := len(events); n < 2 || events[n-2] != restore || events[n-1] != "service scale --detach=true api-1-web=1" {
+					t.Fatalf("ports must be restored right before the previous service resumes: %v", events)
 				}
 				if d.hasCall("service rm api-1-web") {
 					t.Fatal("recovery destroyed old service")
