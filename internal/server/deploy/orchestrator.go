@@ -206,6 +206,9 @@ func (o *Orchestrator) cutover(
 	// post-success cleanup exclusive with the scheduled reaper for this project.
 	unlock := projectlock.Lock(project.ID)
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	var probe retirementProber
 	if o.DataPlaneProber != nil {

@@ -337,3 +337,67 @@ func TestRecoverOnBoot(t *testing.T) {
 		}
 	}
 }
+
+// A slow webhook must not cancel the deployment that replaced its own push.
+func TestDispatcher_SupersedeDoesNotCancelNewerDeployment(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	q := NewQueue(db)
+	pid := newProject(t, db, "api")
+	old, _, err := q.Enqueue(ctx, EnqueueRequest{ProjectID: pid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, _, err := q.Enqueue(ctx, EnqueueRequest{ProjectID: pid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	runner := RunnerFunc(func(ctx context.Context, dep store.Deployment) error {
+		close(started)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	d := NewDispatcher(db, runner, quietLogger(), DispatcherOpts{PollInterval: time.Hour})
+	d.Start(ctx)
+	t.Cleanup(d.Stop)
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("current deployment did not start")
+	}
+	if err := d.Supersede(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		dep, err := db.GetDeployment(ctx, current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if dep.Status.IsTerminal() {
+			if dep.Status != cobaltapi.StateSuccess {
+				t.Fatalf("newer deployment was interrupted: %s", dep.Status)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("current deployment never completed")
+}
+
+func TestOrchestrator_CanceledBuildCannotEnterCutover(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	o := &Orchestrator{}
+	err := o.cutover(ctx, quietLogger(), &store.Project{ID: 1}, store.Deployment{}, nil, nil, nil, io.Discard)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cutover after cancellation: %v", err)
+	}
+}

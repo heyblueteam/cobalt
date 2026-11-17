@@ -13,9 +13,11 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/github"
+	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -28,6 +30,7 @@ type webhookEnv struct {
 	db  *store.DB
 	app *store.GithubApp
 	q   *deploy.Queue
+	h   *Handler
 }
 
 func newWebhookEnv(t *testing.T) *webhookEnv {
@@ -62,7 +65,7 @@ func newWebhookEnv(t *testing.T) *webhookEnv {
 	if app == nil {
 		t.Fatalf("GetGithubApp(%d): nil app, no error — store inconsistency", appID)
 	}
-	return &webhookEnv{t: t, srv: srv, db: db, app: app, q: q}
+	return &webhookEnv{t: t, srv: srv, db: db, app: app, q: q, h: h}
 }
 
 func (e *webhookEnv) post(t *testing.T, event, delivery string, payload any) *http.Response {
@@ -616,5 +619,175 @@ func TestWebhook_PushEnqueuesProjectWhenWatchPathTouched(t *testing.T) {
 	deps, _ = e.db.QueuedDeployments(ctx)
 	if len(deps) != 1 {
 		t.Errorf("queued: %d, want still 1 (docs-only push must not deploy)", len(deps))
+	}
+}
+
+// A signed push follows the real HTTP handler, queue and dispatcher. Keep the
+// canceled runner alive until both replacement pushes arrive to prove that
+// cleanup completes before the newest build starts.
+func TestWebhook_PushReplacesBuildWithNewestRevision(t *testing.T) {
+	for _, project := range []struct{ name, path string }{{"next", "app"}, {"api", "api"}, {"server", "server"}} {
+		t.Run(project.name, func(t *testing.T) {
+			e := newWebhookEnv(t)
+			ctx := context.Background()
+			pid, err := e.db.CreateProject(ctx, store.Project{
+				Name: project.name, GithubRepo: "acme/blue", Branch: "main", Path: project.path,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, _, err := e.q.Enqueue(ctx, deploy.EnqueueRequest{ProjectID: pid, CommitSHA: "old"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan store.Deployment, 3)
+			canceled := make(chan struct{})
+			release := make(chan struct{})
+			runner := deploy.RunnerFunc(func(ctx context.Context, dep store.Deployment) error {
+				started <- dep
+				if dep.ID != old {
+					return nil
+				}
+				<-ctx.Done()
+				close(canceled)
+				<-release
+				return ctx.Err()
+			})
+			dispatcher := deploy.NewDispatcher(e.db, runner, e.h.Log, deploy.DispatcherOpts{PollInterval: time.Hour})
+			e.h.Dispatcher = dispatcher
+			dispatcher.Start(ctx)
+			t.Cleanup(dispatcher.Stop)
+			// Release on every failure path before Stop waits for the runner.
+			t.Cleanup(func() {
+				select {
+				case <-release:
+				default:
+					close(release)
+				}
+			})
+			select {
+			case <-started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("old build did not start")
+			}
+			if err := e.db.SetDeploymentStatus(ctx, old, cobaltapi.StateBuilding); err != nil {
+				t.Fatal(err)
+			}
+			push := func(sha string) {
+				t.Helper()
+				resp := e.post(t, "push", "delivery-"+sha, map[string]any{
+					"ref": "refs/heads/main", "after": sha,
+					"repository": map[string]any{"id": 1, "full_name": "acme/blue"},
+					"commits":    []map[string]any{{"modified": []string{project.path + "/main.go"}}},
+				})
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusAccepted {
+					t.Fatalf("push status: %d", resp.StatusCode)
+				}
+			}
+			push("middle")
+			select {
+			case <-canceled:
+			case <-time.After(3 * time.Second):
+				t.Fatal("push did not cancel old build")
+			}
+			push("newest")
+			queued, err := e.db.QueuedDeployments(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(queued) != 2 {
+				t.Fatalf("queued before old runner exits: %d, want 2", len(queued))
+			}
+			close(release)
+			var replacement store.Deployment
+			select {
+			case replacement = <-started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("replacement did not start")
+			}
+			if replacement.CommitSHA == nil || *replacement.CommitSHA != "newest" {
+				t.Fatalf("started wrong replacement: %+v", replacement)
+			}
+			waitForStatus(t, e.db, old, cobaltapi.StateCanceled)
+			waitForStatus(t, e.db, queued[0].ID, cobaltapi.StateSkipped)
+			waitForStatus(t, e.db, replacement.ID, cobaltapi.StateSuccess)
+		})
+	}
+}
+
+func TestWebhook_PushPreservesCutoverAndUntouchedProjects(t *testing.T) {
+	for _, stage := range []string{"swapping", "cutover-lock", "untouched-path", "untracked-branch"} {
+		t.Run(stage, func(t *testing.T) {
+			e := newWebhookEnv(t)
+			ctx := context.Background()
+			pid, err := e.db.CreateProject(ctx, store.Project{Name: "server", GithubRepo: "acme/blue", Branch: "main", Path: "server"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			old, _, err := e.q.Enqueue(ctx, deploy.EnqueueRequest{ProjectID: pid})
+			if err != nil {
+				t.Fatal(err)
+			}
+			started := make(chan struct{}, 2)
+			release := make(chan struct{})
+			runner := deploy.RunnerFunc(func(ctx context.Context, dep store.Deployment) error {
+				started <- struct{}{}
+				select {
+				case <-release:
+					return nil
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			})
+			dispatcher := deploy.NewDispatcher(e.db, runner, e.h.Log, deploy.DispatcherOpts{PollInterval: time.Hour})
+			e.h.Dispatcher = dispatcher
+			dispatcher.Start(ctx)
+			t.Cleanup(dispatcher.Stop)
+			select {
+			case <-started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("old deployment did not start")
+			}
+			if stage == "swapping" {
+				if err := e.db.SetDeploymentStatus(ctx, old, cobaltapi.StateSwapping); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage == "cutover-lock" {
+				// Service preparation starts under this lock before status is swapping.
+				unlock := projectlock.Lock(pid)
+				t.Cleanup(unlock)
+			}
+			path, branch := "server/main.go", "main"
+			if stage == "untouched-path" {
+				path = "app/main.ts"
+			}
+			if stage == "untracked-branch" {
+				branch = "other"
+			}
+			resp := e.post(t, "push", "replacement", map[string]any{
+				"ref": "refs/heads/" + branch, "after": "newest",
+				"repository": map[string]any{"id": 1, "full_name": "acme/blue"},
+				"commits":    []map[string]any{{"modified": []string{path}}},
+			})
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusAccepted {
+				t.Fatalf("push status: %d", resp.StatusCode)
+			}
+			queued, err := e.db.QueuedDeployments(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantQueued := 1
+			if stage == "untouched-path" || stage == "untracked-branch" {
+				wantQueued = 0
+			}
+			if len(queued) != wantQueued {
+				t.Fatalf("queued: %d, want %d", len(queued), wantQueued)
+			}
+			close(release)
+			waitForStatus(t, e.db, old, cobaltapi.StateSuccess)
+		})
 	}
 }
