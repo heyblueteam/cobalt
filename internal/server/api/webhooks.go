@@ -85,7 +85,8 @@ func (h *Handler) WebhookGithub(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePush enqueues a deployment for every project tracking the
-// pushed (repo, branch) combination. Branch deletes are ignored.
+// pushed (repo, branch) combination, superseding older builds for those projects.
+// Branch deletes are ignored.
 func (h *Handler) handlePush(ctx context.Context, body []byte, _ int64) {
 	ev, err := github.ParsePush(body)
 	if err != nil {
@@ -122,6 +123,11 @@ func (h *Handler) handlePush(ctx context.Context, body []byte, _ int64) {
 		if err != nil {
 			h.Log.Error("webhook: enqueue", "project", p.Name, "error", err)
 			continue
+		}
+		if h.Dispatcher != nil {
+			if err := h.Dispatcher.Supersede(ctx, id); err != nil {
+				h.Log.Error("webhook: supersede older deploy", "project", p.Name, "error", err)
+			}
 		}
 		enqueued++
 		h.Log.Info("webhook: deploy enqueued",

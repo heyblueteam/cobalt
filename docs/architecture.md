@@ -52,6 +52,21 @@ test/               (planned)   integration + e2e tests against real Docker/Cadd
 - **Errors**: `errors.Is`/`errors.As`, no panics in request paths, structured logging at the boundary.
 - **Database**: SQLite. Plain SQL migrations under `migrations/`, embedded via `go:embed`, applied at daemon startup.
 
+## Push deployment scheduling
+
+A GitHub push queues a deployment for each project tracking the pushed repository
+and branch, subject to its path and watch-path filters. After the new deployment
+is saved, Cobalt cancels any older fetch or build for that same project. The
+replacement starts only after the canceled runner exits. If several pushes arrive
+during cleanup, only the newest queued deployment runs; older queued rows become
+`skipped`. Other projects continue independently.
+
+Service preparation, hooks and traffic cutover are protected from cancellation.
+A push received during this phase waits for it to finish, then runs the newest
+queued deployment. A failed enqueue never cancels the existing deployment.
+Manual deployments and rollbacks keep their existing queue behavior; use
+`cobalt deploy --force` to request cancellation explicitly.
+
 ## Build cache retention
 
 Each project exports its BuildKit cache to

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/heyblueteam/cobalt/internal/server/projectlock"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
 )
@@ -30,12 +31,17 @@ type Dispatcher struct {
 	pollInterval time.Duration
 
 	mu       sync.Mutex
-	inflight map[int64]context.CancelFunc // projectID -> cancel for the running deploy
+	inflight map[int64]activeDeployment // projectID -> running deploy
 
 	wake     chan struct{}
 	stopFn   context.CancelFunc
 	wg       sync.WaitGroup
 	notifyWG sync.WaitGroup
+}
+
+type activeDeployment struct {
+	id     int64
+	cancel context.CancelFunc
 }
 
 // DispatcherOpts are constructor options for NewDispatcher.
@@ -64,7 +70,7 @@ func NewDispatcher(db *store.DB, runner Runner, log *slog.Logger, opts Dispatche
 		notifier:     opts.Notifier,
 		log:          log,
 		pollInterval: opts.PollInterval,
-		inflight:     map[int64]context.CancelFunc{},
+		inflight:     map[int64]activeDeployment{},
 		// Buffered so concurrent Notify calls don't block.
 		wake: make(chan struct{}, 1),
 	}
@@ -92,8 +98,8 @@ func (d *Dispatcher) Stop() {
 	stop := d.stopFn
 	d.stopFn = nil
 	// Cancel every in-flight deploy by canceling its context.
-	for _, cancel := range d.inflight {
-		cancel()
+	for _, active := range d.inflight {
+		active.cancel()
 	}
 	d.mu.Unlock()
 	if stop == nil {
@@ -123,6 +129,17 @@ func (d *Dispatcher) Cancel(ctx context.Context, deploymentID int64) error {
 	if err != nil {
 		return err
 	}
+	// The orchestrator owns this lock from the end of build through cutover.
+	// Checking status alone races with the transition into service mutations.
+	unlock, ok := projectlock.TryLock(dep.ProjectID)
+	if !ok {
+		return ErrCancelDuringCutover
+	}
+	defer unlock()
+	dep, err = d.db.GetDeployment(ctx, deploymentID)
+	if err != nil {
+		return err
+	}
 	if !dep.Status.IsActive() {
 		return ErrNotInFlight
 	}
@@ -130,12 +147,40 @@ func (d *Dispatcher) Cancel(ctx context.Context, deploymentID int64) error {
 		return ErrCancelDuringCutover
 	}
 	d.mu.Lock()
-	cancel, ok := d.inflight[dep.ProjectID]
-	d.mu.Unlock()
-	if !ok {
+	defer d.mu.Unlock()
+	active, ok := d.inflight[dep.ProjectID]
+	if !ok || active.id != deploymentID {
 		return ErrNotTracked
 	}
-	cancel()
+	active.cancel()
+	return nil
+}
+
+// Supersede cancels an older pre-cutover deployment after a replacement push
+// has been durably queued. The replacement waits for the old runner to exit.
+func (d *Dispatcher) Supersede(ctx context.Context, replacementID int64) error {
+	replacement, err := d.db.GetDeployment(ctx, replacementID)
+	if err != nil {
+		return err
+	}
+	active, err := d.db.ActiveDeploymentForProject(ctx, replacement.ProjectID)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if active.Number >= replacement.Number {
+		return nil
+	}
+	if err := d.Cancel(ctx, active.ID); err != nil {
+		if errors.Is(err, ErrCancelDuringCutover) || errors.Is(err, ErrNotInFlight) || errors.Is(err, ErrNotTracked) {
+			return nil
+		}
+		return err
+	}
+	d.log.Info("dispatcher: superseded active deployment", "deployment_id", active.ID,
+		"project_id", active.ProjectID, "superseded_by", replacementID)
 	return nil
 }
 
@@ -208,7 +253,7 @@ func (d *Dispatcher) advance(ctx context.Context) {
 func (d *Dispatcher) startDeployment(parent context.Context, dep store.Deployment) {
 	runCtx, cancel := context.WithCancel(parent)
 	d.mu.Lock()
-	d.inflight[dep.ProjectID] = cancel
+	d.inflight[dep.ProjectID] = activeDeployment{id: dep.ID, cancel: cancel}
 	d.mu.Unlock()
 
 	d.wg.Add(1)
