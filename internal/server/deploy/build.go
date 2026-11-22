@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
@@ -73,6 +74,9 @@ type ImagePuller interface {
 type RegistryCredentials interface {
 	GetRegistryCredential(ctx context.Context, registry string) (*store.RegistryCredential, error)
 }
+
+// pullMu serializes prebuilt pulls across concurrent project deployments.
+var pullMu sync.Mutex
 
 // RevisionLabel is the OCI label CI stamps with the source commit. A
 // prebuilt image whose label names another commit than the checked-out
@@ -259,6 +263,11 @@ func (b *dockerBuilder) pullPrebuilt(ctx context.Context, project store.Project,
 	}
 	sort.Strings(names)
 
+	// Pull, tag and drop the pulled name as one step per daemon: a second
+	// deployment of the same digest must not lose the name between its own
+	// pull and tag.
+	pullMu.Lock()
+	defer pullMu.Unlock()
 	tagByImage := map[string]string{}
 	for _, name := range names {
 		ref := dep.ImageRefs[name]
@@ -279,8 +288,11 @@ func (b *dockerBuilder) pullPrebuilt(ctx context.Context, project store.Project,
 		if err != nil {
 			return nil, fmt.Errorf("deploy.Build: image %q: %w", name, err)
 		}
-		if revision != "" && ws.Commit != "" && revision != ws.Commit {
+		switch {
+		case revision != "" && ws.Commit != "" && revision != ws.Commit:
 			return nil, fmt.Errorf("deploy.Build: image %q was built from %s, but the deployment checked out %s", name, shortSHA(revision), shortSHA(ws.Commit))
+		case revision == "":
+			fmt.Fprintf(out, "⚠️  image %q has no %s label; cannot confirm it was built from %s\n", name, RevisionLabel, shortSHA(ws.Commit))
 		}
 		tag := docker.InternalImageName(project.Name, name, dep.Number)
 		if err := b.puller.TagImage(ctx, ref, tag); err != nil {

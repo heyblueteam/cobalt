@@ -16,7 +16,7 @@ var (
 	// names exactly one image, so a deploy cannot silently change under a
 	// moved tag.
 	ImageDigestRefRX = regexp.MustCompile(
-		`^([a-zA-Z0-9.-]+(:[0-9]+)?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*` +
+		`^([a-zA-Z0-9][a-zA-Z0-9.-]*(:[0-9]+)?/)?[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)*` +
 			`(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?@sha256:[a-f0-9]{64}$`)
 
 	// ImageNameRX matches cobalt.json `images` keys.

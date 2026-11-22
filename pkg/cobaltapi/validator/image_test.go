@@ -25,6 +25,7 @@ func TestValidateImageDigestRef(t *testing.T) {
 		"ghcr.io/heyblueteam/Blue-Server@" + digest,
 		"ghcr.io/x@" + digest + " --privileged",
 		"-v/:/host@" + digest,
+		"-q.example/x@" + digest,
 	}
 	for _, ref := range bad {
 		if err := ValidateImageDigestRef(ref); err == nil {

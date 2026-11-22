@@ -34,7 +34,7 @@ func TestPullImage_AnonymousUsesDaemonConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := r.lastCall()
-	if !argSequence(call.Args, "pull", "--quiet", "ghcr.io/a/b@sha256:x") {
+	if !argSequence(call.Args, "pull", "--quiet", "--", "ghcr.io/a/b@sha256:x") {
 		t.Errorf("args: %v", call.Args)
 	}
 	if _, ok := call.Env["DOCKER_CONFIG"]; ok {
@@ -128,7 +128,30 @@ func TestTagImage(t *testing.T) {
 	if err := NewWithRunner(r).TagImage(context.Background(), "src@sha256:x", "cobalt/project-a-default:3"); err != nil {
 		t.Fatal(err)
 	}
-	if !argSequence(r.lastCall().Args, "image", "tag", "src@sha256:x", "cobalt/project-a-default:3") {
+	if !argSequence(r.lastCall().Args, "image", "tag", "--", "src@sha256:x", "cobalt/project-a-default:3") {
 		t.Errorf("args: %v", r.lastCall().Args)
+	}
+}
+
+func TestPullImage_DockerHubUsesIndexKey(t *testing.T) {
+	t.Parallel()
+	r := newFakeRunner()
+	var keys []string
+	r.onRun = func(_ []string, env map[string]string) {
+		raw, _ := os.ReadFile(filepath.Join(env["DOCKER_CONFIG"], "config.json"))
+		var cfg struct {
+			Auths map[string]any `json:"auths"`
+		}
+		_ = json.Unmarshal(raw, &cfg)
+		for k := range cfg.Auths {
+			keys = append(keys, k)
+		}
+	}
+	auth := &RegistryAuth{Registry: RegistryHost("acme/private@sha256:x"), Username: "u", Password: "p"}
+	if err := NewWithRunner(r).PullImage(context.Background(), "acme/private@sha256:x", auth, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || keys[0] != "https://index.docker.io/v1/" {
+		t.Fatalf("auth keys: %v", keys)
 	}
 }

@@ -205,3 +205,18 @@ func TestBuilder_BuildProjectsIgnorePuller(t *testing.T) {
 		t.Errorf("builds=%d pulls=%d, want 1 build and no pull", len(d.calls), len(p.pulls))
 	}
 }
+
+func TestBuilder_PrebuiltWarnsWithoutRevisionLabel(t *testing.T) {
+	t.Parallel()
+	var out strings.Builder
+	b := NewBuilderWithPull(&fakeImageBuilder{}, &fakeEnv{}, &fakeProjectQuerier{}, "", &fakePuller{}, fakeRegistries{})
+	_, err := b.Build(context.Background(), store.Project{Name: "server"},
+		store.Deployment{Number: 1, ImageRefs: map[string]string{"default": testRef}},
+		&Workspace{Cobaltfile: serverCobaltfile(), Commit: "abc1234"}, &out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "has no "+RevisionLabel+" label") {
+		t.Fatalf("missing-label warning not logged:\n%s", out.String())
+	}
+}

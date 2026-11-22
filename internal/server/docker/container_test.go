@@ -134,7 +134,7 @@ func TestPullImage(t *testing.T) {
 		t.Fatalf("PullImage: %v", err)
 	}
 	args := r.lastCall().Args
-	if !argSequence(args, "pull", "--quiet", "alpine:3") {
+	if !argSequence(args, "pull", "--quiet", "--", "alpine:3") {
 		t.Errorf("pull args: %v", args)
 	}
 	if err := c.PullImage(context.Background(), "", nil, nil); err == nil {

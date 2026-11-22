@@ -29,6 +29,15 @@ func RegistryHost(ref string) string {
 	return "docker.io"
 }
 
+// authConfigKey is the Docker config key for a registry host. The docker CLI
+// looks Docker Hub logins up only under its legacy index URL.
+func authConfigKey(registry string) string {
+	if registry == "docker.io" || registry == "index.docker.io" || registry == "registry-1.docker.io" {
+		return "https://index.docker.io/v1/"
+	}
+	return registry
+}
+
 // PullImage pulls ref. With auth, the docker CLI reads a temporary config
 // that holds only that registry login, so credentials never enter the
 // daemon's own Docker config and are removed when the pull ends.
@@ -45,7 +54,7 @@ func (c *Client) PullImage(ctx context.Context, ref string, auth *RegistryAuth, 
 		defer os.RemoveAll(dir)
 		token := base64.StdEncoding.EncodeToString([]byte(auth.Username + ":" + auth.Password))
 		cfg, err := json.Marshal(map[string]any{
-			"auths": map[string]any{auth.Registry: map[string]string{"auth": token}},
+			"auths": map[string]any{authConfigKey(auth.Registry): map[string]string{"auth": token}},
 		})
 		if err != nil {
 			return err
@@ -55,7 +64,7 @@ func (c *Client) PullImage(ctx context.Context, ref string, auth *RegistryAuth, 
 		}
 		env = map[string]string{"DOCKER_CONFIG": dir}
 	}
-	if err := c.runner.RunWithEnv(ctx, env, []string{"pull", "--quiet", ref}, nil, out, out); err != nil {
+	if err := c.runner.RunWithEnv(ctx, env, []string{"pull", "--quiet", "--", ref}, nil, out, out); err != nil {
 		return fmt.Errorf("docker.PullImage %s: %w", ref, err)
 	}
 	return nil
@@ -63,7 +72,7 @@ func (c *Client) PullImage(ctx context.Context, ref string, auth *RegistryAuth, 
 
 // TagImage adds dst as a local name for the image src names.
 func (c *Client) TagImage(ctx context.Context, src, dst string) error {
-	if err := c.run(ctx, "image", "tag", src, dst); err != nil {
+	if err := c.run(ctx, "image", "tag", "--", src, dst); err != nil {
 		return fmt.Errorf("docker.TagImage %s %s: %w", src, dst, err)
 	}
 	return nil
@@ -71,7 +80,7 @@ func (c *Client) TagImage(ctx context.Context, src, dst string) error {
 
 // ImageLabel returns one label of a local image ("" when unset).
 func (c *Client) ImageLabel(ctx context.Context, ref, key string) (string, error) {
-	out, err := c.output(ctx, "image", "inspect", "--format", "{{json .Config.Labels}}", ref)
+	out, err := c.output(ctx, "image", "inspect", "--format", "{{json .Config.Labels}}", "--", ref)
 	if err != nil {
 		return "", fmt.Errorf("docker.ImageLabel %s: %w", ref, err)
 	}

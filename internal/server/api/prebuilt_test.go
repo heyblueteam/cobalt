@@ -165,3 +165,44 @@ func TestWebhook_PushSkipsRegistryProject(t *testing.T) {
 		t.Fatalf("queued project %q, want api", p.Name)
 	}
 }
+
+func TestEnvRedeploy_RegistryProjectRedeploysLiveImage(t *testing.T) {
+	t.Parallel()
+	e := newEnv(t)
+	ctx := context.Background()
+	id, _ := e.db.CreateProject(ctx, store.Project{Name: "server", GithubRepo: "h/blue", Branch: "main", Path: "server"})
+	setImageSource(t, e.db, id, validator.ImageSourceRegistry)
+
+	// No live prebuilt image yet: the env change lands, nothing is queued.
+	resp := e.do(http.MethodPost, "/api/projects/server/env", cobaltapi.EnvSetRequest{Vars: map[string]string{"A": "1"}, Redeploy: true})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	if deps, _ := e.db.QueuedDeployments(ctx); len(deps) != 0 {
+		t.Fatalf("queued without a live image: %d", len(deps))
+	}
+
+	commit := "abc1234"
+	live, err := e.db.CreateDeployment(ctx, store.Deployment{ProjectID: id, Number: 1, Status: cobaltapi.StateQueued,
+		CommitSHA: &commit, ImageRefs: map[string]string{"default": prebuiltRef}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.db.SetDeploymentStatus(ctx, live, cobaltapi.StateSuccess); err != nil {
+		t.Fatal(err)
+	}
+	resp = e.do(http.MethodPost, "/api/projects/server/env", cobaltapi.EnvSetRequest{Vars: map[string]string{"A": "2"}, Redeploy: true})
+	mustStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = e.do(http.MethodDelete, "/api/projects/server/env/A?redeploy=true", nil)
+	mustStatus(t, resp, http.StatusNoContent)
+	resp.Body.Close()
+	deps, _ := e.db.QueuedDeployments(ctx)
+	if len(deps) != 2 {
+		t.Fatalf("queued: %d, want 2", len(deps))
+	}
+	for _, d := range deps {
+		if d.ImageRefs["default"] != prebuiltRef || d.CommitSHA == nil || *d.CommitSHA != commit {
+			t.Fatalf("redeploy must reuse the live image and commit: %+v", d)
+		}
+	}
+}
