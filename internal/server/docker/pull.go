@@ -51,7 +51,7 @@ func (c *Client) PullImage(ctx context.Context, ref string, auth *RegistryAuth, 
 		if err != nil {
 			return fmt.Errorf("docker.PullImage: temp config: %w", err)
 		}
-		defer os.RemoveAll(dir)
+		defer func() { _ = os.RemoveAll(dir) }()
 		token := base64.StdEncoding.EncodeToString([]byte(auth.Username + ":" + auth.Password))
 		cfg, err := json.Marshal(map[string]any{
 			"auths": map[string]any{authConfigKey(auth.Registry): map[string]string{"auth": token}},

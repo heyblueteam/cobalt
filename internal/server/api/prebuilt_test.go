@@ -182,8 +182,10 @@ func TestEnvRedeploy_RegistryProjectRedeploysLiveImage(t *testing.T) {
 	}
 
 	commit := "abc1234"
-	live, err := e.db.CreateDeployment(ctx, store.Deployment{ProjectID: id, Number: 1, Status: cobaltapi.StateQueued,
-		CommitSHA: &commit, ImageRefs: map[string]string{"default": prebuiltRef}})
+	live, err := e.db.CreateDeployment(ctx, store.Deployment{
+		ProjectID: id, Number: 1, Status: cobaltapi.StateQueued,
+		CommitSHA: &commit, ImageRefs: map[string]string{"default": prebuiltRef},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
