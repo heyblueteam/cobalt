@@ -127,6 +127,11 @@ Dockerfiles using RUN --mount=type=secret,id=.env cp /run/secrets/.env .env).
 ### API Keys
 - cobalt apikeys — Manage API keys
 
+### Prebuilt images
+- cobalt deploy --image [name=]<ref@sha256:...> — Deploy an image CI built, by digest
+- cobalt projects update <name> --image-source registry|build — Stop or restore on-host builds
+- cobalt registries — Manage registry pull logins
+
 ### Meta
 - cobalt meta info — Show daemon version and uptime
 - cobalt meta host — Update daemon's public hostname

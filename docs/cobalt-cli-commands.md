@@ -45,12 +45,13 @@ The CLI sends `Authorization: Bearer <apiKey>` on every request. API keys are st
 Trigger a deployment of the current project.
 
 ```
-cobalt deploy [--project <p>] [--commit <sha>] [--no-cache] [--file <path>]
+cobalt deploy [--project <p>] [--commit <sha>] [--no-cache] [--file <path>] [--image [name=]<ref@sha256:...>]
 ```
 
 - `--commit <sha>` — deploy a specific commit instead of the latest on the tracked branch
 - `--no-cache` — pass `--no-cache` to `docker build`
 - `--file <path>` — upload a custom `cobalt.json` for this deploy only
+- `--image [name=]<ref@sha256:...>` — deploy a prebuilt image instead of building. Repeat for each `cobalt.json` image; a bare reference is `default`. The reference must be pinned by digest. Cobalt still checks out `--commit` for `cobalt.json`, pulls with the registry login from `cobalt registries`, refuses an image whose `org.opencontainers.image.revision` label names another commit, and tags it `cobalt/project-<name>-<image>:<N>`. Rollback, image retention, hooks and health checks treat it like a built image.
 
 Streams build + swap output to stdout. Exits 0 on success, non-zero on failure or cancellation.
 
@@ -230,6 +231,24 @@ cobalt volumes import [--project <p>] --volume <v> [--input <path>]
 
 - `export` writes binary tar to stdout by default. `--force` skips the TTY confirmation. `--output` writes to a file.
 - `import` reads from stdin by default. `--input` reads from a file. `--input` is required if stdin is a TTY.
+
+## Registry logins
+
+```
+cobalt registries list [--json]
+printf '%s' "$TOKEN" | cobalt registries set <registry> --username <user> --password-stdin
+cobalt registries remove <registry> [--yes]
+```
+
+One pull login per registry host (`ghcr.io`, `localhost:5000`), shared by all projects. The password is read from stdin, encrypted at rest and never returned. Each pull writes it to a temporary Docker config that is removed after the pull. Use a read-only token.
+
+## Image source
+
+```
+cobalt projects update <name> --image-source registry|build
+```
+
+`build` (default): Cobalt builds on pushes and on `cobalt deploy`. `registry`: CI builds and pushes the image and deploys it with `cobalt deploy --image`. GitHub pushes no longer deploy the project, and `cobalt deploy` without `--image` is refused, so the host never builds it. `cobalt rollback` still works.
 
 ## API keys
 
