@@ -31,7 +31,11 @@ type Project struct {
 	// WatchPaths is a comma-separated list of extra repo-relative
 	// sub-paths that also trigger a deploy when touched, in addition to
 	// Path. Empty means none. See Project.WatchPathsList.
-	WatchPaths              string
+	WatchPaths string
+	// ImageSource is validator.ImageSourceBuild (Cobalt builds on push and
+	// on deploy) or validator.ImageSourceRegistry (CI pushes a prebuilt
+	// image and deploys it by digest; pushes are ignored).
+	ImageSource             string
 	GithubAppInstallationID sql.NullInt64
 	CreatedAt               int64
 	UpdatedAt               int64
@@ -57,7 +61,7 @@ func (p Project) WatchPathsList() []string {
 func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 	stmt, err := rqlitehttp.NewSQLStatement(`
         SELECT id, name, github_repo, branch, path,
-               github_app_installation_id, created_at, updated_at, watch_paths
+               github_app_installation_id, created_at, updated_at, watch_paths, image_source
         FROM projects
         ORDER BY name
     `)
@@ -87,7 +91,7 @@ func (db *DB) ListProjects(ctx context.Context) ([]Project, error) {
 func (db *DB) GetProjectByID(ctx context.Context, id int64) (*Project, error) {
 	resp, err := db.QuerySingle(ctx, `
         SELECT id, name, github_repo, branch, path,
-               github_app_installation_id, created_at, updated_at, watch_paths
+               github_app_installation_id, created_at, updated_at, watch_paths, image_source
         FROM projects WHERE id = ?
     `, id)
 	if err != nil {
@@ -109,7 +113,7 @@ func (db *DB) GetProjectByID(ctx context.Context, id int64) (*Project, error) {
 func (db *DB) GetProjectByName(ctx context.Context, name string) (*Project, error) {
 	resp, err := db.QuerySingle(ctx, `
         SELECT id, name, github_repo, branch, path,
-               github_app_installation_id, created_at, updated_at, watch_paths
+               github_app_installation_id, created_at, updated_at, watch_paths, image_source
         FROM projects WHERE name = ?
     `, name)
 	if err != nil {
@@ -174,6 +178,10 @@ func scanProjectRow(row []any) Project {
 	p.CreatedAt = toInt64(row[6])
 	p.UpdatedAt = toInt64(row[7])
 	p.WatchPaths = toString(row[8])
+	p.ImageSource = toString(row[9])
+	if p.ImageSource == "" {
+		p.ImageSource = validator.ImageSourceBuild
+	}
 	return p
 }
 
@@ -200,18 +208,21 @@ func (db *DB) RenameProject(ctx context.Context, id int64, newName string) error
 // the project tracks. Domains, env vars, deployments, and the on-disk
 // project directory are untouched; the next `cobalt deploy` reads from
 // the new source. Running services keep serving until that deploy.
-func (db *DB) UpdateProjectSource(ctx context.Context, id int64, githubRepo, branch, path, watchPaths string) error {
+func (db *DB) UpdateProjectSource(ctx context.Context, id int64, githubRepo, branch, path, watchPaths, imageSource string) error {
 	if err := validator.ValidateProjectPath(path); err != nil {
 		return err
 	}
 	if err := validator.ValidateWatchPaths(watchPaths); err != nil {
 		return err
 	}
+	if err := validator.ValidateImageSource(imageSource); err != nil {
+		return err
+	}
 	resp, err := db.ExecuteSingle(ctx, `
         UPDATE projects
-        SET github_repo = ?, branch = ?, path = ?, watch_paths = ?, updated_at = strftime('%s', 'now')
+        SET github_repo = ?, branch = ?, path = ?, watch_paths = ?, image_source = ?, updated_at = strftime('%s', 'now')
         WHERE id = ?
-    `, githubRepo, branch, path, watchPaths, id)
+    `, githubRepo, branch, path, watchPaths, imageSource, id)
 	if err != nil {
 		return err
 	}

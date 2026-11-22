@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/client"
@@ -55,19 +57,31 @@ Examples:
 				output.PrintLines("No deployments found.")
 				return nil
 			}
+			// Build-only projects keep the original columns.
+			showImages := false
+			for _, d := range deps {
+				showImages = showImages || len(d.Images) > 0
+			}
 			headers := []string{"#", "STATUS", "COMMIT", "CREATED"}
+			if showImages {
+				headers = append(headers, "IMAGE")
+			}
 			var rows [][]string
 			for _, d := range deps {
 				commit := d.CommitSHA
 				if len(commit) > 7 {
 					commit = commit[:7]
 				}
-				rows = append(rows, []string{
+				row := []string{
 					"#" + strconv.Itoa(d.Number),
 					output.ColorStatus(string(d.Status)),
 					commit,
 					fmtTime(d.CreatedAt),
-				})
+				}
+				if showImages {
+					row = append(row, shortImageDigests(d.Images))
+				}
+				rows = append(rows, row)
 			}
 			output.PrintTable(headers, rows)
 			return nil
@@ -182,4 +196,30 @@ func fmtTime(unix int64) string {
 		return ""
 	}
 	return time.Unix(unix, 0).Format("2006-01-02 15:04:05")
+}
+
+// shortImageDigests renders prebuilt image refs as "sha256:<12 hex>",
+// prefixed by the image name when it is not "default". "built" marks a
+// deployment that built its image.
+func shortImageDigests(images map[string]string) string {
+	if len(images) == 0 {
+		return "built"
+	}
+	names := make([]string, 0, len(images))
+	for name := range images {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, name := range names {
+		digest := images[name]
+		if i := strings.LastIndex(digest, "@sha256:"); i >= 0 && len(digest) >= i+8+12 {
+			digest = digest[i+1 : i+8+12]
+		}
+		if name != "default" {
+			digest = name + "=" + digest
+		}
+		parts = append(parts, digest)
+	}
+	return strings.Join(parts, ",")
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/github"
 	"github.com/heyblueteam/cobalt/internal/server/store"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // WebhookGithub implements POST /webhooks/github. The endpoint is
@@ -113,6 +114,12 @@ func (h *Handler) handlePush(ctx context.Context, body []byte, _ int64) {
 		// it returns true when the push is truncated (>=2048 commits) or
 		// has no commits listed, so we never skip on incomplete
 		// information.
+		if p.ImageSource == validator.ImageSourceRegistry {
+			// CI builds this project's image and deploys it by digest.
+			h.Log.Info("webhook: skip deploy (project deploys prebuilt images)",
+				"project", p.Name, "commit", ev.After)
+			continue
+		}
 		if !touchesProject(ev, p) {
 			h.Log.Info("webhook: skip deploy (path not touched)",
 				"project", p.Name, "path", p.Path, "watchPaths", p.WatchPaths, "commit", ev.After)

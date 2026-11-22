@@ -31,6 +31,7 @@ Cobra-native, matches `gh`/`kubectl`/`flyctl`. Colon forms are not aliased — c
 | `cobalt deploy --project <p>` | YES | Trigger deploy of latest commit on tracked branch |
 | `cobalt deploy --project <p> --commit <sha>` | YES | Deploy a specific commit |
 | `cobalt deploy --project <p> --no-cache` | YES | Force docker build without cache (we wrote upstream PR #93 for this — bake it in from day one) |
+| `cobalt deploy --project <p> --commit <sha> --image <ref@sha256:...>` | YES | Deploy a prebuilt image by digest instead of building |
 | `cobalt logs [--project <p>] [--service <s>]` | YES | Stream daemon or service logs |
 | `cobalt run --project <p> [--service <s>] [--timeout <s>] "<cmd>"` | YES | Exec a command in a project container |
 
@@ -119,6 +120,14 @@ the aggregate so the file stays parseable.
 | `cobalt volumes list --project <p>` | YES | |
 | `cobalt volumes export --project <p> --volume <v>` | YES | |
 | `cobalt volumes import --project <p> --volume <v>` | YES | |
+
+## registries
+
+| Command | v1 | Notes |
+|---|---|---|
+| `cobalt registries list` | YES | Pull logins, no passwords |
+| `cobalt registries set <registry> --username <u> --password-stdin` | YES | Encrypted at rest |
+| `cobalt registries remove <registry>` | YES | |
 
 ## apikeys
 

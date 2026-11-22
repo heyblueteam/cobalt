@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // ListEnv implements GET /api/projects/{name}/env. Each entry's
@@ -106,11 +108,7 @@ func (h *Handler) SetEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Redeploy {
-		if _, _, err := h.Queue.Enqueue(r.Context(), deploy.EnqueueRequest{ProjectID: p.ID}); err != nil {
-			h.Log.Error("api: enqueue redeploy after env change", "error", err)
-		} else if h.Dispatcher != nil {
-			h.Dispatcher.Notify()
-		}
+		h.enqueueEnvRedeploy(r.Context(), *p, "env change")
 	}
 	keys := make([]string, 0, len(req.Vars))
 	for k := range req.Vars {
@@ -145,11 +143,31 @@ func (h *Handler) DeleteEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Query().Get("redeploy") == "true" {
-		if _, _, err := h.Queue.Enqueue(r.Context(), deploy.EnqueueRequest{ProjectID: p.ID}); err != nil {
-			h.Log.Error("api: enqueue redeploy after env delete", "error", err)
-		} else if h.Dispatcher != nil {
-			h.Dispatcher.Notify()
-		}
+		h.enqueueEnvRedeploy(r.Context(), *p, "env delete")
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// enqueueEnvRedeploy queues the redeploy that applies an env change. A
+// build project rebuilds its branch head, as before. A registry project
+// cannot build, so it redeploys the live commit and image references.
+func (h *Handler) enqueueEnvRedeploy(ctx context.Context, p store.Project, reason string) {
+	req := deploy.EnqueueRequest{ProjectID: p.ID}
+	if p.ImageSource == validator.ImageSourceRegistry {
+		live, err := h.DB.GetLastSuccessfulDeployment(ctx, p.ID)
+		if err != nil || len(live.ImageRefs) == 0 {
+			h.Log.Warn("api: redeploy skipped; registry project has no live prebuilt image",
+				"project", p.Name, "reason", reason, "error", err)
+			return
+		}
+		req.ImageRefs = live.ImageRefs
+		if live.CommitSHA != nil {
+			req.CommitSHA = *live.CommitSHA
+		}
+	}
+	if _, _, err := h.Queue.Enqueue(ctx, req); err != nil {
+		h.Log.Error("api: enqueue redeploy after "+reason, "error", err)
+	} else if h.Dispatcher != nil {
+		h.Dispatcher.Notify()
+	}
 }

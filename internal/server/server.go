@@ -170,7 +170,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	tokens := deploy.NewDBTokenProvider(db, githubCli, time.Now)
 	preparer := deploy.NewPreparer(cfg.DataDir, tokens, deploy.ExecGit{})
-	builder := deploy.NewBuilder(dockerCli, db, db, cfg.DataDir)
+	builder := deploy.NewBuilderWithPull(dockerCli, db, db, cfg.DataDir, dockerCli, db)
 
 	sched := worker.NewScheduler(log)
 	cronMgr := worker.NewCronManager(sched, dockerCli, db, log)

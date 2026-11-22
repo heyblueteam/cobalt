@@ -18,7 +18,11 @@ type Project struct {
 	// touches them, in addition to Path. Used when a project's build
 	// reads code outside its Path (e.g. a monorepo `shared/` folder
 	// COPY'd into several projects' images).
-	WatchPaths              string `json:"watchPaths,omitempty"`
+	WatchPaths string `json:"watchPaths,omitempty"`
+	// ImageSource is "build" (Cobalt builds the image on push and on
+	// deploy) or "registry" (CI pushes a prebuilt image and deploys it by
+	// digest; pushes do not deploy).
+	ImageSource             string `json:"imageSource,omitempty"`
 	GithubAppInstallationID *int64 `json:"githubAppInstallationId,omitempty"`
 	CreatedAt               int64  `json:"createdAt"`
 	UpdatedAt               int64  `json:"updatedAt"`
@@ -63,4 +67,7 @@ type ProjectUpdateSourceRequest struct {
 	// field existed cannot silently wipe it, which would silently stop
 	// deploys for pushes that only touch a watched path.
 	WatchPaths *string `json:"watchPaths,omitempty"`
+	// ImageSource, when non-nil, sets "build" or "registry". Nil keeps the
+	// current value.
+	ImageSource *string `json:"imageSource,omitempty"`
 }

@@ -64,8 +64,27 @@ during cleanup, only the newest queued deployment runs; older queued rows become
 Service preparation, hooks and traffic cutover are protected from cancellation.
 A push received during this phase waits for it to finish, then runs the newest
 queued deployment. A failed enqueue never cancels the existing deployment.
+Projects with `imageSource: registry` are skipped: CI deploys them by digest.
 Manual deployments and rollbacks keep their existing queue behavior; use
 `cobalt deploy --force` to request cancellation explicitly.
+
+## Prebuilt images
+
+A deployment with image references (`cobalt deploy --image`) replaces the
+build step with a pull. Everything after it is the ordinary deploy.
+
+```text
+clone --commit -> read cobalt.json -> pull ref@sha256 (registry login)
+  -> check org.opencontainers.image.revision == commit
+  -> tag cobalt/project-<name>-<image>:<N> -> drop the pulled name
+  -> hooks, start, health, route, cleanup (unchanged)
+```
+
+The internal tag is the only local name, so image retention and rollback
+own the image exactly as they own a built one. A project with
+`imageSource: registry` ignores pushes and refuses deploys without image
+references. Registry logins are daemon-wide, encrypted at rest, and written
+to a temporary Docker config for each pull.
 
 ## Build cache retention
 

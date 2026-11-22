@@ -80,9 +80,12 @@ type Deployment struct {
 	CommitSHA  string `json:"commitSha,omitempty"`
 	NoCache    bool   `json:"noCache,omitempty"`
 	RollbackOf int64  `json:"rollbackOf,omitempty"`
-	CreatedAt  int64  `json:"createdAt"`
-	StartedAt  int64  `json:"startedAt,omitempty"`
-	FinishedAt int64  `json:"finishedAt,omitempty"`
+	// Images maps cobalt.json image names to the digest-pinned references
+	// this deployment pulled instead of building. Empty for builds.
+	Images     map[string]string `json:"images,omitempty"`
+	CreatedAt  int64             `json:"createdAt"`
+	StartedAt  int64             `json:"startedAt,omitempty"`
+	FinishedAt int64             `json:"finishedAt,omitempty"`
 }
 
 // DeploymentCreateRequest is the body of POST
@@ -95,6 +98,11 @@ type DeploymentCreateRequest struct {
 	// (during fetch or build) before enqueuing the new one. Rejected
 	// with 409 if the in-flight deploy has reached cutover (swapping).
 	Force bool `json:"force,omitempty"`
+	// Images, when set, deploys prebuilt images instead of building: one
+	// digest-pinned reference (name@sha256:...) per cobalt.json image name.
+	// Every image the services use must be listed. Required for projects
+	// whose image source is "registry".
+	Images map[string]string `json:"images,omitempty"`
 }
 
 // DeploymentCreateResponse is the body returned by POST

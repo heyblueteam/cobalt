@@ -2,15 +2,19 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/heyblueteam/cobalt/internal/server/cobaltfile"
 	"github.com/heyblueteam/cobalt/internal/server/docker"
 	"github.com/heyblueteam/cobalt/internal/server/store"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // BuiltService pairs a parsed cobaltfile service with the docker image
@@ -56,6 +60,29 @@ type DockerImageBuilder interface {
 	EnsureBuildxBuilder(ctx context.Context, name string) error
 }
 
+// ImagePuller is the docker subset a prebuilt-image deploy uses.
+// Implemented by *docker.Client.
+type ImagePuller interface {
+	PullImage(ctx context.Context, ref string, auth *docker.RegistryAuth, out io.Writer) error
+	TagImage(ctx context.Context, src, dst string) error
+	ImageLabel(ctx context.Context, ref, key string) (string, error)
+	RemoveImage(ctx context.Context, tag string) error
+}
+
+// RegistryCredentials looks up the daemon-wide pull login for a
+// registry host. Implemented by *store.DB.
+type RegistryCredentials interface {
+	GetRegistryCredential(ctx context.Context, registry string) (*store.RegistryCredential, error)
+}
+
+// pullMu serializes prebuilt pulls across concurrent project deployments.
+var pullMu sync.Mutex
+
+// RevisionLabel is the OCI label CI stamps with the source commit. A
+// prebuilt image whose label names another commit than the checked-out
+// cobalt.json is refused.
+const RevisionLabel = "org.opencontainers.image.revision"
+
 // NewBuilder returns a Builder that uses the supplied docker primitive
 // and per-project BuildKit cache directory rooted at dataDir/buildkit-cache.
 //
@@ -66,16 +93,32 @@ func NewBuilder(d DockerImageBuilder, env EnvLister, projects ProjectQuerier, da
 	return &dockerBuilder{docker: d, env: env, projects: projects, dataDir: dataDir}
 }
 
+// NewBuilderWithPull is NewBuilder plus the pull path for deployments
+// that carry prebuilt image references.
+func NewBuilderWithPull(d DockerImageBuilder, env EnvLister, projects ProjectQuerier, dataDir string, puller ImagePuller, registries RegistryCredentials) Builder {
+	return &dockerBuilder{docker: d, env: env, projects: projects, dataDir: dataDir, puller: puller, registries: registries}
+}
+
 type dockerBuilder struct {
-	docker   DockerImageBuilder
-	env      EnvLister
-	projects ProjectQuerier
-	dataDir  string
+	docker     DockerImageBuilder
+	env        EnvLister
+	projects   ProjectQuerier
+	dataDir    string
+	puller     ImagePuller
+	registries RegistryCredentials
 }
 
 func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace, out io.Writer) ([]BuiltService, error) {
 	if ws == nil || ws.Cobaltfile == nil {
 		return nil, fmt.Errorf("deploy.Build: workspace required")
+	}
+	if len(dep.ImageRefs) > 0 {
+		return b.pullPrebuilt(ctx, project, dep, ws, out)
+	}
+	if project.ImageSource == validator.ImageSourceRegistry {
+		// The API refuses this; a row from an older client must not
+		// fall back to building on the host.
+		return nil, fmt.Errorf("deploy.Build: project %q deploys prebuilt images; this deployment has no image reference", project.Name)
 	}
 
 	envSecrets, err := b.env.EnvVarMap(ctx, project.ID)
@@ -184,6 +227,115 @@ func (b *dockerBuilder) Build(ctx context.Context, project store.Project, dep st
 		})
 	}
 	return built, nil
+}
+
+// pullPrebuilt resolves every cobalt.json image from dep.ImageRefs: pull
+// the digest-pinned reference, check its revision label, and tag it with
+// the same internal name a build would produce. Rollback, image
+// retention and hooks then work unchanged. Nothing is built.
+func (b *dockerBuilder) pullPrebuilt(ctx context.Context, project store.Project, dep store.Deployment, ws *Workspace, out io.Writer) ([]BuiltService, error) {
+	if out == nil {
+		out = io.Discard
+	}
+	if b.puller == nil {
+		return nil, fmt.Errorf("deploy.Build: prebuilt images are not supported by this builder")
+	}
+	needed := map[string]bool{}
+	for _, svc := range ws.Cobaltfile.Services {
+		if !needsBuild(svc) {
+			continue
+		}
+		if _, declared := ws.Cobaltfile.Images[svc.Image]; declared {
+			needed[svc.Image] = true
+		}
+	}
+	for name := range dep.ImageRefs {
+		if !needed[name] {
+			return nil, fmt.Errorf("deploy.Build: image %q is not used by any service in cobalt.json", name)
+		}
+	}
+	names := make([]string, 0, len(needed))
+	for name := range needed {
+		if _, ok := dep.ImageRefs[name]; !ok {
+			return nil, fmt.Errorf("deploy.Build: no prebuilt reference for image %q; pass --image %s=<ref@sha256:...>", name, name)
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	// Pull, tag and drop the pulled name as one step per daemon: a second
+	// deployment of the same digest must not lose the name between its own
+	// pull and tag.
+	pullMu.Lock()
+	defer pullMu.Unlock()
+	tagByImage := map[string]string{}
+	for _, name := range names {
+		ref := dep.ImageRefs[name]
+		auth, err := b.registryAuth(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		login := "anonymous"
+		if auth != nil {
+			login = "as " + auth.Username
+		}
+		fmt.Fprintf(out, "📦 pulling image %q %s (%s)\n", name, ref, login)
+		start := time.Now()
+		if err := b.puller.PullImage(ctx, ref, auth, out); err != nil {
+			return nil, fmt.Errorf("deploy.Build: image %q: %w", name, err)
+		}
+		revision, err := b.puller.ImageLabel(ctx, ref, RevisionLabel)
+		if err != nil {
+			return nil, fmt.Errorf("deploy.Build: image %q: %w", name, err)
+		}
+		switch {
+		case revision != "" && ws.Commit != "" && revision != ws.Commit:
+			return nil, fmt.Errorf("deploy.Build: image %q was built from %s, but the deployment checked out %s", name, shortSHA(revision), shortSHA(ws.Commit))
+		case revision == "":
+			fmt.Fprintf(out, "⚠️  image %q has no %s label; cannot confirm it was built from %s\n", name, RevisionLabel, shortSHA(ws.Commit))
+		}
+		tag := docker.InternalImageName(project.Name, name, dep.Number)
+		if err := b.puller.TagImage(ctx, ref, tag); err != nil {
+			return nil, fmt.Errorf("deploy.Build: image %q: %w", name, err)
+		}
+		// Keep the internal tag as the only name, so image retention owns
+		// the image's lifetime. Pulls by the same digest stay cheap: Docker
+		// keeps the layers while any tag uses them.
+		if err := b.puller.RemoveImage(ctx, ref); err != nil {
+			fmt.Fprintf(out, "⚠️  could not drop pulled name %s: %v\n", ref, err)
+		}
+		fmt.Fprintf(out, "✅ pulled %s as %s (%s)\n", ref, tag, time.Since(start).Round(time.Second))
+		tagByImage[name] = tag
+	}
+
+	built := make([]BuiltService, 0, len(ws.Cobaltfile.Services))
+	for name, svc := range ws.Cobaltfile.Services {
+		tag := ""
+		if needsBuild(svc) {
+			tag = tagByImage[svc.Image]
+			if tag == "" {
+				// A registry reference written in cobalt.json itself.
+				tag = svc.Image
+			}
+		}
+		built = append(built, BuiltService{Name: name, Service: svc, ImageTag: tag})
+	}
+	return built, nil
+}
+
+func (b *dockerBuilder) registryAuth(ctx context.Context, ref string) (*docker.RegistryAuth, error) {
+	if b.registries == nil {
+		return nil, nil
+	}
+	host := docker.RegistryHost(ref)
+	cred, err := b.registries.GetRegistryCredential(ctx, host)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("deploy.Build: registry login for %s: %w", host, err)
+	}
+	return &docker.RegistryAuth{Registry: host, Username: cred.Username, Password: cred.Password}, nil
 }
 
 // needsBuild mirrors cobaltfile's "this service needs an image" rule.

@@ -9,6 +9,7 @@ import (
 	"github.com/heyblueteam/cobalt/internal/server/deploy"
 	"github.com/heyblueteam/cobalt/internal/server/store"
 	"github.com/heyblueteam/cobalt/pkg/cobaltapi"
+	"github.com/heyblueteam/cobalt/pkg/cobaltapi/validator"
 )
 
 // ListDeployments implements GET /api/projects/{name}/deployments.
@@ -53,11 +54,17 @@ func (h *Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := validateDeployImages(*p, req.Images); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	enq := deploy.EnqueueRequest{
 		ProjectID:          p.ID,
 		CommitSHA:          req.Commit,
 		NoCache:            req.NoCache,
 		CobaltfileOverride: req.CobaltfileOverride,
+		ImageRefs:          req.Images,
 	}
 	if err := deploy.Validate(r.Context(), h.DB, enq); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -185,6 +192,9 @@ func deploymentToAPI(d store.Deployment) cobaltapi.Deployment {
 	if d.RollbackOf != nil {
 		out.RollbackOf = *d.RollbackOf
 	}
+	if len(d.ImageRefs) > 0 {
+		out.Images = d.ImageRefs
+	}
 	if d.StartedAt != nil {
 		out.StartedAt = *d.StartedAt
 	}
@@ -192,4 +202,25 @@ func deploymentToAPI(d store.Deployment) cobaltapi.Deployment {
 		out.FinishedAt = *d.FinishedAt
 	}
 	return out
+}
+
+// validateDeployImages checks prebuilt image references before enqueue. A
+// registry project must name its images: building it on the host is the
+// thing its image source exists to prevent.
+func validateDeployImages(p store.Project, images map[string]string) error {
+	if len(images) == 0 {
+		if p.ImageSource == validator.ImageSourceRegistry {
+			return fmt.Errorf("project %q deploys prebuilt images; pass --image <name>@sha256:<digest> (or roll back with `cobalt rollback`)", p.Name)
+		}
+		return nil
+	}
+	for name, ref := range images {
+		if err := validator.ValidateImageName(name); err != nil {
+			return err
+		}
+		if err := validator.ValidateImageDigestRef(ref); err != nil {
+			return err
+		}
+	}
+	return nil
 }

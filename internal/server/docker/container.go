@@ -187,15 +187,6 @@ func (c *Client) Exec(ctx context.Context, container string, cmd []string, stdou
 	return c.runner.Run(ctx, args, nil, stdout, stderr)
 }
 
-// PullImage pulls an image reference. Used during deploys when the cobalt
-// build step wants to ensure the base image is current.
-func (c *Client) PullImage(ctx context.Context, ref string) error {
-	if ref == "" {
-		return fmt.Errorf("docker.PullImage: empty ref")
-	}
-	return c.run(ctx, "pull", ref)
-}
-
 // ContainerExists reports whether a container with the given name is
 // present. Used to short-circuit cleanup paths.
 func (c *Client) ContainerExists(ctx context.Context, name string) (bool, error) {

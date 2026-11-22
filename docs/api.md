@@ -245,6 +245,9 @@ Enqueue a new deployment.
 - `commit` — SHA to deploy (optional, defaults to latest on branch).
 - `noCache` — disable Docker build cache.
 - `cobaltfileOverride` — raw JSON string to use instead of the repo's `cobalt.json`.
+- `images` — optional map of `cobalt.json` image name to a digest-pinned reference (`name@sha256:<64 hex>`). Pulls these images instead of building. Every image the services use must be listed. Required when the project's `imageSource` is `registry`; a request without it is `400`.
+
+Deployment rows include `images` when the deployment pulled prebuilt images.
 
 **Response** `201`
 ```json
@@ -259,7 +262,7 @@ Enqueue a new deployment.
 }
 ```
 
-**CLI**: `cobalt deploy [--commit <sha>] [--no-cache] [--file <path>] [--no-follow]`
+**CLI**: `cobalt deploy [--commit <sha>] [--no-cache] [--file <path>] [--image [name=]<ref>] [--no-follow]`
 
 ---
 
@@ -393,6 +396,30 @@ Import data into a volume. Accepts raw binary (gzipped tar) as the request body.
 ---
 
 ## API Keys
+
+### `GET /api/registries`
+
+List registry pull logins: `[{"registry":"ghcr.io","username":"bot","updatedAt":1700000000}]`. Passwords are never returned.
+
+**CLI**: `cobalt registries list`
+
+---
+
+### `POST /api/registries/{registry}`
+
+Add or replace the pull login for a registry host. Body: `{"username":"bot","password":"<token>"}`. Response: the login without its password.
+
+**CLI**: `cobalt registries set <registry> --username <user> --password-stdin`
+
+---
+
+### `DELETE /api/registries/{registry}`
+
+Remove a pull login. `204`, or `404` when none exists.
+
+**CLI**: `cobalt registries remove <registry>`
+
+---
 
 ### `GET /api/apikeys`
 
