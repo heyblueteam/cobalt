@@ -117,7 +117,11 @@ func (h *Handler) UpdateProjectSource(w http.ResponseWriter, r *http.Request) {
 	if req.WatchPaths != nil {
 		watchPaths = *req.WatchPaths
 	}
-	if err := h.DB.UpdateProjectSource(r.Context(), p.ID, req.GithubRepo, req.Branch, req.Path, watchPaths); err != nil {
+	imageSource := p.ImageSource
+	if req.ImageSource != nil {
+		imageSource = *req.ImageSource
+	}
+	if err := h.DB.UpdateProjectSource(r.Context(), p.ID, req.GithubRepo, req.Branch, req.Path, watchPaths, imageSource); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "project not found")
 			return
@@ -253,14 +257,15 @@ func (h *Handler) cleanupProjectArtifacts(ctx context.Context, p store.Project) 
 // projectToAPI converts a store.Project to its public shape.
 func projectToAPI(p store.Project) cobaltapi.Project {
 	out := cobaltapi.Project{
-		ID:         p.ID,
-		Name:       p.Name,
-		GithubRepo: p.GithubRepo,
-		Branch:     p.Branch,
-		Path:       p.Path,
-		WatchPaths: p.WatchPaths,
-		CreatedAt:  p.CreatedAt,
-		UpdatedAt:  p.UpdatedAt,
+		ID:          p.ID,
+		Name:        p.Name,
+		GithubRepo:  p.GithubRepo,
+		Branch:      p.Branch,
+		Path:        p.Path,
+		WatchPaths:  p.WatchPaths,
+		ImageSource: p.ImageSource,
+		CreatedAt:   p.CreatedAt,
+		UpdatedAt:   p.UpdatedAt,
 	}
 	if p.GithubAppInstallationID.Valid {
 		v := p.GithubAppInstallationID.Int64
@@ -323,6 +328,11 @@ func validateProjectUpdateSource(req cobaltapi.ProjectUpdateSourceRequest) error
 	}
 	if req.WatchPaths != nil {
 		if err := validator.ValidateWatchPaths(*req.WatchPaths); err != nil {
+			return err
+		}
+	}
+	if req.ImageSource != nil {
+		if err := validator.ValidateImageSource(*req.ImageSource); err != nil {
 			return err
 		}
 	}

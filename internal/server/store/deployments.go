@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -16,7 +17,7 @@ import (
 // adding a column (rollback_of, etc.) is one edit instead of seven.
 const deploymentSelectCols = `id, project_id, number, status, commit_sha, no_cache,
 	cobaltfile_override, resolved_cobaltfile, rollback_of,
-	created_at, started_at, finished_at`
+	created_at, started_at, finished_at, image_refs`
 
 type Deployment struct {
 	ID                 int64
@@ -30,9 +31,25 @@ type Deployment struct {
 	// RollbackOf, when set, identifies the deployment this row is a
 	// rollback of. nil for ordinary deploys.
 	RollbackOf *int64
+	// ImageRefs maps cobalt.json image names to digest-pinned registry
+	// references. When set, the deployment pulls these images instead of
+	// building them. nil for ordinary builds.
+	ImageRefs  map[string]string
 	CreatedAt  int64
 	StartedAt  *int64
 	FinishedAt *int64
+}
+
+// EncodeImageRefs is the image_refs column value for refs (nil when empty).
+func EncodeImageRefs(refs map[string]string) (any, error) {
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	raw, err := json.Marshal(refs)
+	if err != nil {
+		return nil, err
+	}
+	return string(raw), nil
 }
 
 var inFlightKeepStatuses = []cobaltapi.State{
@@ -100,10 +117,14 @@ func (db *DB) CreateDeployment(ctx context.Context, d Deployment) (int64, error)
 	if d.RollbackOf != nil {
 		rollbackOf = *d.RollbackOf
 	}
+	imageRefs, err := EncodeImageRefs(d.ImageRefs)
+	if err != nil {
+		return 0, err
+	}
 	resp, err := db.ExecuteSingle(ctx, `
-        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, rollback_of, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-    `, d.ProjectID, d.Number, string(d.Status), commitSHA, boolToInt(d.NoCache), rollbackOf)
+        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, rollback_of, image_refs, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+    `, d.ProjectID, d.Number, string(d.Status), commitSHA, boolToInt(d.NoCache), rollbackOf, imageRefs)
 	if err != nil {
 		return 0, err
 	}
@@ -480,6 +501,11 @@ func scanDeploymentRow(row []any) *Deployment {
 	if row[11] != nil {
 		v := toInt64(row[11])
 		d.FinishedAt = &v
+	}
+	if row[12] != nil {
+		// A corrupt value is surfaced as no refs; the builder then refuses
+		// to build a registry project rather than guessing an image.
+		_ = json.Unmarshal([]byte(toString(row[12])), &d.ImageRefs)
 	}
 	return &d
 }

@@ -60,6 +60,11 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/apikeys", h.CreateAPIKey)
 	mux.HandleFunc("DELETE /api/apikeys/{id}", h.DeleteAPIKey)
 
+	// Registry logins for prebuilt image pulls
+	mux.HandleFunc("GET /api/registries", h.ListRegistries)
+	mux.HandleFunc("POST /api/registries/{registry}", h.SetRegistry)
+	mux.HandleFunc("DELETE /api/registries/{registry}", h.DeleteRegistry)
+
 	// Meta
 	mux.HandleFunc("GET /api/meta/info", h.GetMetaInfo)
 	mux.HandleFunc("POST /api/meta/upgrade", h.MetaUpgrade) // deprecated alias for /api/server/upgrade

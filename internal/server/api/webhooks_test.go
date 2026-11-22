@@ -580,7 +580,7 @@ func TestWebhook_PushEnqueuesProjectWhenWatchPathTouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.db.UpdateProjectSource(ctx, apiID, "acme/monorepo", "main", "api", "shared"); err != nil {
+	if err := e.db.UpdateProjectSource(ctx, apiID, "acme/monorepo", "main", "api", "shared", "build"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := e.db.CreateProject(ctx, store.Project{

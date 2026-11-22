@@ -13,6 +13,9 @@ type EnqueueRequest struct {
 	CommitSHA          string
 	NoCache            bool
 	CobaltfileOverride string
+	// ImageRefs, when set, deploys these prebuilt images (cobalt.json
+	// image name -> digest-pinned reference) instead of building.
+	ImageRefs map[string]string
 }
 
 type Queue struct {
@@ -36,14 +39,20 @@ func (q *Queue) Enqueue(ctx context.Context, req EnqueueRequest) (id int64, numb
 		cobaltfileOverride = req.CobaltfileOverride
 	}
 
+	imageRefs, err := store.EncodeImageRefs(req.ImageRefs)
+	if err != nil {
+		return 0, 0, err
+	}
+
 	resp, err := q.db.ExecuteSingle(
 		ctx, `
-        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, cobaltfile_override, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+        INSERT INTO deployments (project_id, number, status, commit_sha, no_cache, cobaltfile_override, image_refs, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
     `, req.ProjectID, number, string(cobaltapi.StateQueued),
 		commitSHA,
 		boolToInt(req.NoCache),
 		cobaltfileOverride,
+		imageRefs,
 	)
 	if err != nil {
 		return 0, 0, fmt.Errorf("deploy: insert deployment: %w", err)
@@ -81,6 +90,8 @@ func (q *Queue) EnqueueRollback(ctx context.Context, projectID, targetID int64) 
 		Status:     cobaltapi.StateQueued,
 		CommitSHA:  target.CommitSHA,
 		RollbackOf: &targetID,
+		// Audit only: rollback reuses the target's local image tag.
+		ImageRefs: target.ImageRefs,
 	}
 	id, err = q.db.CreateDeployment(ctx, dep)
 	if err != nil {

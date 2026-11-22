@@ -18,6 +18,10 @@ type fakeRunner struct {
 
 	// errs is matched the same way; non-nil → return that error.
 	errs map[string]error
+
+	// onRun, when set, sees each call while it runs (before temporary
+	// files a caller made for it are removed).
+	onRun func(args []string, env map[string]string)
 }
 
 type recorded struct {
@@ -54,7 +58,11 @@ func (f *fakeRunner) RunWithEnv(_ context.Context, env map[string]string, args [
 		Args: append([]string(nil), args...),
 		Env:  envCopy,
 	})
+	onRun := f.onRun
 	f.mu.Unlock()
+	if onRun != nil {
+		onRun(args, envCopy)
+	}
 
 	joined := strings.Join(args, " ")
 

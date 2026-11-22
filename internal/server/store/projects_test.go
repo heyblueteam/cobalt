@@ -337,7 +337,7 @@ func TestOtherProjectsWithSameSource_AfterUpdate(t *testing.T) {
 	}
 
 	// Retarget A to share the path with B.
-	if err := db.UpdateProjectSource(ctx, idA, "heyblueteam/blue", "main", "app", ""); err != nil {
+	if err := db.UpdateProjectSource(ctx, idA, "heyblueteam/blue", "main", "app", "", "build"); err != nil {
 		t.Fatalf("UpdateProjectSource: %v", err)
 	}
 
@@ -508,7 +508,7 @@ func TestUpdateProjectSource_RoundTrip(t *testing.T) {
 		t.Fatalf("Create: %v", err)
 	}
 
-	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "develop", "api", ""); err != nil {
+	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "develop", "api", "", "build"); err != nil {
 		t.Fatalf("UpdateProjectSource: %v", err)
 	}
 
@@ -540,7 +540,7 @@ func TestUpdateProjectSource_RoundTrip(t *testing.T) {
 func TestUpdateProjectSource_NotFound(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-	err := db.UpdateProjectSource(context.Background(), 99999, "heyblueteam/blue", "main", "api", "")
+	err := db.UpdateProjectSource(context.Background(), 99999, "heyblueteam/blue", "main", "api", "", "build")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
@@ -555,11 +555,11 @@ func TestUpdateProjectSource_InvalidPath(t *testing.T) {
 	id, _ := db.CreateProject(ctx, Project{Name: "x", GithubRepo: "h/x", Branch: "main"})
 
 	// Leading slash is rejected by ValidateProjectPath.
-	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "/api", ""); err == nil {
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "/api", "", "build"); err == nil {
 		t.Error("UpdateProjectSource accepted leading-slash path, want validation error")
 	}
 	// `..` is rejected.
-	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "../escape", ""); err == nil {
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "../escape", "", "build"); err == nil {
 		t.Error("UpdateProjectSource accepted parent-traversal path, want validation error")
 	}
 }
@@ -575,7 +575,7 @@ func TestUpdateProjectSource_IsolatesProjects(t *testing.T) {
 	idA, _ := db.CreateProject(ctx, Project{Name: "a", GithubRepo: "h/a", Branch: "main"})
 	idB, _ := db.CreateProject(ctx, Project{Name: "b", GithubRepo: "h/b", Branch: "main"})
 
-	if err := db.UpdateProjectSource(ctx, idA, "h/mono", "develop", "services/a", ""); err != nil {
+	if err := db.UpdateProjectSource(ctx, idA, "h/mono", "develop", "services/a", "", "build"); err != nil {
 		t.Fatalf("UpdateProjectSource a: %v", err)
 	}
 
@@ -599,7 +599,7 @@ func TestUpdateProjectSource_EmptyPathClearsSubdir(t *testing.T) {
 		Name: "x", GithubRepo: "h/mono", Branch: "main", Path: "services/x",
 	})
 
-	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "", ""); err != nil {
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "", "", "build"); err != nil {
 		t.Fatalf("UpdateProjectSource: %v", err)
 	}
 	got, err := db.GetProjectByID(ctx, id)
@@ -632,7 +632,7 @@ func TestUpdateProjectSource_BumpsUpdatedAt(t *testing.T) {
 	// sleep 1.1s so strftime('%s') ticks at least once (second resolution).
 	time.Sleep(1100 * time.Millisecond)
 
-	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "", ""); err != nil {
+	if err := db.UpdateProjectSource(ctx, id, "h/x", "main", "", "", "build"); err != nil {
 		t.Fatalf("UpdateProjectSource: %v", err)
 	}
 	after, err := db.GetProjectByID(ctx, id)
@@ -656,7 +656,7 @@ func TestUpdateProjectSource_WatchPaths(t *testing.T) {
 		Name: "api", GithubRepo: "heyblueteam/blue", Branch: "main", Path: "api",
 	})
 
-	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "main", "api", "shared, packages/ui"); err != nil {
+	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "main", "api", "shared, packages/ui", "build"); err != nil {
 		t.Fatalf("UpdateProjectSource with watchPaths: %v", err)
 	}
 	p, err := db.GetProjectByID(ctx, id)
@@ -672,7 +672,7 @@ func TestUpdateProjectSource_WatchPaths(t *testing.T) {
 	}
 
 	// Clearing works.
-	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "main", "api", ""); err != nil {
+	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "main", "api", "", "build"); err != nil {
 		t.Fatalf("clear watchPaths: %v", err)
 	}
 	p, _ = db.GetProjectByID(ctx, id)
@@ -681,7 +681,7 @@ func TestUpdateProjectSource_WatchPaths(t *testing.T) {
 	}
 
 	// Invalid entries rejected.
-	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "main", "api", "../escape"); err == nil {
+	if err := db.UpdateProjectSource(ctx, id, "heyblueteam/blue", "main", "api", "../escape", "build"); err == nil {
 		t.Error("accepted parent-traversal watch path, want validation error")
 	}
 }

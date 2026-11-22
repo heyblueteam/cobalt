@@ -167,6 +167,12 @@ func (db *DB) InitSchema(ctx context.Context) error {
 			ended_at        INTEGER
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_upgrades_status ON upgrades(status, started_at)`,
+		`CREATE TABLE IF NOT EXISTS registry_credentials (
+			registry      TEXT PRIMARY KEY,
+			username      TEXT NOT NULL,
+			password      TEXT NOT NULL,
+			updated_at    INTEGER NOT NULL
+		)`,
 	})
 	if _, err := db.Execute(ctx, stmts, nil); err != nil {
 		return err
@@ -181,6 +187,8 @@ func (db *DB) InitSchema(ctx context.Context) error {
 		`ALTER TABLE domains ADD COLUMN redirect_to TEXT`,
 		`ALTER TABLE projects ADD COLUMN path TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE projects ADD COLUMN watch_paths TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE projects ADD COLUMN image_source TEXT NOT NULL DEFAULT 'build'`,
+		`ALTER TABLE deployments ADD COLUMN image_refs TEXT`,
 	} {
 		_, _ = db.Execute(ctx, rqlitehttp.NewSQLStatementsFromStrings([]string{alter}), nil)
 	}

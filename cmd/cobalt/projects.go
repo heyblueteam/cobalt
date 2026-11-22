@@ -167,7 +167,13 @@ unaffected by this command.
 Examples:
   cobalt projects update api --github heyblueteam/blue --path api
   cobalt projects update staging --branch develop
-  cobalt projects update web --path services/web`,
+  cobalt projects update web --path services/web
+  cobalt projects update server --image-source registry
+
+--image-source registry means CI builds and pushes the image and deploys it
+with 'cobalt deploy --image <ref@sha256:...>'. GitHub pushes then do not
+deploy the project, and 'cobalt deploy' without --image is refused, so the
+host never builds it. --image-source build (the default) restores builds.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runE(func(cmd *cobra.Command, args []string) error {
 			srv, err := resolveServer(cmd)
@@ -213,6 +219,13 @@ Examples:
 				}
 				req.WatchPaths = &wp
 			}
+			if cmd.Flags().Changed("image-source") {
+				src := cmd.Flag("image-source").Value.String()
+				if err := validator.ValidateImageSource(src); err != nil {
+					return err
+				}
+				req.ImageSource = &src
+			}
 
 			project, err := cl.UpdateProjectSource(cmd.Context(), name, req)
 			if err != nil {
@@ -229,6 +242,9 @@ Examples:
 			if project.WatchPaths != "" {
 				line += " watchPaths=" + project.WatchPaths
 			}
+			if project.ImageSource != "" {
+				line += " imageSource=" + project.ImageSource
+			}
 			output.PrintLines(line)
 			output.PrintLines("Run `cobalt deploy --project " + project.Name + "` to act on the new source.")
 			return nil
@@ -237,6 +253,7 @@ Examples:
 	cmd.Flags().String("github", "", "github repo as owner/repo (leave unset to keep current)")
 	cmd.Flags().String("branch", "", "git branch to deploy (leave unset to keep current)")
 	cmd.Flags().String("path", "", "sub-directory inside the repo (leave unset to keep current)")
+	cmd.Flags().String("image-source", "", "\"build\" (Cobalt builds on push/deploy) or \"registry\" (deploy prebuilt images by digest only; leave unset to keep current)")
 	cmd.Flags().String("watch-paths", "", "comma-separated extra sub-paths that also trigger deploys, e.g. \"shared\" (empty string clears; leave unset to keep current)")
 	return cmd
 }
